@@ -1,6 +1,8 @@
 name: CI
 
 # Build + test on Linux (x86_64) and macOS (arm64); prove on Linux only.
+# Proof runs as its own job, in parallel with build/test: it depends on
+# compilation but not on a successful test run (see issue #3).
 # Doc-only changes are skipped.
 on:
   push:
@@ -22,7 +24,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
+  # Build + test across both platforms. This no longer runs proof — proof is a
+  # sibling job below with no `needs:` edge, so the two run concurrently.
+  build-test:
+    name: Build + test (${{ matrix.os }})
     strategy:
       # Don't let one platform's failure cancel the other — we want both signals.
       fail-fast: false
@@ -34,27 +39,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       # alire.toml git-pins json to a fixed json-spark commit, so `alr build`
-      # fetches it automatically — no sibling checkout needed.
+      # fetches it automatically — no sibling checkout needed. Checkout must run
+      # before the local composite action can be resolved.
       - name: Checkout
         uses: actions/checkout@v4
 
-      # setup-alire installs alr plus a toolchain. Pin Alire 2.x: the older
-      # setup-alire@v2 default (alr 1.2.2) predates `alr install`. The toolchain
-      # is left unpinned so each host gets the newest available 16-series
-      # gnat_native (sparklib ^16.1.0 requires GNAT 16).
-      - name: Install Alire
-        uses: alire-project/setup-alire@v6.0.0
-        with:
-          version: 2.1.1
-          toolchain: gnat_native gprbuild
-
-      # Proof runs on Linux only (below), so GNATprove is only needed there.
-      # sparklib 16.1.0 forbids gnatprove < 16; install 16.x and put it on PATH.
-      - name: Install GNATprove
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          alr -n install gnatprove^16
-          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
 
       # cargo (pre-installed on both runners) drives the candle + tiny_http
       # staticlib pre-builds and fetch-deps.sh vendors the pinned SQLite sources.
@@ -64,14 +55,37 @@ jobs:
       - name: Test
         run: make test
 
-      # Prove to Silver on Linux only: GNATprove reasons about source semantics,
-      # not the target, so the verification result is platform-independent — one
-      # run suffices. The gate accepts the known upstream SPARKlib float-lemma
-      # gaps (scripts/proof-xfail.txt) and fails on any unproved check in our
-      # code. --timeout=10 via GNATPROVE_EXTRA: --level timeouts are wall-clock,
-      # so a check can need more time on the slower runner than on a dev machine.
+  # Prove to Silver on Linux only: GNATprove reasons about source semantics, not
+  # the target, so the verification result is platform-independent — one run
+  # suffices. Runs in parallel with build-test (no `needs:`): proof depends on
+  # compilation, not on a passing test run (issue #3). The gate fails on any
+  # unproved check in our code; GNATprove 16 discharges the SPARKlib float
+  # lemmas, so the allowlist (scripts/proof-xfail.txt) is currently empty.
+  prove:
+    name: Prove (SPARK Silver, Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
+
+      # sparklib 16.1.0 forbids gnatprove < 16; install 16.x and put it on PATH.
+      - name: Install GNATprove
+        run: |
+          alr -n install gnatprove^16
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      # Proof depends on compilation: `make build` runs the cargo staticlib
+      # pre-builds and vendors the pinned SQLite sources that gnatprove needs on
+      # disk. It does NOT depend on `make test`.
+      - name: Build
+        run: make build
+
+      # --timeout=10 via GNATPROVE_EXTRA: --level timeouts are wall-clock, so a
+      # check can need more time on the slower runner than on a dev machine.
       - name: Prove
-        if: matrix.os == 'ubuntu-latest'
         env:
           GNATPROVE_EXTRA: --timeout=10
         run: make prove-check
