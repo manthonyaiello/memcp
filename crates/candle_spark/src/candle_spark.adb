@@ -35,9 +35,8 @@ is
    --                    float *out, int32_t *status);
    --  Fills the caller's Out_Buf. Because Out_Buf's components are the
    --  constrained Embedding_Component, SPARK *assumes* the L2-normalized engine
-   --  stays in -1.0 .. 1.0 -- the boundary trust. The wrapper turns that
-   --  assumption into a runtime check (see Embed) so -gnata still catches a
-   --  misbehaving engine.
+   --  stays in -1.0 .. 1.0 -- the boundary trust that lets every consumer
+   --  inherit the range with no Post to carry.
    procedure C_Embed
      (Handle  : System.Address;
       Text    : String;
@@ -108,21 +107,16 @@ is
          Result := (others => 0.0);
       end if;
 
-      --  Embedding_Component makes SPARK *assume* the engine stayed in range;
-      --  this turns the assumption into a real check of the foreign output under
-      --  -gnata, keeping the "trust in proof, verify under assertions" boundary
-      --  discipline the old range Post gave us -- now without a contract for the
-      --  type's consumers to carry. 'Valid (not a membership test, which the
-      --  compiler would fold to True since Result's components are nominally
-      --  in-range already) is the tool that actually inspects unchecked foreign
-      --  data at runtime; GNATprove necessarily assumes it, hence the suppress.
-      pragma Warnings
-        (GNATprove, Off, "attribute Valid is assumed to return True",
-         Reason => "-gnata makes this a real range check of candle's output");
-      pragma Assert (for all C of Result => C'Valid);
-      pragma Warnings
-        (GNATprove, On, "attribute Valid is assumed to return True");
-
+      --  The trust seam is Embedding_Component itself: SPARK *assumes* candle's
+      --  L2-normalized output stays in -1.0 .. 1.0 because Out_Buf carries the
+      --  constrained subtype, so consumers inherit the range with no Post.
+      --  A `for all C of Result => C'Valid` assertion used to add an -gnata-only
+      --  cross-check of the raw foreign bytes, but GNATprove 16 folds 'Valid to
+      --  True (attribute-valid-always-true), making the assertion vacuous. It is
+      --  dropped rather than suppressed: any check phrased over Result is over a
+      --  nominally-in-range object and so folds away, and widening the FFI buffer
+      --  to reintroduce a real check would only turn the assumed range into an
+      --  unprovable one.
       return Result;
    end Embed;
 
