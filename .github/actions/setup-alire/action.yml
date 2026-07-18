@@ -1,0 +1,18 @@
+# Shared Alire setup, used by both the build/test job and the proof job so the
+# toolchain provisioning can't drift between them. The caller must run
+# actions/checkout BEFORE this action: a local composite action can only be
+# resolved once its file is on disk in the workspace.
+name: Set up Alire toolchain
+description: Install Alire (alr) plus the GNAT / gprbuild toolchain.
+runs:
+  using: composite
+  steps:
+    # setup-alire installs alr plus a toolchain. Pin Alire 2.x: the older
+    # setup-alire@v2 default (alr 1.2.2) predates `alr install`. The toolchain
+    # is left unpinned so each host gets the newest available 16-series
+    # gnat_native (sparklib ^16.1.0 requires GNAT 16).
+    - name: Install Alire
+      uses: alire-project/setup-alire@v6.0.0
+      with:
+        version: 2.1.1
+        toolchain: gnat_native gprbuild
