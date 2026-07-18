@@ -5,10 +5,10 @@
 # pattern below; any unproved check matching none of them fails the gate as a
 # regression. See scripts/check-proof.sh for the full rationale.
 #
-# The only accepted gaps live in SPARKlib's floating-point range lemmas
-# (SPARK.Lemmas.Float_Arithmetic / Long_Float_Arithmetic .Is_Float). They need
-# the COLIBRI solver, which the default prover set does not ship, so they are
-# never discharged — and which of them show up is platform-dependent (the arm64
-# dev machine clears more than the x86_64 CI runner). Matching on the shared
-# lemma source file covers every such variant. None of these are memcp code.
-spark-lemmas-floating_point_arithmetic.ads
+# INTENTIONALLY EMPTY. Under the GNAT/GNATprove/SPARKlib 16 toolchain the whole
+# memcp crate proves to Silver with no escape hatches — including the SPARKlib
+# floating-point range lemmas that the 15-series prover set could not discharge.
+# The gate therefore fails on ANY unproved check. If a genuine upstream gap
+# resurfaces on some platform, add a substring pattern here (see it with
+# `scripts/check-proof.sh --list`); until then the allowlist stays empty so the
+# gate demands a fully clean proof.
