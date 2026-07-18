@@ -4,7 +4,9 @@ lib/
 bin/
 alire/
 config/
-docs/
+#  Only the *generated* GNATdoc output (docs/api) is an artifact; hand-written
+#  prose under docs/ (e.g. docs/design/) is tracked.
+docs/api/
 *.o
 *.ali
 
