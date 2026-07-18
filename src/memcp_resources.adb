@@ -14,7 +14,6 @@ is
 
    use type MS.Open_Status;
    use type Candle_Spark.Status;
-   use type MS.Row_Id;
 
    ----------
    -- Open --
@@ -229,8 +228,8 @@ is
    begin
       if not Is_Open
         or else Project'Length = 0
-        or else Project'Last >= Natural'Last
-        or else Summary_Body'Last >= Integer'Last
+        or else Project'Last = Natural'Last
+        or else Summary_Body'Last = Integer'Last
       then
          Result := (Summary_Id => 0, Diary_Id => 0,
                     Already_Existed => False, Replaced => False);
@@ -277,8 +276,8 @@ is
    begin
       if not Is_Open
         or else Project'Length = 0
-        or else Project'Last >= Natural'Last
-        or else Session_Id'Last >= Natural'Last
+        or else Project'Last = Natural'Last
+        or else Session_Id'Last = Natural'Last
       then
          Result := (Session_Row_Id => 0, Chunk_Count => 0,
                     Already_Existed => False, Raw_Path_Set => False);
@@ -309,8 +308,8 @@ is
    begin
       if not Is_Open
         or else Project'Length = 0
-        or else Project'Last >= Natural'Last
-        or else Recap_Text'Last >= Integer'Last
+        or else Project'Last = Natural'Last
+        or else Recap_Text'Last = Integer'Last
       then
          Summary_Id := 0;
          Diary_Id   := 0;

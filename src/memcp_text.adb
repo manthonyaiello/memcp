@@ -1,5 +1,3 @@
-with Ada.Containers; use type Ada.Containers.Count_Type;
-
 package body Memcp_Text with SPARK_Mode => On is
 
    -----------

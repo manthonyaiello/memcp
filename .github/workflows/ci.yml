@@ -40,8 +40,8 @@ jobs:
 
       # setup-alire installs alr plus a toolchain. Pin Alire 2.x: the older
       # setup-alire@v2 default (alr 1.2.2) predates `alr install`. The toolchain
-      # is left unpinned so each host gets the newest available 15-series
-      # gnat_native (sparklib ^15.1.0 requires GNAT 15).
+      # is left unpinned so each host gets the newest available 16-series
+      # gnat_native (sparklib ^16.1.0 requires GNAT 16).
       - name: Install Alire
         uses: alire-project/setup-alire@v6.0.0
         with:
@@ -49,11 +49,11 @@ jobs:
           toolchain: gnat_native gprbuild
 
       # Proof runs on Linux only (below), so GNATprove is only needed there.
-      # sparklib 15.1.0 forbids gnatprove < 15; install 15.x and put it on PATH.
+      # sparklib 16.1.0 forbids gnatprove < 16; install 16.x and put it on PATH.
       - name: Install GNATprove
         if: matrix.os == 'ubuntu-latest'
         run: |
-          alr -n install gnatprove^15
+          alr -n install gnatprove^16
           echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
 
       # cargo (pre-installed on both runners) drives the candle + tiny_http

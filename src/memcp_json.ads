@@ -11,7 +11,6 @@
 
 with Interfaces;
 
-with Spark_Mcp;
 with Memcp_Store;
 
 package Memcp_Json with SPARK_Mode => On is
