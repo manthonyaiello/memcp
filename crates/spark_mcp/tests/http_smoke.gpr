@@ -1,0 +1,15 @@
+--  Throwaway smoke-test executable for the tiny_http binding. Withs the
+--  library crate so it inherits its Linker_Options (the Rust staticlib).
+with "../spark_mcp.gpr";
+
+project Http_Smoke is
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Create_Missing_Dirs use "True";
+   for Main use ("http_smoke.adb");
+   for Exec_Dir use ".";
+
+   package Binder is
+      for Switches ("Ada") use ("-Es");
+   end Binder;
+end Http_Smoke;

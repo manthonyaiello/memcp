@@ -1,0 +1,27 @@
+--  Standalone driver for memcp's end-to-end Dispatch: the real json-based
+--  Parse_Envelope (Memcp_Envelope) feeding spark_mcp's routing. Dependency-
+--  light (no AUnit) so it runs the moment memcp builds. -gnata turns the SPARK
+--  Pre/Post along the path into executable checks.
+
+with "../memcp.gpr";
+
+project Memcp_Tests is
+
+   for Source_Dirs use ("src");
+   for Object_Dir use "obj";
+   for Exec_Dir use "bin";
+   for Main use
+     ("test_dispatch.adb", "test_store.adb", "test_tools.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99");
+      --  Same permission memcp needs to instantiate the json generics.
+      for Local_Configuration_Pragmas use "../gnat.adc";
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es");
+   end Binder;
+
+end Memcp_Tests;

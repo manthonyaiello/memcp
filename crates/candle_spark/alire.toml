@@ -1,0 +1,17 @@
+name = "candle_spark"
+description = ""
+version = "0.1.0-dev"
+
+authors = ["Tony Aiello"]
+maintainers = ["M. Anthony Aiello <m.anthony.aiello@gmail.com>"]
+maintainers-logins = ["manthonyaiello"]
+licenses = "Apache-2.0"
+website = ""
+tags = []
+
+#  Alire does not build Rust. Build the candle staticlib before the Ada library
+#  so the .a exists for the GPR's Linker_Options to link. The .a is CPU-only and
+#  ~46 MiB; `cargo build` is incremental so this is a no-op once built.
+[[actions]]
+type = "pre-build"
+command = ["cargo", "build", "--release", "--manifest-path", "candle_ffi/Cargo.toml"]

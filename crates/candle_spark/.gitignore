@@ -1,0 +1,10 @@
+/obj/
+/lib/
+/alire/
+/config/
+
+# candle staticlib build output (rebuilt by the pre-build cargo action)
+/candle_ffi/target/
+
+# pre-provisioned model weights (fetched by scripts/install-model.sh)
+/models/

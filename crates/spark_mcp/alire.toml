@@ -1,0 +1,25 @@
+name = "spark_mcp"
+description = ""
+version = "0.1.0-dev"
+
+authors = ["Tony Aiello"]
+maintainers = ["M. Anthony Aiello <m.anthony.aiello@gmail.com>"]
+maintainers-logins = ["manthonyaiello"]
+licenses = "Apache-2.0"
+website = ""
+tags = []
+
+#  No Ada crate dependencies. The reusable MCP core (Spark_Mcp.Server) is
+#  json-free (a tool's `arguments` cross the seam as raw JSON text) and uses
+#  nothing from the transport, so it can be built and proved independently of
+#  the json session's in-flight rewrite; the json crate lives only in the
+#  `memcp` composition root.
+#
+#  The one build dependency is the child transport Spark_Mcp.Http, whose Rust
+#  half (tiny_http) is compiled to a staticlib before the Ada build so the
+#  archive the GPR Linker_Options reference exists. cargo is incremental, so
+#  rerunning per build is cheap. gnatprove neither runs this action nor links,
+#  so the core's proof stays free of it. Runs from the crate root.
+[[actions]]
+type = "pre-build"
+command = ["cargo", "build", "--release", "--manifest-path", "rust/Cargo.toml"]

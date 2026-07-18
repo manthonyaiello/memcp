@@ -1,0 +1,27 @@
+# candle_ffi: the trusted foreign body behind candle_spark.
+#
+# Runs all-MiniLM-L6-v2 (BERT) via candle + tokenizers and exposes a tiny C ABI
+# (candle_embed_load / candle_embed / candle_embed_free) that the SPARK wrapper
+# imports. Built as a staticlib by Alire's pre-build action; the .a is linked
+# into the memcp binary. CPU-only (no accelerate/CUDA feature) to keep the
+# native link closure minimal -- gemm is pure Rust.
+[package]
+name = "candle_ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "candle_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+candle-core = "=0.8.4"
+candle-nn = "=0.8.4"
+candle-transformers = "=0.8.4"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3

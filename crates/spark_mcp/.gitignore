@@ -1,0 +1,12 @@
+/obj/
+/lib/
+/alire/
+/config/
+
+# Rust staticlib build output for the Spark_Mcp.Http transport
+# (Cargo.lock is committed for reproducibility).
+/rust/target/
+
+# Smoke-test driver artifacts (tests/http_smoke.gpr).
+/tests/obj/
+/tests/http_smoke

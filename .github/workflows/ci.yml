@@ -1,0 +1,77 @@
+name: CI
+
+# Build + test on Linux (x86_64) and macOS (arm64); prove on Linux only.
+# Doc-only changes are skipped.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LAYOUT.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LAYOUT.md'
+  workflow_dispatch:
+
+# Cancel an in-flight run when a new commit lands on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    strategy:
+      # Don't let one platform's failure cancel the other — we want both signals.
+      fail-fast: false
+      matrix:
+        # ubuntu-latest = x86_64 Linux; macos-latest = arm64 macOS (Apple
+        # Silicon), which matches the dev machine's arch and exercises the
+        # macOS-only linker path (-liconv) in candle_spark.gpr.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # alire.toml git-pins json to a fixed json-spark commit, so `alr build`
+      # fetches it automatically — no sibling checkout needed.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # setup-alire installs alr plus a toolchain. Pin Alire 2.x: the older
+      # setup-alire@v2 default (alr 1.2.2) predates `alr install`. The toolchain
+      # is left unpinned so each host gets the newest available 15-series
+      # gnat_native (sparklib ^15.1.0 requires GNAT 15).
+      - name: Install Alire
+        uses: alire-project/setup-alire@v6.0.0
+        with:
+          version: 2.1.1
+          toolchain: gnat_native gprbuild
+
+      # Proof runs on Linux only (below), so GNATprove is only needed there.
+      # sparklib 15.1.0 forbids gnatprove < 15; install 15.x and put it on PATH.
+      - name: Install GNATprove
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          alr -n install gnatprove^15
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      # cargo (pre-installed on both runners) drives the candle + tiny_http
+      # staticlib pre-builds and fetch-deps.sh vendors the pinned SQLite sources.
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+      # Prove to Silver on Linux only: GNATprove reasons about source semantics,
+      # not the target, so the verification result is platform-independent — one
+      # run suffices. The gate accepts the known upstream SPARKlib float-lemma
+      # gaps (scripts/proof-xfail.txt) and fails on any unproved check in our
+      # code. --timeout=10 via GNATPROVE_EXTRA: --level timeouts are wall-clock,
+      # so a check can need more time on the slower runner than on a dev machine.
+      - name: Prove
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GNATPROVE_EXTRA: --timeout=10
+        run: make prove-check

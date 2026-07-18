@@ -1,0 +1,15 @@
+/obj/
+/lib/
+/alire/
+/config/
+
+# Smoke-test build artifacts (tests/sqlite_smoke.gpr).
+/tests/obj/
+/tests/sqlite_smoke
+
+# Vendored C amalgamations, fetched + sha256-pinned by scripts/fetch-deps.sh.
+# Not committed (sqlite3.c alone is ~9 MiB); shim.c IS committed (it's ours).
+/csrc/sqlite3.c
+/csrc/sqlite3.h
+/csrc/sqlite-vec.c
+/csrc/sqlite-vec.h

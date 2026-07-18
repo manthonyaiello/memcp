@@ -1,0 +1,24 @@
+--  Project used to run GNATprove on the library together with the generic
+--  instantiation in prove/proof_harness.ads. Spark_Mcp.Server is generic, so
+--  GNATprove analyzes its body only through an instantiation; this project adds
+--  the proof harness to the source set. The library itself is built with
+--  spark_mcp.gpr.
+
+with "config/spark_mcp_config.gpr";
+
+project Spark_Mcp_Prove is
+
+   for Source_Dirs use ("src", "prove");
+   for Object_Dir use "obj/prove";
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use
+        Spark_Mcp_Config.Ada_Compiler_Switches & ("-gnatyM99");
+   end Compiler;
+
+   package Prove is
+      for Proof_Switches ("Ada") use ("-j0", "--output=oneline");
+   end Prove;
+
+end Spark_Mcp_Prove;

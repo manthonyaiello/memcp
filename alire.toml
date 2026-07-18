@@ -1,0 +1,51 @@
+name = "memcp"
+description = ""
+version = "0.1.0-dev"
+
+authors = ["Tony Aiello"]
+maintainers = ["M. Anthony Aiello <m.anthony.aiello@gmail.com>"]
+maintainers-logins = ["manthonyaiello"]
+licenses = "Apache-2.0"
+website = ""
+tags = []
+
+executables = ["memcp"]
+
+[[depends-on]]
+spark_mcp = "~0.1.0-dev"
+
+[[pins]]
+spark_mcp = { path='crates/spark_mcp' }
+
+#  The JSON library (manthonyaiello/json-spark, the SPARK Silver fork of
+#  json-ada). memcp is the only crate that depends on json: it supplies
+#  spark_mcp's Parse_Envelope formal, so the reusable core stays json-free.
+[[depends-on]]
+json = "^7.0.0"
+
+#  Git-pinned to a fixed commit so `alr build` fetches json-spark automatically;
+#  no sibling checkout required. The crate lives in the repo's json/ subdir.
+[[pins]]
+json = { url='https://github.com/manthonyaiello/json-spark.git', commit='6f45f51a9e8ca23e22ae8f3070a300c14270cb52', subdir='json' }
+
+[[depends-on]]
+sqlite_vec_spark = "~0.1.0-dev"
+
+[[pins]]
+sqlite_vec_spark = { path='crates/sqlite_vec_spark' }
+
+[[depends-on]]
+candle_spark = "~0.1.0-dev"
+
+[[pins]]
+candle_spark = { path='crates/candle_spark' }
+
+[[depends-on]]
+sparklib = "^15.1.0"
+
+#  SPARKlib containers. `full` mode carries the functional-model ghost code
+#  GNATprove needs to discharge the container contracts (stripped unless
+#  -gnata); `Production` build = no runtime assertion overhead in `alr run`.
+[gpr-set-externals]
+SPARKLIB_MODE = "full"
+SPARKLIB_BUILD = "Production"

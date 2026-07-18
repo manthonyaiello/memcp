@@ -1,0 +1,24 @@
+--  Standalone proof-of-life driver for the SQLite + sqlite-vec binding. Withs
+--  the library crate so it inherits its Linker_Options (-lm) and links the
+--  vendored C amalgamations compiled into libSqlite_Vec_Spark.a. Dependency-
+--  light (no AUnit) so it runs the moment the crate builds. -gnata turns the
+--  binding's Pre/Post into executable checks and makes the pragma Asserts live.
+with "../sqlite_vec_spark.gpr";
+
+project Sqlite_Smoke is
+
+   for Source_Dirs use (".");
+   for Object_Dir use "obj";
+   for Exec_Dir use ".";
+   for Main use ("sqlite_smoke.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99");
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es");
+   end Binder;
+
+end Sqlite_Smoke;

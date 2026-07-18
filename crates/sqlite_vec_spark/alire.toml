@@ -1,0 +1,18 @@
+name = "sqlite_vec_spark"
+description = ""
+version = "0.1.0-dev"
+
+authors = ["Tony Aiello"]
+maintainers = ["M. Anthony Aiello <m.anthony.aiello@gmail.com>"]
+maintainers-logins = ["manthonyaiello"]
+licenses = "Apache-2.0"
+website = ""
+tags = []
+
+#  The SQLite + sqlite-vec C sources are code the build needs (like candle's
+#  Rust), not runtime data -- so vendor them before the Ada compiles. The script
+#  is sha256-pinned and idempotent: a no-op once csrc/ is populated, so this only
+#  hits the network on a fresh checkout.
+[[actions]]
+type = "pre-build"
+command = ["bash", "scripts/fetch-deps.sh"]

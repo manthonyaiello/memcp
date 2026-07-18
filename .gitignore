@@ -1,0 +1,16 @@
+# GNAT / Alire build + tooling artifacts (all crates)
+obj/
+lib/
+bin/
+alire/
+config/
+docs/
+*.o
+*.ali
+
+# GNATprove output
+gnatprove/
+gnatprove-run.txt
+
+# Provisioned embedding weights (install-model.sh); large, local.
+models/

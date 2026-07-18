@@ -1,0 +1,48 @@
+with "config/candle_spark_config.gpr";
+project Candle_Spark is
+
+   for Library_Name use "Candle_Spark";
+   for Library_Version use Project'Library_Name & ".so." & Candle_Spark_Config.Crate_Version;
+
+   for Source_Dirs use ("src/", "config/");
+   for Object_Dir use "obj/" & Candle_Spark_Config.Build_Profile;
+   for Create_Missing_Dirs use "True";
+   for Library_Dir use "lib";
+
+   type Library_Type_Type is ("relocatable", "static", "static-pic");
+   Library_Type : Library_Type_Type :=
+     external ("CANDLE_SPARK_LIBRARY_TYPE", external ("LIBRARY_TYPE", "static"));
+   for Library_Kind use Library_Type;
+
+   package Compiler is
+      for Default_Switches ("Ada") use Candle_Spark_Config.Ada_Compiler_Switches & ("-gnatyM99");
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es"); --  Symbolic traceback
+   end Binder;
+
+   --  Link the candle staticlib (built by the pre-build cargo action in
+   --  alire.toml) plus the system libs a CPU-only Rust staticlib needs
+   --  (from `rustc --print native-static-libs`). These differ by OS: macOS
+   --  wants libiconv, Linux wants the pthread/dl/rt set. Linker_Options
+   --  propagates to whatever links this library (the memcp bin).
+   Sys_Libs := ("-lm");
+   case Candle_Spark_Config.Alire_Host_OS is
+      when "macos"   => Sys_Libs := ("-liconv", "-lm");
+      when "windows" => Sys_Libs := ("-lm");
+      when others    => Sys_Libs := ("-lpthread", "-ldl", "-lrt", "-lm");
+   end case;
+
+   package Linker is
+      for Linker_Options use
+        ("-L" & Project'Project_Dir & "candle_ffi/target/release",
+         "-lcandle_ffi")
+        & Sys_Libs;
+   end Linker;
+
+   package Install is
+      for Artifacts (".") use ("share");
+   end Install;
+
+end Candle_Spark;
