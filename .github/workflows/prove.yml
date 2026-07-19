@@ -26,11 +26,16 @@ on:
         type: boolean
         default: false
 
-# actions:write is used only by the purge step (gh cache delete). A caller that
-# does not purge need not grant it; the requested scope is capped by the caller.
-permissions:
-  contents: read
-  actions: write
+# No `permissions:` block here on purpose: a reusable workflow's declared scopes
+# are validated against what the *caller* grants and are NOT silently capped, so
+# declaring `actions: write` here breaks `ci.yml` — whose default token grants
+# `actions: none` — with a startup validation error (issue #13), even though the
+# only step needing that scope (purge / gh cache delete) is gated by inputs.purge
+# and never runs from CI. Instead we inherit each caller's permissions: ci.yml
+# passes `contents: read` (no purge, so no actions:write needed); the daily
+# proof-cache-refresh.yml passes `contents: read` + `actions: write` for purge.
+# (actions/cache save/restore does not require actions:write — only gh cache
+# delete does.)
 
 jobs:
   prove:
