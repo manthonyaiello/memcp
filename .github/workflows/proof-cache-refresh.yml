@@ -1,0 +1,104 @@
+name: Proof cache refresh
+
+# Daily COLD reprove of main. Two purposes:
+#   1. Refresh the shared GNATprove file cache that the CI `prove` job restores.
+#   2. Poison guard: a cold run (empty cache) re-runs every prover from scratch,
+#      so no corrupt/poisoned cached verdict can survive it. The cache the whole
+#      team trusts is therefore re-grounded in a full proof at least daily.
+#
+# The job skips itself unless main actually moved in the last 24h. This is sound
+# because the cache is content-addressed by VC: if main's sources are identical
+# (same SHAs), every VC key is identical, so the existing cache is already valid
+# and a cold reprove would only burn ~23 min of CI to reproduce it.
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:       # manual trigger for ad-hoc refresh / testing
+
+# `gh cache delete` needs actions:write; everything else is read-only.
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  # Cheap gate: did main move in the last 24h? Emits run=true/false.
+  guard:
+    name: Check main moved in 24h
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Checkout main (full history for the time window)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Decide
+        id: check
+        run: |
+          # HEAD is main (checked out above). Any commit in the window ⇒ run.
+          if [ -n "$(git log --since='24 hours ago' --format=%H HEAD)" ]; then
+            echo "main moved in the last 24h — cold reprove will run."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main unchanged in the last 24h — existing cache still valid, skipping."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  refresh:
+    name: Cold reprove + cache refresh (main)
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Purge every existing gnatprove-* cache before the cold run. This bounds
+      # the file-cache growth AdaCore warns about, frees the 10 GB Actions cache
+      # budget, and clears any same-SHA key a prior push-to-main run may have
+      # saved, so the save step below cannot collide.
+      - name: Purge old gnatprove caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --limit 100 --json id,key \
+            --jq '.[] | select(.key | startswith("gnatprove-")) | .id' \
+          | while read -r id; do
+              [ -n "$id" ] && gh cache delete "$id" || true
+            done
+
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
+
+      # sparklib 16.1.0 forbids gnatprove < 16; install 16.x and put it on PATH
+      # (matches the ci.yml prove job).
+      - name: Install GNATprove
+        run: |
+          alr -n install gnatprove^16
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: make build
+
+      # Genuinely COLD: start from an empty dir and do NOT restore any cache, so
+      # every prover runs from scratch — that is what makes this a poison guard.
+      - name: Cold reprove
+        env:
+          GNATPROVE_EXTRA: >-
+            --timeout=10
+            --memcached-server=file:${{ github.workspace }}/.gnatprove-cache
+        run: |
+          rm -rf .gnatprove-cache && mkdir -p .gnatprove-cache
+          make prove-check
+
+      # Publish the freshly-populated cache under main's key. The purge above
+      # removed any prior cache for this SHA, so this save cannot collide.
+      - name: Save refreshed cache
+        uses: actions/cache/save@v4
+        with:
+          path: .gnatprove-cache
+          key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}

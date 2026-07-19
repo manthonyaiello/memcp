@@ -83,9 +83,43 @@ jobs:
       - name: Build
         run: make build
 
+      # Restore the shared GNATprove proof cache. The key fingerprints the exact
+      # prover toolchain (gnatprove 16.1.0 / why3 1.8.2): a bump changes every VC
+      # key, so a cache can never carry stale verdicts across a toolchain change.
+      # The github.sha suffix makes each publish a distinct key; restore-keys
+      # falls back to the newest cache under the fingerprint prefix, so a PR
+      # warm-starts from whatever `main` last published. RESTORE ONLY here — the
+      # save step below is gated to main, so a branch or fork PR can read the
+      # cache but never write it, and thus cannot poison what main trusts.
+      - name: Restore proof cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .gnatprove-cache
+          key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}
+          restore-keys: |
+            gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-
+
       # --timeout=10 via GNATPROVE_EXTRA: --level timeouts are wall-clock, so a
       # check can need more time on the slower runner than on a dev machine.
+      # --memcached-server=file: points gnatprove at the restored cache;
+      # check-proof.sh appends GNATPROVE_EXTRA verbatim, so this stays a
+      # workflow-only change. mkdir -p because gnatprove wants the dir to exist
+      # (a cache miss leaves it absent).
       - name: Prove
         env:
-          GNATPROVE_EXTRA: --timeout=10
-        run: make prove-check
+          GNATPROVE_EXTRA: >-
+            --timeout=10
+            --memcached-server=file:${{ github.workspace }}/.gnatprove-cache
+        run: |
+          mkdir -p .gnatprove-cache
+          make prove-check
+
+      # Publish the warmed cache ONLY from pushes to main (the on: push above
+      # guarantees this run exists). PRs skip this step, so the cache main trusts
+      # is only ever written by main itself and the daily cold refresh.
+      - name: Save proof cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .gnatprove-cache
+          key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}
