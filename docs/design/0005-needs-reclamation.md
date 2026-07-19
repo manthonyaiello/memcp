@@ -96,6 +96,17 @@ under `Hide_Info`, but each has `Global => null` and depends only on its
 `in`-mode handle, so GNATprove carries their truth across operations from the
 operation postconditions alone.
 
+## Warning suppressions
+
+The ownership annotation does **not** retire `Memcp_Store`'s
+`"...is set by ""Finalize"" but not used after the call"` suppression. That is a
+flow observation about the ineffective final write — `Finalize` is `in out` and
+nulls the handle, and that reclaimed value is never read again — which is
+orthogonal to reclamation: the annotation proves the resource *is released*, not
+that the final write is read. Removing the suppression keeps the proof green
+(5451, zero unproved) but resurfaces the warning across the store, so it stays.
+No other suppression here relates to Database/Statement reclamation.
+
 ## Note (pending SPARK-team review)
 
 The owning-token indirection exists only to give SPARK an ownership anchor for a
