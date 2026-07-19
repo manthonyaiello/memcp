@@ -23,6 +23,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege, and what flows into the reusable prove.yml call below. CI only
+# reads the repo and restores/saves the proof cache (neither needs actions:write);
+# it never purges caches, so it must NOT grant actions:write — doing so would both
+# over-grant and fail fork PRs, whose token can't be elevated (see issue #13).
+permissions:
+  contents: read
+
 jobs:
   # Build + test across both platforms. This no longer runs proof — proof is a
   # sibling job below with no `needs:` edge, so the two run concurrently.
