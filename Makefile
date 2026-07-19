@@ -12,7 +12,7 @@ ALR      ?= alr
 GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
 
-.PHONY: all build run model test prove prove-check docs clean help
+.PHONY: all build run model test prove prove-deps prove-check docs clean help
 
 all: build
 
@@ -37,6 +37,19 @@ test: build ## Build + run the unit drivers and the self-contained smoke tests
 
 prove: ## Prove memcp to SPARK Silver — AoRTE (--level=2)
 	$(ALR) gnatprove -P memcp.gpr -j0 --level=2
+
+# Everything gnatprove needs on disk WITHOUT compiling anything. `alr gnatprove`
+# is just `alr exec -- gnatprove`, which never runs build actions, so the proof
+# job must provision inputs itself. `--stop-after=generation` runs only the
+# sync + generation stages: it resolves/fetches the crate dependencies and
+# writes the Alire *_config.gpr files (memcp.gpr withs config/memcp_config.gpr),
+# then STOPS before the pre-build stage — so the candle and tiny_http cargo
+# staticlibs, which gnatprove never links, are not built. fetch-deps vendors the
+# C amalgamations, keeping sqlite_vec_spark's project model identical to a real
+# build. This is what lets the CI proof job skip the entire Rust toolchain.
+prove-deps: ## Provision proof inputs (config + C sources), no cargo/Ada build
+	$(ALR) build --stop-after=generation
+	bash crates/sqlite_vec_spark/scripts/fetch-deps.sh
 
 prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 	ALR="$(ALR)" ./scripts/check-proof.sh

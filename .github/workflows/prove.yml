@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Cold refresh only: drop every existing gnatprove-* cache so this run
       # republishes a single fresh one. Bounds the file-cache growth AdaCore
@@ -69,11 +69,13 @@ jobs:
           alr -n install gnatprove^16
           echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
 
-      # Proof depends on compilation: make build runs the cargo staticlib
-      # pre-builds and vendors the pinned SQLite sources gnatprove needs on disk.
-      # It does NOT depend on make test.
-      - name: Build
-        run: make build
+      # Provision only what gnatprove reads — the Alire-generated *_config.gpr
+      # files and the vendored C sources — via `alr build --stop-after=generation`
+      # + fetch-deps. This deliberately skips the candle + tiny_http cargo
+      # staticlib pre-builds (and the Ada compile): gnatprove never links, so the
+      # whole Rust toolchain is dead weight in this job. See the Makefile.
+      - name: Provision proof inputs
+        run: make prove-deps
 
       # Warm start only. The key fingerprints the exact prover toolchain
       # (gnatprove 16.1.0 / why3 1.8.2): a bump changes every VC key, so a cache
@@ -82,7 +84,7 @@ jobs:
       # warm-starts from whatever main last published.
       - name: Restore proof cache
         if: inputs.restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .gnatprove-cache
           key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}
@@ -110,7 +112,7 @@ jobs:
       # trusts.
       - name: Save proof cache
         if: inputs.save
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .gnatprove-cache
           key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}
