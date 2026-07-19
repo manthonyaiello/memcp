@@ -38,18 +38,24 @@ test: build ## Build + run the unit drivers and the self-contained smoke tests
 prove: ## Prove memcp to SPARK Silver — AoRTE (--level=2)
 	$(ALR) gnatprove -P memcp.gpr -j0 --level=2
 
-# Everything gnatprove needs on disk WITHOUT compiling anything. `alr gnatprove`
-# is just `alr exec -- gnatprove`, which never runs build actions, so the proof
-# job must provision inputs itself. `--stop-after=generation` runs only the
-# sync + generation stages: it resolves/fetches the crate dependencies and
-# writes the Alire *_config.gpr files (memcp.gpr withs config/memcp_config.gpr),
-# then STOPS before the pre-build stage — so the candle and tiny_http cargo
-# staticlibs, which gnatprove never links, are not built. fetch-deps vendors the
-# C amalgamations, keeping sqlite_vec_spark's project model identical to a real
-# build. This is what lets the CI proof job skip the entire Rust toolchain.
-prove-deps: ## Provision proof inputs (config + C sources), no cargo/Ada build
+# Provision what gnatprove needs WITHOUT building the Rust staticlibs. gnatprove
+# processes memcp.gpr's whole closure via gprbuild, which requires every withed
+# *library* project (SPARKlib, json, and our crate libs) to be built — its
+# Library_Dir must exist — so we can't skip the Ada library build. What we CAN
+# skip is the Rust: the candle / tiny_http cargo staticlibs are pure
+# Linker_Options, needed only to link the memcp *executable*, which the proof
+# never does. So:
+#   1. `alr build --stop-after=generation` — write the Alire *_config.gpr files
+#      (memcp.gpr withs config/memcp_config.gpr) and sync dep sources, stopping
+#      before the pre-build stage, so cargo never runs.
+#   2. fetch-deps — vendor the C amalgamations sqlite_vec_spark compiles.
+#   3. `gprbuild -c` — compile the closure and build the library dirs
+#      (incl. SPARKlib) WITHOUT linking any executable, so no Rust staticlib is
+#      needed. This is the whole point: the proof job skips the Rust toolchain.
+prove-deps: ## Provision proof inputs (Ada libs + C sources), no cargo, no exe link
 	$(ALR) build --stop-after=generation
 	bash crates/sqlite_vec_spark/scripts/fetch-deps.sh
+	$(ALR) exec -- gprbuild -p -c -P memcp.gpr
 
 prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 	ALR="$(ALR)" ./scripts/check-proof.sh

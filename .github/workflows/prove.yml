@@ -69,11 +69,12 @@ jobs:
           alr -n install gnatprove^16
           echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
 
-      # Provision only what gnatprove reads — the Alire-generated *_config.gpr
-      # files and the vendored C sources — via `alr build --stop-after=generation`
-      # + fetch-deps. This deliberately skips the candle + tiny_http cargo
-      # staticlib pre-builds (and the Ada compile): gnatprove never links, so the
-      # whole Rust toolchain is dead weight in this job. See the Makefile.
+      # Build the Ada library closure gnatprove needs (config GPRs, synced deps,
+      # SPARKlib + our crate libs), but skip the Rust: the candle + tiny_http
+      # cargo staticlibs are only needed to link the memcp *executable*, which the
+      # proof never does. prove-deps does generation + fetch-deps + a compile-only
+      # `gprbuild -c` (no exe link), so the whole Rust toolchain is skipped. See
+      # the Makefile for the details.
       - name: Provision proof inputs
         run: make prove-deps
 
