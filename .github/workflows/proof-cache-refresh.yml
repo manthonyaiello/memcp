@@ -32,7 +32,7 @@ jobs:
       run: ${{ steps.check.outputs.run }}
     steps:
       - name: Checkout main (full history for the time window)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

@@ -49,7 +49,7 @@ jobs:
       # fetches it automatically — no sibling checkout needed. Checkout must run
       # before the local composite action can be resolved.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Alire toolchain
         uses: ./.github/actions/setup-alire
