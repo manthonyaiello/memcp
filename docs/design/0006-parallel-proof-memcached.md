@@ -15,13 +15,10 @@ published and only *changed* VCs re-prove. Cold ~23 min collapses to the cost of
 a warm confirming run (measured ~20x faster than cold) plus the handful of VCs a
 PR actually touches.
 
-**We do not shard.** Proof work is overwhelmingly in one project, so
-`--no-subprojects` (which shards by subproject) only trims cold time from ~130s
-to ~101s locally — a few minutes off 23 on the runner, not worth the machinery.
-And naming units (`-u`/`--limit-*`) would transfer GNATprove's whole-project
-completeness guarantee onto us: a silently-omitted unit becomes a false green
-with no signal. For a proof-first project that trade is unacceptable. So we run
-the single whole-closure command and let `-j0` use every core.
+**We do not shard.** Splitting proof by subproject or unit is not worth the
+complexity, or the risk that we leave a unit out and get a false green (an
+unsoundness). We run the single whole-closure command and let `-j0` use every
+core.
 
 **We reprove cold on `main` daily.** A scheduled job re-proves `main` from an
 *empty* cache to refresh it and to act as a poison guard — a cold run re-runs
@@ -29,33 +26,15 @@ every prover from scratch, so no corrupt cached verdict can survive it. It skips
 itself when `main` has not moved in 24h: unchanged source means identical VC
 keys, so the existing cache is already valid and re-proving would be wasted CI.
 
-## Why trusting a cache hit is sound
-
-The cache is **content-addressed**: each entry is keyed by the verification
-condition (the Why3 goal formula) together with the prover identity and version.
-
-- Any change to the code changes the VC, changes the key, and *misses* the cache
-  — a stale verdict can never be silently reused, because "unchanged" is defined
-  by the key.
-- Flow analysis and VC generation are **never cached**; they re-run on every
-  invocation. So data-dependency, initialization, and aliasing checks, and the
-  set of VCs that must exist, are re-established every run. Only the SMT verdict
-  for an unchanged VC is taken from the cache.
-- The cache key includes the exact toolchain fingerprint (gnatprove 16.1.0 /
-  why3 1.8.2), so a toolchain or prover bump misses every entry and forces a
-  full cold re-prove.
-
-That leaves exactly one thing to protect: the integrity of the cached verdicts
-themselves. Two controls do it — PRs may **restore but never write** the cache
-(a branch or fork PR cannot poison what `main` trusts), and the daily **cold**
-reprove is the periodic ground truth that flushes everything.
-
 ## Where it lives
 
-- `.github/workflows/ci.yml`, `prove` job — restores the cache, proves, and
-  saves only on pushes to `main`.
-- `.github/workflows/proof-cache-refresh.yml` — the daily cold reprove + cache
-  purge, guarded on `main` having moved.
+- `.github/workflows/prove.yml` — reusable workflow with the install / build /
+  prove / cache logic; the cold-vs-warm difference is three inputs
+  (`restore`, `purge`, `save`).
+- `.github/workflows/ci.yml`, `prove` job — calls it warm: restore, and save
+  only on pushes to `main`.
+- `.github/workflows/proof-cache-refresh.yml` — calls it cold (purge + save)
+  daily, guarded on `main` having moved.
 
 ## Reproduce
 
