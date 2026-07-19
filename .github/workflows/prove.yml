@@ -1,0 +1,111 @@
+name: Prove (SPARK Silver)
+
+# Reusable proof workflow: proves the whole memcp closure to SPARK Silver on
+# Linux, backed by the shared file-based GNATprove cache. GNATprove reasons about
+# source semantics, not the target, so a single Linux run is authoritative. The
+# gate (make prove-check) fails on any unproved check in our code; the allowlist
+# scripts/proof-xfail.txt is currently empty.
+#
+# The install/build/prove/cache-key logic lives here once; the two callers differ
+# only in three booleans (cold vs. warm):
+#   * ci.yml                  restore: true,  save on main   (warm PR/main run)
+#   * proof-cache-refresh.yml purge: true, save: true         (daily cold refresh)
+on:
+  workflow_call:
+    inputs:
+      restore:
+        description: Restore the shared cache before proving (warm start).
+        type: boolean
+        default: false
+      purge:
+        description: Delete all gnatprove-* caches first (cold refresh).
+        type: boolean
+        default: false
+      save:
+        description: Publish the populated cache under this commit's key.
+        type: boolean
+        default: false
+
+# actions:write is used only by the purge step (gh cache delete). A caller that
+# does not purge need not grant it; the requested scope is capped by the caller.
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  prove:
+    name: Prove (SPARK Silver, Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Cold refresh only: drop every existing gnatprove-* cache so this run
+      # republishes a single fresh one. Bounds the file-cache growth AdaCore
+      # warns about, frees the 10 GB Actions cache budget, and clears any
+      # same-SHA key so the save step below cannot collide.
+      - name: Purge old gnatprove caches
+        if: inputs.purge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --limit 100 --json id,key \
+            --jq '.[] | select(.key | startswith("gnatprove-")) | .id' \
+          | while read -r id; do
+              [ -n "$id" ] && gh cache delete "$id" || true
+            done
+
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
+
+      # sparklib 16.1.0 forbids gnatprove < 16; install 16.x and put it on PATH.
+      - name: Install GNATprove
+        run: |
+          alr -n install gnatprove^16
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      # Proof depends on compilation: make build runs the cargo staticlib
+      # pre-builds and vendors the pinned SQLite sources gnatprove needs on disk.
+      # It does NOT depend on make test.
+      - name: Build
+        run: make build
+
+      # Warm start only. The key fingerprints the exact prover toolchain
+      # (gnatprove 16.1.0 / why3 1.8.2): a bump changes every VC key, so a cache
+      # can never carry stale verdicts across a toolchain change. restore-keys
+      # falls back to the newest cache under the fingerprint prefix, so a PR
+      # warm-starts from whatever main last published.
+      - name: Restore proof cache
+        if: inputs.restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .gnatprove-cache
+          key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}
+          restore-keys: |
+            gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-
+
+      # --timeout=10: --level timeouts are wall-clock, so a check can need more
+      # time on the slower runner than on a dev machine. --memcached-server=file:
+      # points gnatprove at the cache dir; check-proof.sh appends GNATPROVE_EXTRA
+      # verbatim, so this stays a workflow-only change. mkdir -p because gnatprove
+      # wants the dir to exist; on a cold run (no restore) a clean checkout leaves
+      # it empty, which is what makes the refresh a genuine poison guard.
+      - name: Prove
+        env:
+          GNATPROVE_EXTRA: >-
+            --timeout=10
+            --memcached-server=file:${{ github.workspace }}/.gnatprove-cache
+        run: |
+          mkdir -p .gnatprove-cache
+          make prove-check
+
+      # Publish the populated cache under this commit's key. Callers set
+      # save: true only where writing is safe — main pushes and the cold refresh
+      # — so a branch or fork PR can restore but never poison the cache main
+      # trusts.
+      - name: Save proof cache
+        if: inputs.save
+        uses: actions/cache/save@v4
+        with:
+          path: .gnatprove-cache
+          key: gnatprove-${{ runner.os }}-gp16.1.0-why3-1.8.2-${{ github.sha }}

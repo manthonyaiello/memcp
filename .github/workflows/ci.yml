@@ -55,37 +55,14 @@ jobs:
       - name: Test
         run: make test
 
-  # Prove to Silver on Linux only: GNATprove reasons about source semantics, not
-  # the target, so the verification result is platform-independent — one run
-  # suffices. Runs in parallel with build-test (no `needs:`): proof depends on
-  # compilation, not on a passing test run (issue #3). The gate fails on any
-  # unproved check in our code; GNATprove 16 discharges the SPARKlib float
-  # lemmas, so the allowlist (scripts/proof-xfail.txt) is currently empty.
+  # Prove to Silver on Linux, warm-started from the shared cache. The install /
+  # build / prove / cache logic lives in the reusable prove workflow; this call
+  # is the warm variant (restore the cache; save only on main, so PRs can read
+  # it but never write it). Still a sibling of build-test with no `needs:` edge,
+  # so the two run concurrently — proof depends on compilation, not on a passing
+  # test run (issue #3).
   prove:
-    name: Prove (SPARK Silver, Linux)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Alire toolchain
-        uses: ./.github/actions/setup-alire
-
-      # sparklib 16.1.0 forbids gnatprove < 16; install 16.x and put it on PATH.
-      - name: Install GNATprove
-        run: |
-          alr -n install gnatprove^16
-          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
-
-      # Proof depends on compilation: `make build` runs the cargo staticlib
-      # pre-builds and vendors the pinned SQLite sources that gnatprove needs on
-      # disk. It does NOT depend on `make test`.
-      - name: Build
-        run: make build
-
-      # --timeout=10 via GNATPROVE_EXTRA: --level timeouts are wall-clock, so a
-      # check can need more time on the slower runner than on a dev machine.
-      - name: Prove
-        env:
-          GNATPROVE_EXTRA: --timeout=10
-        run: make prove-check
+    uses: ./.github/workflows/prove.yml
+    with:
+      restore: true
+      save: ${{ github.ref == 'refs/heads/main' }}
