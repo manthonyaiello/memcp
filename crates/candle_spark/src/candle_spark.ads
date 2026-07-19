@@ -60,21 +60,44 @@ is
    --  @enum Load_Failed The weights were missing or malformed; the returned
    --    Embedder is not loaded.
 
-   type Embedder is private;
-   --  Opaque model handle. Wraps the foreign engine allocation; copyable value
-   --  carrying a raw pointer plus the loaded flag consumers query.
+   --  Opaque model handle over the foreign engine allocation. Limited: it owns
+   --  a C resource (the candle EmbedModel that candle_embed_free reclaims), so
+   --  it must not be copied -- a copy would alias one native model behind two
+   --  Ada values, the double-free / use-after-free hazard that ownership
+   --  tracking rules out. This mirrors Sqlite_Vec_Spark.Database/Statement.
+   --
+   --  Needs_Reclamation: a loaded model owns a C allocation that Unload must
+   --  release. The full view anchors that ownership on a small Ada access
+   --  "token" (allocated when the C load succeeds, freed by Unload), because
+   --  the raw engine pointer -- a bare System.Address -- is not subject to
+   --  SPARK ownership on its own. GNATprove then proves, at every call site,
+   --  that a loaded Embedder is Unloaded before it is dropped.
+   type Embedder is limited private
+     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+          Default_Initial_Condition =>
+            not Is_Loaded (Embedder) and then Is_Reclaimed (Embedder);
 
    function Is_Loaded (E : Embedder) return Boolean;
    --  Whether E holds a successfully loaded model and may be passed to Embed.
    --  @param E The embedder handle to query.
    --  @return True if E is loaded, False otherwise.
 
+   function Is_Reclaimed (E : Embedder) return Boolean
+     with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
+   --  Reclamation predicate for the Needs_Reclamation annotation above. An
+   --  unloaded embedder holds no C allocation and no token, so that is the
+   --  reclaimed state GNATprove requires before the object is dropped. Ghost:
+   --  it exists only for proof, never at run time.
+   --  @param E The embedder handle to test.
+   --  @return True iff E owns no model (equivalently, not Is_Loaded (E)).
+
    procedure Load
      (E          : out Embedder;
       Model_Path : String;
       Result     : out Status)
      with Pre  => Model_Path'Length > 0,
-          Post => (Is_Loaded (E) = (Result = Ok));
+          Post => (Is_Loaded (E) = (Result = Ok))
+                  and then (Is_Reclaimed (E) = (Result /= Ok));
    --  Load all-MiniLM-L6-v2 from a pre-provisioned model directory (weights +
    --  tokenizer + config; see scripts/install-model.sh). This is the one
    --  fallible step -- weights may be missing or malformed. On Ok the returned
@@ -97,7 +120,7 @@ is
    --  @return The embedding vector for Text.
 
    procedure Unload (E : in out Embedder)
-     with Post => not Is_Loaded (E);
+     with Post => not Is_Loaded (E) and then Is_Reclaimed (E);
    --  Release the foreign allocation. Idempotent; leaves E not-loaded.
    --  @param E The embedder handle to release.
 
@@ -109,17 +132,46 @@ is
 
 private
 
-   type Embedder is record
-      Handle : System.Address := System.Null_Address;
-      --  Raw pointer to the foreign engine allocation; Null_Address when unloaded.
-      Loaded : Boolean        := False;
-      --  Whether Handle refers to a live, loaded model.
-   end record;
-   --  Concrete representation of the opaque Embedder handle.
+   --  Hide the representation from clients' proof context: an Ownership type
+   --  requires its private part to be either SPARK_Mode (Off) or hidden, and
+   --  hiding keeps the wrapper body IN SPARK (unlike SPARK_Mode (Off), which
+   --  would eject it). Clients reason about Embedder abstractly -- through
+   --  Is_Loaded, the Needs_Reclamation obligation, and the operation contracts
+   --  -- exactly as for Sqlite_Vec_Spark.Database and Memcp_Json.Doc.
+   pragma Annotate (GNATprove, Hide_Info, "Private_Part");
 
-   function Is_Loaded (E : Embedder) return Boolean is (E.Loaded);
-   --  Whether E holds a successfully loaded model and may be passed to Embed.
+   type Ownership_Token is access Boolean;
+   --  The SPARK ownership anchor. The raw engine pointer is a bare
+   --  System.Address, which SPARK does not track as an owned resource; so the
+   --  full view carries, alongside the address, a one-Boolean heap allocation
+   --  whose lifetime shadows the C handle's: allocated the instant the C load
+   --  succeeds, freed the instant Unload releases the C handle. Because this
+   --  component is a genuine Ada access, the enclosing record is "subject to
+   --  ownership", which is what lets Needs_Reclamation apply. The Boolean
+   --  payload is irrelevant -- only null vs non-null (reclaimed vs owned)
+   --  matters. Same device as Sqlite_Vec_Spark's Ownership_Token.
+
+   type Embedder is limited record
+      Handle : System.Address  := System.Null_Address;
+      --  Raw pointer to the foreign engine allocation; Null_Address when unloaded.
+      Token  : Ownership_Token := null;
+      --  Ownership anchor; non-null exactly while Handle names a loaded model
+      --  (maintained in lockstep by Load/Unload).
+   end record;
+   --  Full view of the opaque Embedder handle. The raw C pointer (only
+   --  null-comparison is ever used) plus the ownership token, default-
+   --  initialized to (null, null) so a fresh handle is not-loaded, reclaimed,
+   --  and an unloaded one stays that way.
+
+   function Is_Loaded (E : Embedder) return Boolean is (E.Token /= null);
+   --  A model is loaded iff it holds an ownership token. Token tracks the C
+   --  handle's liveness (see Load/Unload), so this is equivalent to a non-null
+   --  Handle while keeping the liveness and reclamation predicates on one field.
    --  @param E The embedder handle to query.
-   --  @return True if E is loaded, False otherwise.
+   --  @return True iff E holds an ownership token.
+
+   function Is_Reclaimed (E : Embedder) return Boolean is (E.Token = null);
+   --  Completion of the reclamation predicate: reclaimed exactly when the
+   --  ownership token has been freed (equivalently, not Is_Loaded (E)).
 
 end Candle_Spark;
