@@ -100,13 +100,27 @@ is
 
    --  Opaque connection handle over the C `sqlite3*`. Limited: owns the
    --  connection, must not be copied (see the design note above).
+   --
+   --  Needs_Reclamation: an open connection owns a C resource that Close must
+   --  release. The full view anchors that ownership on a small Ada access
+   --  "token" (allocated when the C handle is opened, freed by Close), because
+   --  the raw sqlite3* -- a bare System.Address -- is not subject to SPARK
+   --  ownership on its own. GNATprove then proves, at every call site, that a
+   --  Database is Closed before it is dropped (see the private part note).
    type Database is limited private
-     with Default_Initial_Condition => not Is_Open (Database);
+     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+          Default_Initial_Condition =>
+            not Is_Open (Database) and then Is_Reclaimed (Database);
 
    --  Opaque prepared-statement handle over the C `sqlite3_stmt*`. Limited for
    --  the same reason, and more sharply -- statements are short-lived cursors
-   --  created and finalized many times.
-   type Statement is limited private;
+   --  created and finalized many times. Needs_Reclamation for the same reason
+   --  as Database, anchored on the same access-token device: a valid Statement
+   --  must be Finalize'd before it goes out of scope, and GNATprove checks it.
+   type Statement is limited private
+     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+          Default_Initial_Condition =>
+            not Is_Valid (Statement) and then Is_Reclaimed (Statement);
 
    type Status is (Ok, Error, Row, Done, Busy, Constraint, Misuse);
    --  The subset of SQLite result codes this layer distinguishes. Any other
@@ -137,6 +151,19 @@ is
    --  @param S The statement handle to test.
    --  @return True iff S is valid.
 
+   --  Reclamation predicates for the Needs_Reclamation annotations above. A
+   --  closed connection / finalized statement holds no C resource and no token,
+   --  so that is the reclaimed state GNATprove requires before the object is
+   --  dropped. Ghost: they exist only for proof, never at run time.
+   function Is_Reclaimed (DB : Database) return Boolean
+     with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
+   --  @param DB The connection handle to test.
+   --  @return True iff DB owns no connection (equivalently, not Is_Open (DB)).
+   function Is_Reclaimed (S : Statement) return Boolean
+     with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
+   --  @param S The statement handle to test.
+   --  @return True iff S owns no statement (equivalently, not Is_Valid (S)).
+
    Max_Blob_Bytes : constant := 2 ** 31 - 1;
    --  SQLite's bind-length ABI is a C int, so a single bound value cannot
    --  exceed this (SQLite's own SQLITE_MAX_LENGTH default is smaller still).
@@ -152,7 +179,8 @@ is
       Path   : String;
       Result : out Status)
      with Pre    => Path'Length > 0 and then Path'Last < Natural'Last,
-          Post   => Is_Open (DB) = (Result = Ok),
+          Post   => (Is_Open (DB) = (Result = Ok))
+                    and then (Is_Reclaimed (DB) = (Result /= Ok)),
           Global => (In_Out => DBMS);
    --  Open (or create) the database at Path, registering sqlite-vec first so
    --  the connection has vec0, then setting foreign_keys ON and WAL journalling
@@ -163,7 +191,7 @@ is
    --  @param Result Ok on success, or an error code.
 
    procedure Close (DB : in out Database)
-     with Post   => not Is_Open (DB),
+     with Post   => not Is_Open (DB) and then Is_Reclaimed (DB),
           Global => (In_Out => DBMS);
    --  Close the connection (sqlite3_close_v2, which tolerates unfinalized
    --  statements). Idempotent; leaves DB not-open.
@@ -208,7 +236,8 @@ is
       Stmt   : out Statement;
       Result : out Status)
      with Pre    => Is_Open (DB) and then SQL'Length > 0,
-          Post   => Is_Valid (Stmt) = (Result = Ok),
+          Post   => (Is_Valid (Stmt) = (Result = Ok))
+                    and then (Is_Reclaimed (Stmt) = (Result /= Ok)),
           Global => (In_Out => DBMS);
    --  Compile one SQL statement (sqlite3_prepare_v2). Is_Valid (Stmt) iff
    --  Result = Ok. A valid Stmt must eventually be Finalize'd. Stmt holds a
@@ -282,7 +311,8 @@ is
    --  @param Result Ok, or an error deferred from the previous run.
 
    procedure Finalize (S : in out Statement)
-     with Post => not Is_Valid (S), Global => (In_Out => DBMS);
+     with Post   => not Is_Valid (S) and then Is_Reclaimed (S),
+          Global => (In_Out => DBMS);
    --  Destroy the statement (sqlite3_finalize). Idempotent; leaves S not-valid.
    --  @param S The statement to finalize; left not-valid.
 
@@ -331,33 +361,67 @@ is
 
 private
 
+   --  Hide the representation from clients' proof context: an Ownership type
+   --  requires its private part to be either SPARK_Mode (Off) or hidden, and
+   --  hiding keeps the wrapper bodies in SPARK (unlike SPARK_Mode (Off), which
+   --  would eject them). Clients reason about Database/Statement abstractly --
+   --  through Is_Open/Is_Valid, the Needs_Reclamation obligation, and the
+   --  operation contracts -- exactly as they do for Memcp_Json.Doc.
+   pragma Annotate (GNATprove, Hide_Info, "Private_Part");
+
+   type Ownership_Token is access Boolean;
+   --  The SPARK ownership anchor. A raw sqlite3*/sqlite3_stmt* is a bare
+   --  System.Address, which SPARK does not track as an owned resource; so the
+   --  full view carries, alongside the address, a one-Boolean heap allocation
+   --  whose lifetime shadows the C handle's: allocated the instant the C
+   --  open/prepare succeeds, freed the instant Close/Finalize releases the C
+   --  handle. Because this component is a genuine Ada access, the enclosing
+   --  record is "subject to ownership", which is what lets Needs_Reclamation
+   --  apply. The Boolean payload is irrelevant -- only null vs non-null (i.e.
+   --  owned vs reclaimed) matters.
+
    type Database is limited record
-      Handle : System.Address := System.Null_Address;
+      Handle : System.Address   := System.Null_Address;
       --  Raw C sqlite3* modelled as an opaque address; null when not open.
+      Token  : Ownership_Token  := null;
+      --  Ownership anchor; non-null exactly while Handle names an open
+      --  connection (maintained in lockstep by Open/Close).
    end record;
-   --  Full view of Database. A raw C pointer modelled in SPARK as an opaque
-   --  address (only null-comparison is ever used, as in Candle_Spark /
-   --  the http Bridge). Default-initialized to null so a fresh handle is
-   --  not-open and a closed one stays that way.
+   --  Full view of Database. The raw C pointer (only null-comparison is ever
+   --  used, as in Candle_Spark / the http Bridge) plus the ownership token.
+   --  Default-initialized to (null, null) so a fresh handle is not-open,
+   --  reclaimed, and a closed one stays that way.
 
    type Statement is limited record
-      Handle : System.Address := System.Null_Address;
+      Handle : System.Address   := System.Null_Address;
       --  Raw C sqlite3_stmt* modelled as an opaque address; null when invalid.
+      Token  : Ownership_Token  := null;
+      --  Ownership anchor; non-null exactly while Handle names a live
+      --  statement (maintained in lockstep by Prepare/Finalize).
    end record;
-   --  Full view of Statement. A raw C pointer modelled as an opaque address,
-   --  default-initialized to null so a fresh handle is not-valid and a
-   --  finalized one stays that way.
+   --  Full view of Statement. The raw C pointer plus the ownership token,
+   --  default-initialized to (null, null) so a fresh handle is not-valid,
+   --  reclaimed, and a finalized one stays that way.
 
-   function Is_Open (DB : Database) return Boolean is
-     (System."/=" (DB.Handle, System.Null_Address));
-   --  A connection is open iff its handle is non-null.
+   function Is_Open (DB : Database) return Boolean is (DB.Token /= null);
+   --  A connection is open iff it holds an ownership token. Token tracks the C
+   --  handle's liveness (see Open/Close), so this is equivalent to a non-null
+   --  Handle while keeping the liveness and reclamation predicates on one
+   --  field.
    --  @param DB The connection handle to test.
-   --  @return True iff DB.Handle is not null.
+   --  @return True iff DB holds an ownership token.
 
-   function Is_Valid (S : Statement) return Boolean is
-     (System."/=" (S.Handle, System.Null_Address));
-   --  A statement is valid iff its handle is non-null.
+   function Is_Valid (S : Statement) return Boolean is (S.Token /= null);
+   --  A statement is valid iff it holds an ownership token.
    --  @param S The statement handle to test.
-   --  @return True iff S.Handle is not null.
+   --  @return True iff S holds an ownership token.
+
+   function Is_Reclaimed (DB : Database) return Boolean is (DB.Token = null);
+   --  Completion of the Database reclamation predicate: reclaimed exactly when
+   --  the ownership token has been freed (equivalently, not Is_Open (DB)).
+
+   function Is_Reclaimed (S : Statement) return Boolean is (S.Token = null);
+   --  Completion of the Statement reclamation predicate: reclaimed exactly when
+   --  the ownership token has been freed (equivalently, not Is_Valid (S)).
 
 end Sqlite_Vec_Spark;
