@@ -19,6 +19,9 @@ package body Memcp_Store with SPARK_Mode => On is
    --  that any use-after-finalize is caught as a precondition failure. The
    --  resulting "set but not used" is the price of that protection, so we
    --  silence exactly that message (the nulled handle is genuinely never read).
+   --  This is a flow observation about the ineffective final write, orthogonal
+   --  to the Needs_Reclamation ownership proof (which shows the resource IS
+   --  released); the ownership work does not make this message go away.
    pragma Warnings
      (GNATprove, Off, "*is set by ""Finalize"" but not used after the call",
       Reason => "the statement handle is nulled by Finalize by design and is "

@@ -33,6 +33,12 @@ is
    SQLITE_DONE       : constant := 101;
    SQLITE_NULL_TYPE  : constant := 5;   --  sqlite3_column_type value for NULL
 
+   --  Reclaim the ownership token (see the private part note). Freeing it is
+   --  what discharges the Needs_Reclamation obligation; it nulls its argument,
+   --  so a closed/finalized handle is left in the reclaimed state.
+   procedure Free_Token is
+     new Ada.Unchecked_Deallocation (Boolean, Ownership_Token);
+
    ----------------------
    -- Local helpers --
    ----------------------
@@ -81,6 +87,7 @@ is
       Rc     : Interfaces.C.int;
    begin
       DB.Handle := System.Null_Address;
+      DB.Token  := null;
 
       --  vec0 must be registered before the connection is opened.
       declare
@@ -135,6 +142,8 @@ is
             Result := Error;
             return;
          end if;
+         --  Fully open: take ownership. The token now shadows Handle's life.
+         DB.Token := new Boolean'(True);
          Result := Ok;
       end;
    end Open;
@@ -149,6 +158,9 @@ is
          Bridge.Close_V2 (DB.Handle);
       end if;
       DB.Handle := System.Null_Address;
+      --  Release the ownership token: this is the reclamation step. Idempotent
+      --  -- Free_Token on a null token is a no-op -- so Close stays idempotent.
+      Free_Token (DB.Token);
    end Close;
 
    -------------
@@ -198,6 +210,7 @@ is
       Rc     : Interfaces.C.int;
    begin
       Stmt.Handle := System.Null_Address;
+      Stmt.Token  := null;
       Bridge.Prepare
         (Db    => DB.Handle,
          SQL   => SQL,
@@ -207,6 +220,8 @@ is
 
       if Rc = SQLITE_OK and then Handle /= System.Null_Address then
          Stmt.Handle := Handle;
+         --  Compiled: take ownership. The token now shadows Handle's life.
+         Stmt.Token  := new Boolean'(True);
          Result      := Ok;
       else
          --  A non-error code with a null handle (e.g. whitespace-only SQL)
@@ -318,6 +333,8 @@ is
          Bridge.Finalize (S.Handle);
       end if;
       S.Handle := System.Null_Address;
+      --  Release the ownership token: the reclamation step. Idempotent.
+      Free_Token (S.Token);
    end Finalize;
 
    ------------------
