@@ -40,6 +40,30 @@ is
          declare
             Load_St : Candle_Spark.Status;
          begin
+            --  Load takes The_Embedder as an out parameter, overwriting it. As
+            --  an owning (Needs_Reclamation) handle it must be reclaimed first,
+            --  or a prior model would leak on a re-Open. Unload is idempotent
+            --  and posts Is_Reclaimed, so this both discharges that obligation
+            --  and rules out the double-ownership hazard the annotation exists
+            --  to catch.
+            --
+            --  Unload's reclaiming write to The_Embedder is then immediately
+            --  overwritten by the out-mode Load, so flow analysis reports that
+            --  write as dead ("no effect" / "set but not used after the call").
+            --  That is orthogonal to what Unload is for -- releasing the prior
+            --  C model -- exactly the flow-vs-ownership gap the Memcp_Store
+            --  Finalize suppression documents; silence just those two messages.
+            pragma Warnings (GNATprove, Off, "statement has no effect",
+              Reason => "Unload's reclaiming write is overwritten by Load");
+            pragma Warnings
+              (GNATprove, Off,
+               "*is set by ""Unload"" but not used after the call",
+               Reason => "Unload reclaims the prior model; the nulled handle "
+                         & "is rebound by Load and never read in between");
+            Candle_Spark.Unload (The_Embedder);
+            pragma Warnings (GNATprove, On,
+              "*is set by ""Unload"" but not used after the call");
+            pragma Warnings (GNATprove, On, "statement has no effect");
             Candle_Spark.Load (The_Embedder, Model_Path, Load_St);
             Have_Model := (Load_St = Candle_Spark.Ok);
          end;

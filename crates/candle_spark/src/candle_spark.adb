@@ -9,6 +9,7 @@
 --  text crosses inward; the output is a caller-owned Embedding the engine fills,
 --  so no allocation crosses the boundary.
 
+with Ada.Unchecked_Deallocation;
 with Interfaces.C;
 
 package body Candle_Spark
@@ -16,6 +17,14 @@ package body Candle_Spark
 is
 
    use type Interfaces.C.int;
+   use type System.Address;
+
+   --  Reclaim the ownership token (see the private part note). Freeing it is
+   --  what discharges the Needs_Reclamation obligation; it nulls its argument,
+   --  so an unloaded handle is left in the reclaimed state. Same device as
+   --  Sqlite_Vec_Spark's Free_Token.
+   procedure Free_Token is
+     new Ada.Unchecked_Deallocation (Boolean, Ownership_Token);
 
    --  int32_t candle_embed_load(const char *path, uintptr_t len,
    --                            void **out_handle, int32_t *status);
@@ -69,6 +78,11 @@ is
       Handle : System.Address;
       St     : Interfaces.C.int;
    begin
+      --  Start reclaimed (null, null); Embedder is limited, so the handle
+      --  fields are set component-wise, never by a whole-record aggregate.
+      E.Handle := System.Null_Address;
+      E.Token  := null;
+
       C_Load
         (Path   => Model_Path,
          Len    => Interfaces.C.size_t (Model_Path'Length),
@@ -76,10 +90,12 @@ is
          St     => St);
 
       if St = 0 then
-         E      := (Handle => Handle, Loaded => True);
-         Result := Ok;
+         E.Handle := Handle;
+         --  Loaded: take ownership. The token now shadows Handle's life.
+         E.Token  := new Boolean'(True);
+         Result   := Ok;
       else
-         E      := (Handle => System.Null_Address, Loaded => False);
+         --  E stays (null, null) -- not loaded, reclaimed.
          Result := Load_Failed;
       end if;
    end Load;
@@ -126,10 +142,13 @@ is
 
    procedure Unload (E : in out Embedder) is
    begin
-      if E.Loaded then
+      if E.Handle /= System.Null_Address then
          C_Free (E.Handle);
       end if;
-      E := (Handle => System.Null_Address, Loaded => False);
+      E.Handle := System.Null_Address;
+      --  Release the ownership token: this is the reclamation step. Idempotent
+      --  -- Free_Token on a null token is a no-op -- so Unload stays idempotent.
+      Free_Token (E.Token);
    end Unload;
 
 end Candle_Spark;
