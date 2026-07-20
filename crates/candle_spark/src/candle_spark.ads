@@ -92,7 +92,7 @@ is
    --  @return True iff E owns no model (equivalently, not Is_Loaded (E)).
 
    procedure Load
-     (E          : in out Embedder;
+     (E          : out Embedder;
       Model_Path : String;
       Result     : out Status)
      with Pre  => Model_Path'Length > 0,
@@ -102,9 +102,6 @@ is
    --  tokenizer + config; see scripts/install-model.sh). This is the one
    --  fallible step -- weights may be missing or malformed. On Ok the returned
    --  Embedder Is_Loaded; otherwise it is not and must not be passed to Embed.
-   --  E is `in out`: Load reclaims any model E already holds before loading, so
-   --  callers may re-load into the same handle without a manual Unload and
-   --  without leaking the prior C allocation (a never-loaded E is left as is).
    --  @param E The embedder handle set by the load attempt.
    --  @param Model_Path Directory holding the model weights, tokenizer, config.
    --  @param Result Ok if the model loaded; Load_Failed otherwise.
