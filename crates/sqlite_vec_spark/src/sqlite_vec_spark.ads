@@ -191,8 +191,13 @@ is
    --  @param Result Ok on success, or an error code.
 
    procedure Close (DB : in out Database)
-     with Post   => not Is_Open (DB) and then Is_Reclaimed (DB),
-          Global => (In_Out => DBMS);
+     with Post    => not Is_Open (DB) and then Is_Reclaimed (DB),
+          Global  => (In_Out => DBMS),
+          Depends => (DBMS =>+ null, DB => null, null => DB);
+   --  Depends spells out the finalizer data flow (see Finalize): DB's new value
+   --  is a constant, its old handle reaches C only as a System.Address (flowing
+   --  nowhere in SPARK), and DBMS is updated in place. This keeps callers that
+   --  finalize a local Database free of "set but not used" flow suppressions.
    --  Close the connection (sqlite3_close_v2, which tolerates unfinalized
    --  statements). Idempotent; leaves DB not-open.
    --  @param DB The connection to close; left not-open.
@@ -311,8 +316,18 @@ is
    --  @param Result Ok, or an error deferred from the previous run.
 
    procedure Finalize (S : in out Statement)
-     with Post   => not Is_Valid (S) and then Is_Reclaimed (S),
-          Global => (In_Out => DBMS);
+     with Post    => not Is_Valid (S) and then Is_Reclaimed (S),
+          Global  => (In_Out => DBMS),
+          Depends => (DBMS =>+ null, S => null, null => S);
+   --  Depends spells out the actual data flow so callers need no "set by
+   --  Finalize but not used" suppression:
+   --    * S => null   -- S's new value is a constant (null handle/token), so a
+   --                     caller that never reads S afterwards is expected, not a
+   --                     dead store.
+   --    * null => S   -- S's old value flows nowhere: the handle reaches the C
+   --                     side only as a System.Address, which flow analysis does
+   --                     not propagate into DBMS.
+   --    * DBMS =>+ null -- DBMS is updated in place (self-dependency only).
    --  Destroy the statement (sqlite3_finalize). Idempotent; leaves S not-valid.
    --  @param S The statement to finalize; left not-valid.
 

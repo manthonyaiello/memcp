@@ -49,20 +49,14 @@ is
             --
             --  Unload's reclaiming write to The_Embedder is then immediately
             --  overwritten by the out-mode Load, so flow analysis reports that
-            --  write as dead ("no effect" / "set but not used after the call").
-            --  That is orthogonal to what Unload is for -- releasing the prior
-            --  C model -- exactly the flow-vs-ownership gap the Memcp_Store
-            --  Finalize suppression documents; silence just those two messages.
+            --  whole call as dead ("statement has no effect"). That is a
+            --  property of *this* call site (the write is overwritten), not of
+            --  Unload itself, so it cannot be expressed in Unload's contract;
+            --  silence just that one message. The sibling "set by Unload but
+            --  not used" message is handled by Unload's Depends contract.
             pragma Warnings (GNATprove, Off, "statement has no effect",
               Reason => "Unload's reclaiming write is overwritten by Load");
-            pragma Warnings
-              (GNATprove, Off,
-               "*is set by ""Unload"" but not used after the call",
-               Reason => "Unload reclaims the prior model; the nulled handle "
-                         & "is rebound by Load and never read in between");
             Candle_Spark.Unload (The_Embedder);
-            pragma Warnings (GNATprove, On,
-              "*is set by ""Unload"" but not used after the call");
             pragma Warnings (GNATprove, On, "statement has no effect");
             Candle_Spark.Load (The_Embedder, Model_Path, Load_St);
             Have_Model := (Load_St = Candle_Spark.Ok);

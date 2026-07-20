@@ -120,8 +120,15 @@ is
    --  @return The embedding vector for Text.
 
    procedure Unload (E : in out Embedder)
-     with Post => not Is_Loaded (E) and then Is_Reclaimed (E);
+     with Post    => not Is_Loaded (E) and then Is_Reclaimed (E),
+          Depends => (E => null, null => E);
    --  Release the foreign allocation. Idempotent; leaves E not-loaded.
+   --  Depends: E's new value is a constant (null handle/token) and its old
+   --  handle reaches C only as a System.Address (flowing nowhere in SPARK), so
+   --  a caller that never reads E afterwards needs no "set but not used"
+   --  suppression. (Unload has no global effect SPARK can see, so a call whose
+   --  reclaiming write is then overwritten still reads as "no effect" -- that is
+   --  a separate flow fact this clause does not address.)
    --  @param E The embedder handle to release.
 
    --  TODO(embed): batch variant mirroring Embedder.embed_batch, used by
