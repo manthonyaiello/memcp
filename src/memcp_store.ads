@@ -51,6 +51,10 @@ package Memcp_Store with SPARK_Mode => On is
    subtype Row_Id is Interfaces.Integer_64;
    --  A SQLite rowid: signed 64-bit.
 
+   type Store is limited private
+     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+          Default_Initial_Condition =>
+            not Is_Open (Store) and then Is_Reclaimed (Store);
    --  The storage handle: owns one SQLite connection (with vec0 registered,
    --  foreign_keys ON, WAL). Limited because Sqlite_Vec_Spark.Database is
    --  (it owns a raw C pointer; a copy would double-close).
@@ -63,10 +67,6 @@ package Memcp_Store with SPARK_Mode => On is
    --  the partial view to an ownership type is what lets a holder of a Store
    --  (Memcp_Resources) see the reclamation obligation and have GNATprove check
    --  that a Store is Closed before it is dropped or re-Opened.
-   type Store is limited private
-     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
-          Default_Initial_Condition =>
-            not Is_Open (Store) and then Is_Reclaimed (Store);
 
    function Is_Open (S : Store) return Boolean;
    --  Whether the store's connection is currently open.

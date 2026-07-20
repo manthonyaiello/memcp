@@ -45,6 +45,10 @@ package Memcp_Resources with SPARK_Mode => On is
 
    package MS renames Memcp_Store;
 
+   type Resources is limited private
+     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+          Default_Initial_Condition =>
+            not Is_Open (Resources) and then Is_Reclaimed (Resources);
    --  The bundled composition-root resources: an owned Store and an owned
    --  Embedder. Limited because its components are (each owns a raw C handle;
    --  a copy would double-free).
@@ -54,10 +58,6 @@ package Memcp_Resources with SPARK_Mode => On is
    --  owning components (Store, Embedder) -- promoting the partial view to an
    --  ownership type is what lets its holders (memcp's main, the test drivers)
    --  see the obligation and have GNATprove check the lifecycle at every call.
-   type Resources is limited private
-     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
-          Default_Initial_Condition =>
-            not Is_Open (Resources) and then Is_Reclaimed (Resources);
 
    function Is_Open (R : Resources) return Boolean;
    --  Whether the bundled Store is currently open.
