@@ -1,9 +1,10 @@
 --  memcp's concrete tool set: each Invoke branch parses its arguments with
---  Memcp_Json, runs the request against the Memcp_Resources singletons, and
---  renders the reply as JSON text matching the matching @mcp.tool in server.py.
+--  Memcp_Json, runs the request against the Memcp_Resources object passed in,
+--  and renders the reply as JSON text matching the matching @mcp.tool in
+--  server.py.
 --
 --  SPARK_Mode On. It is pure marshalling: it holds no state (the Store/Embedder
---  live in Memcp_Resources, reached through that package's total operations),
+--  live in the Resources object, reached through its total operations),
 --  builds every result through the bounded Memcp_Text builder (so the response
 --  layer's Max_Field budget holds by construction), and provably never raises
 --  -- so no exception handler is needed and Dispatch's "never raises" contract
@@ -18,7 +19,6 @@ with Spark_Mcp;              use Spark_Mcp;
 
 with Candle_Spark;
 with Memcp_Store;
-with Memcp_Resources;
 with Memcp_Replay;
 with Memcp_Json;
 with Memcp_Log;
@@ -102,8 +102,8 @@ package body Memcp_Tools with SPARK_Mode => On is
       elsif V >= Interfaces.Integer_64 (Natural'Last) then Natural'Last
       else Natural (V));
 
-   --  True once the Store singleton is open; every tool needs it.
-   function Ready return Boolean is (MR.Is_Open);
+   --  True once the Resources' Store is open; every tool needs it.
+   function Ready (R : MR.Resources) return Boolean is (MR.Is_Open (R));
 
    --  A character Python's str.strip() treats as whitespace (ASCII subset:
    --  space plus HT/LF/VT/FF/CR).
@@ -848,15 +848,15 @@ package body Memcp_Tools with SPARK_Mode => On is
 
    --  An embedder is usable when a model is loaded OR we are replaying recorded
    --  vectors (conformance). Every embedding-gate consults this.
-   function Embedder_Available return Boolean is
-     (MR.Embedder_Loaded or else Memcp_Replay.Enabled);
+   function Embedder_Available (R : MR.Resources) return Boolean is
+     (MR.Embedder_Loaded (R) or else Memcp_Replay.Enabled);
 
    --  Embed one text. Under replay the recorded vector is injected by text
    --  lookup (a miss is counted and surfaced by the harness); otherwise the
-   --  singleton candle engine runs. A procedure -- a SPARK function may not have
+   --  candle engine runs. A procedure -- a SPARK function may not have
    --  the side effect of counting a replay miss.
    procedure Embed_One
-     (Text : String; Emb : out Candle_Spark.Embedding)
+     (R : MR.Resources; Text : String; Emb : out Candle_Spark.Embedding)
    is
       Found : Boolean;
    begin
@@ -873,23 +873,24 @@ package body Memcp_Tools with SPARK_Mode => On is
                & "using zero fallback vector");
          end if;
       else
-         Emb := MR.Embed (Text);
+         Emb := MR.Embed (R, Text);
       end if;
    end Embed_One;
 
    --  Embed Text, or Ok => False (zero vector) when no embedder is available or
    --  Text is empty. The tool then reports the appropriate error.
    procedure Embed_Query
-     (Text : String;
+     (R    : MR.Resources;
+      Text : String;
       Emb  : out Candle_Spark.Embedding;
       Ok   : out Boolean)
    is
    begin
-      if Text'Length = 0 or else not Embedder_Available then
+      if Text'Length = 0 or else not Embedder_Available (R) then
          Emb := [others => 0.0];
          Ok  := False;
       else
-         Embed_One (Text, Emb);
+         Embed_One (R, Text, Emb);
          Ok := True;
       end if;
    end Embed_Query;
@@ -898,7 +899,9 @@ package body Memcp_Tools with SPARK_Mode => On is
    -- Tools --
    -----------
 
-   procedure Do_Recent (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Recent
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D       : MJ.Doc;
       Entries : MS.Diary_Entry_List;
       St      : MS.Op_Status;
@@ -912,7 +915,7 @@ package body Memcp_Tools with SPARK_Mode => On is
          Result := Err (Invalid_Params, "recent: 'projects' is required");
       else
          MR.Recent_Diary
-           (MJ.Get_Names (D, "projects"), To_Nat (MJ.Get_Int (D, "n", 5)),
+           (R, MJ.Get_Names (D, "projects"), To_Nat (MJ.Get_Int (D, "n", 5)),
             Entries, St);
          if St = MS.Success then
             Ser_Diary (Entries, Buf);
@@ -924,12 +927,14 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Recent;
 
-   procedure Do_List_Projects (Result : out Result_Ptr) is
+   procedure Do_List_Projects
+     (R : MR.Resources; Result : out Result_Ptr)
+   is
       Projs : MS.Project_Info_List;
       St    : MS.Op_Status;
       Buf   : Memcp_Text.Builder;
    begin
-      MR.List_Projects (Projs, St);
+      MR.List_Projects (R, Projs, St);
       if St = MS.Success then
          Ser_Projects (Projs, Buf);
          Result := OK (Buf);
@@ -938,7 +943,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       end if;
    end Do_List_Projects;
 
-   procedure Do_Save (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Save
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -978,7 +985,7 @@ package body Memcp_Tools with SPARK_Mode => On is
                   "save: 'diary' and 'summary' are required, non-empty, and "
                   & "separate string arguments");
             else
-               Embed_Query (Summary, Emb, Emb_Ok);
+               Embed_Query (R, Summary, Emb, Emb_Ok);
                if not Emb_Ok then
                   Result := Err
                     (Internal_Error,
@@ -1000,7 +1007,8 @@ package body Memcp_Tools with SPARK_Mode => On is
                         Memcp_Replay.Advance_Clock;
                      end if;
                      MR.Save
-                       (Project      => Project,
+                       (R,
+                        Project      => Project,
                         Diary_Body   => Diary,
                         Summary_Body => Summary,
                         Embedding    => Emb,
@@ -1027,7 +1035,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Save;
 
-   procedure Do_Forget (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Forget
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1039,7 +1049,7 @@ package body Memcp_Tools with SPARK_Mode => On is
             St      : MS.Op_Status;
          begin
             MR.Forget_Summary
-              (MS.Row_Id (MJ.Get_Int (D, "summary_id", 0)), Deleted, St);
+              (R, MS.Row_Id (MJ.Get_Int (D, "summary_id", 0)), Deleted, St);
             if St = MS.Success then
                Result := OK ("{""deleted"":" & B (Deleted) & "}");
             else
@@ -1050,7 +1060,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Forget;
 
-   procedure Do_Search (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Search
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1070,7 +1082,7 @@ package body Memcp_Tools with SPARK_Mode => On is
               (Invalid_Params,
                "search: 'since'/'until' must be ISO-8601 timestamps");
          else
-            Embed_Query (Query, Emb, Emb_Ok);
+            Embed_Query (R, Query, Emb, Emb_Ok);
             if not Emb_Ok then
                Result := Err
                  (Internal_Error,
@@ -1082,7 +1094,8 @@ package body Memcp_Tools with SPARK_Mode => On is
                   Buf  : Memcp_Text.Builder;
                begin
                   MR.Search_Summaries
-                    (Query_Emb => Emb,
+                    (R,
+                     Query_Emb => Emb,
                      Projects  => MJ.Get_Names (D, "projects"),
                      Limit     => To_Nat (MJ.Get_Int (D, "limit", 5)),
                      Has_Since => MJ.Has_Str (D, "since"),
@@ -1104,7 +1117,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Search;
 
-   procedure Do_Fetch_Summary (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Fetch_Summary
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1118,7 +1133,7 @@ package body Memcp_Tools with SPARK_Mode => On is
             Id  : constant Interfaces.Integer_64 :=
               MJ.Get_Int (D, "summary_id", 0);
          begin
-            MR.Fetch_Summary (MS.Row_Id (Id), Ptr, St);
+            MR.Fetch_Summary (R, MS.Row_Id (Id), Ptr, St);
             if St /= MS.Success then
                Result := Err (Internal_Error, "fetch_summary: store error");
             elsif Ptr = null then
@@ -1157,7 +1172,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Fetch_Summary;
 
-   procedure Do_Fetch_Chunks (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Fetch_Chunks
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1177,7 +1194,7 @@ package body Memcp_Tools with SPARK_Mode => On is
               (Invalid_Params,
                "fetch_chunks: 'since'/'until' must be ISO-8601 timestamps");
          else
-            Embed_Query (Query, Emb, Emb_Ok);
+            Embed_Query (R, Query, Emb, Emb_Ok);
             if not Emb_Ok then
                Result := Err
                  (Internal_Error,
@@ -1189,7 +1206,8 @@ package body Memcp_Tools with SPARK_Mode => On is
                   Buf  : Memcp_Text.Builder;
                begin
                   MR.Search_Chunks
-                    (Query_Emb   => Emb,
+                    (R,
+                     Query_Emb   => Emb,
                      Projects    => MJ.Get_Names (D, "projects"),
                      Session_Ids => MJ.Get_Names (D, "session_ids"),
                      Limit       => To_Nat (MJ.Get_Int (D, "limit", 5)),
@@ -1212,7 +1230,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Fetch_Chunks;
 
-   procedure Do_Fetch_Turns (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Fetch_Turns
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1253,7 +1273,8 @@ package body Memcp_Tools with SPARK_Mode => On is
                Buf   : Memcp_Text.Builder;
             begin
                MR.Fetch_Turns
-                 (Session_Id  => Session,
+                 (R,
+                  Session_Id  => Session,
                   Has_Project => MJ.Has_Str (D, "project"),
                   Project     => MJ.Get_Str (D, "project"),
                   Has_Start   => Has_St,
@@ -1283,7 +1304,8 @@ package body Memcp_Tools with SPARK_Mode => On is
    --  line) write the autorecap Header. Split out so Do_Upload_Session keeps a
    --  single Doc-close and one Free of the decoded transcript.
    procedure Upload_Decoded
-     (Project    : String;
+     (R          : MR.Resources;
+      Project    : String;
       Session_Id : String;
       Transcript : String;
       Result     : out Result_Ptr)
@@ -1295,7 +1317,7 @@ package body Memcp_Tools with SPARK_Mode => On is
       --  Every turn is embedded (store.py embed_batch); a model is only
       --  *required* when there are turns to embed.
       if not ME.Turn_Vectors.Is_Empty (Turns)
-        and then not Embedder_Available
+        and then not Embedder_Available (R)
       then
          Result := Err
            (Internal_Error,
@@ -1310,7 +1332,7 @@ package body Memcp_Tools with SPARK_Mode => On is
             T   : constant ME.Turn := ME.Turn_Vectors.Element (Turns, I);
             Emb : Candle_Spark.Embedding;
          begin
-            Embed_One (T.Text, Emb);
+            Embed_One (R, T.Text, Emb);
             if MS.Chunk_Input_Vectors.Length (Chunks)
               < MS.Chunk_Input_Vectors.Capacity_Range'Last
             then
@@ -1334,7 +1356,8 @@ package body Memcp_Tools with SPARK_Mode => On is
             Memcp_Replay.Advance_Clock;
          end if;
          MR.Save_Session
-           (Project     => Project,
+           (R,
+            Project     => Project,
             Session_Id  => Session_Id,
             Transcript  => Transcript,
             Chunks      => Chunks,
@@ -1355,7 +1378,7 @@ package body Memcp_Tools with SPARK_Mode => On is
             Recap_Id : MS.Row_Id := 0;
             Wrote    : Boolean := False;
          begin
-            if not Res.Already_Existed and then Embedder_Available then
+            if not Res.Already_Existed and then Embedder_Available (R) then
                declare
                   Recap : constant String := ME.Extract_Recap (Transcript);
                begin
@@ -1371,12 +1394,13 @@ package body Memcp_Tools with SPARK_Mode => On is
                         Diary_Id : MS.Row_Id;
                         R_St     : MS.Op_Status;
                      begin
-                        Embed_One (Recap, Emb);
+                        Embed_One (R, Recap, Emb);
                         if Rep2 then
                            Memcp_Replay.Advance_Clock;
                         end if;
                         MR.Save_Autorecap
-                          (Project     => Project,
+                          (R,
+                           Project     => Project,
                            Session_Id  => Session_Id,
                            Recap_Text  => Recap,
                            Embedding   => Emb,
@@ -1407,7 +1431,9 @@ package body Memcp_Tools with SPARK_Mode => On is
       end;
    end Upload_Decoded;
 
-   procedure Do_Upload_Session (Arguments : String; Result : out Result_Ptr) is
+   procedure Do_Upload_Session
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1437,7 +1463,7 @@ package body Memcp_Tools with SPARK_Mode => On is
                   "upload_session: transcript_b64 is not valid "
                   & "base64-encoded UTF-8");
             else
-               Upload_Decoded (Project, Session_Id, Decoded.all, Result);
+               Upload_Decoded (R, Project, Session_Id, Decoded.all, Result);
                ME.Free (Decoded);
             end if;
          end if;
@@ -1450,26 +1476,27 @@ package body Memcp_Tools with SPARK_Mode => On is
    ------------
 
    procedure Invoke
-     (Id        : Tool_Id;
+     (R         : MR.Resources;
+      Id        : Tool_Id;
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
    is
    begin
-      if not Ready then
+      if not Ready (R) then
          Result := Err (Internal_Error, "store not open");
          return;
       end if;
 
       case Id is
-         when Recent         => Do_Recent (Arguments, Result);
-         when List_Projects  => Do_List_Projects (Result);
-         when Save           => Do_Save (Arguments, Result);
-         when Forget         => Do_Forget (Arguments, Result);
-         when Search         => Do_Search (Arguments, Result);
-         when Fetch_Summary  => Do_Fetch_Summary (Arguments, Result);
-         when Fetch_Chunks   => Do_Fetch_Chunks (Arguments, Result);
-         when Fetch_Turns    => Do_Fetch_Turns (Arguments, Result);
-         when Upload_Session => Do_Upload_Session (Arguments, Result);
+         when Recent         => Do_Recent (R, Arguments, Result);
+         when List_Projects  => Do_List_Projects (R, Result);
+         when Save           => Do_Save (R, Arguments, Result);
+         when Forget         => Do_Forget (R, Arguments, Result);
+         when Search         => Do_Search (R, Arguments, Result);
+         when Fetch_Summary  => Do_Fetch_Summary (R, Arguments, Result);
+         when Fetch_Chunks   => Do_Fetch_Chunks (R, Arguments, Result);
+         when Fetch_Turns    => Do_Fetch_Turns (R, Arguments, Result);
+         when Upload_Session => Do_Upload_Session (R, Arguments, Result);
       end case;
    end Invoke;
 

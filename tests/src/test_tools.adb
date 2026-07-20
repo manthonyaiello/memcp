@@ -21,7 +21,7 @@ with Memcp_Extractor;
 
 procedure Test_Tools is
 
-   use type Memcp_Resources.Open_Status;
+   use type Memcp_Resources.Status;
    use type Memcp_Store.Op_Status;
    use type Spark_Mcp.Tools.Result_Ptr;
 
@@ -44,12 +44,15 @@ procedure Test_Tools is
    function Img (V : Memcp_Store.Row_Id) return String is
      (Ada.Strings.Fixed.Trim (V'Image, Ada.Strings.Both));
 
+   --  The throwaway Resources the tools run against; Call closes over it.
+   Res : Memcp_Resources.Resources;
+
    --  Drive one tool and return its rendered payload (or a marker for an error
    --  result / null), freeing the ownership allocation.
    function Call (Id : Memcp_Tools.Tool_Id; Args : String) return String is
       R : Spark_Mcp.Tools.Result_Ptr;
    begin
-      Memcp_Tools.Invoke (Id, Args, R);
+      Memcp_Tools.Invoke (Res, Id, Args, R);
       if R = null then
          return "<null>";
       end if;
@@ -65,13 +68,13 @@ procedure Test_Tools is
    Zero : constant Candle_Spark.Embedding := [others => 0.0];
    TS   : constant String := "2026-01-01T12:00:00+00:00";
 
-   Open_St     : Memcp_Resources.Open_Status;
+   Open_St     : Memcp_Resources.Status;
    Seed_Sum_Id : Memcp_Store.Row_Id := 0;
 
 begin
-   Memcp_Resources.Open (":memory:", "", Open_St);
+   Memcp_Resources.Open (Res, ":memory:", "", Open_St);
    Check (Open_St = Memcp_Resources.Ready, "Resources.Open :memory: -> Ready");
-   Check (not Memcp_Resources.Embedder_Loaded, "no model -> embedder off");
+   Check (not Memcp_Resources.Embedder_Loaded (Res), "no model -> embedder off");
 
    ------------------------------------------------------------------
    --  Empty-store shapes
@@ -261,7 +264,8 @@ begin
       St : Memcp_Store.Op_Status;
    begin
       Memcp_Resources.Save
-        (Project      => "demo",
+        (Res,
+         Project      => "demo",
          Diary_Body   => "a diary headline",
          Summary_Body => "the full summary body",
          Embedding    => Zero,
@@ -285,7 +289,8 @@ begin
       Memcp_Store.Chunk_Input_Vectors.Append
         (Chunks, (Body_Len => 6, Content => "turn-1", Embedding => Zero));
       Memcp_Resources.Save_Session
-        (Project     => "demo",
+        (Res,
+         Project     => "demo",
          Session_Id  => "sess-1",
          Transcript  => "raw transcript bytes",
          Chunks      => Chunks,
@@ -364,7 +369,7 @@ begin
              "fetch_summary after forget -> message");
    end;
 
-   Memcp_Resources.Close;
+   Memcp_Resources.Close (Res);
 
    Ada.Text_IO.New_Line;
    if Failures = 0 then

@@ -8,6 +8,8 @@ with Ada.Command_Line;
 with Ada.Strings.Fixed;
 with Ada.Text_IO;
 
+with Spark_Mcp;
+with Spark_Mcp.Tools;
 with Spark_Mcp.Server;
 
 with Memcp_Tools;
@@ -38,6 +40,26 @@ procedure Test_Dispatch is
       end if;
    end Check_Has;
 
+   --  A throwaway in-memory Resources the tools run against; the seam is a
+   --  3-argument adapter that closes over it (mirrors memcp.adb). Opened in the
+   --  body below before any request is dispatched.
+   Res : Memcp_Resources.Resources;
+
+   procedure Invoke_Tool
+     (Id        : Memcp_Tools.Tool_Id;
+      Arguments : String;
+      Result    : out Spark_Mcp.Tools.Result_Ptr)
+     with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
+
+   procedure Invoke_Tool
+     (Id        : Memcp_Tools.Tool_Id;
+      Arguments : String;
+      Result    : out Spark_Mcp.Tools.Result_Ptr)
+   is
+   begin
+      Memcp_Tools.Invoke (Res, Id, Arguments, Result);
+   end Invoke_Tool;
+
    --  The real composition: memcp's tools + the json-based envelope parser.
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
@@ -47,7 +69,7 @@ procedure Test_Dispatch is
       Name           => Memcp_Tools.Name,
       Description     => Memcp_Tools.Description,
       Input_Schema    => Memcp_Tools.Input_Schema,
-      Invoke          => Memcp_Tools.Invoke,
+      Invoke          => Invoke_Tool,
       Parse_Envelope  => Memcp_Envelope.Parse_Envelope);
 
    --  Dispatch is now a procedure handing out an ownership allocation (null for
@@ -69,14 +91,14 @@ procedure Test_Dispatch is
       end;
    end Dispatch_Str;
 
-   Open_St : Memcp_Resources.Open_Status;
+   Open_St : Memcp_Resources.Status;
 
 begin
-   --  The tools now run against the shared Store singleton; open a throwaway
-   --  in-memory one so a tools/call routes to a live tool (no model loaded, so
-   --  the embedding tools would report "embedder unavailable" -- not exercised
-   --  here; this file tests routing, not tool behaviour).
-   Memcp_Resources.Open (":memory:", "", Open_St);
+   --  The tools run against Res; open a throwaway in-memory store so a
+   --  tools/call routes to a live tool (no model loaded, so the embedding tools
+   --  would report "embedder unavailable" -- not exercised here; this file tests
+   --  routing, not tool behaviour).
+   Memcp_Resources.Open (Res, ":memory:", "", Open_St);
 
    -------------------------------------------------------------------------
    --  initialize -- integer id echoed verbatim
@@ -215,7 +237,7 @@ begin
       "unknown method: id still echoed (a valid envelope)");
 
    -------------------------------------------------------------------------
-   Memcp_Resources.Close;
+   Memcp_Resources.Close (Res);
 
    Ada.Text_IO.New_Line;
    if Failures = 0 then

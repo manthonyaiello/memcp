@@ -51,15 +51,36 @@ package Memcp_Store with SPARK_Mode => On is
    subtype Row_Id is Interfaces.Integer_64;
    --  A SQLite rowid: signed 64-bit.
 
-   type Store is limited private;
    --  The storage handle: owns one SQLite connection (with vec0 registered,
    --  foreign_keys ON, WAL). Limited because Sqlite_Vec_Spark.Database is
    --  (it owns a raw C pointer; a copy would double-close).
+   --
+   --  Needs_Reclamation: a Store owns its Sqlite_Vec_Spark.Database connection
+   --  (and the remembered DB path). Unlike Database/Statement/Embedder, whose
+   --  resource is a bare C address needing the access-token device, a Store's
+   --  ownership is carried by its own owning components -- so its Is_Reclaimed
+   --  is just "the connection is reclaimed and the path is released". Promoting
+   --  the partial view to an ownership type is what lets a holder of a Store
+   --  (Memcp_Resources) see the reclamation obligation and have GNATprove check
+   --  that a Store is Closed before it is dropped or re-Opened.
+   type Store is limited private
+     with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+          Default_Initial_Condition =>
+            not Is_Open (Store) and then Is_Reclaimed (Store);
 
    function Is_Open (S : Store) return Boolean;
    --  Whether the store's connection is currently open.
    --  @param S The store to test.
    --  @return True iff S holds an open SQLite connection.
+
+   function Is_Reclaimed (S : Store) return Boolean
+     with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
+   --  Reclamation predicate for the Needs_Reclamation annotation above. A Store
+   --  is reclaimed once its connection is reclaimed and its remembered path is
+   --  released -- the state GNATprove requires before the Store is dropped.
+   --  Ghost: it exists only for proof, never at run time.
+   --  @param S The store to test.
+   --  @return True iff S owns no connection and no path.
 
    -----------------------
    -- Connection / init --
@@ -78,17 +99,29 @@ package Memcp_Store with SPARK_Mode => On is
    procedure Open
      (S : out Store; DB_Path : String; Result : out Open_Status)
      with Pre  => DB_Path'Length > 0 and then DB_Path'Last < Natural'Last,
-          Post => Is_Open (S) = (Result = Opened);
-   --  Is_Open (S) iff Result = Opened; on any failure the connection is closed.
+          Post => (Is_Open (S) = (Result = Opened))
+                  and then (Is_Reclaimed (S) = (Result /= Opened));
+   --  Is_Open (S) iff Result = Opened; on any failure the connection is closed
+   --  (and S reclaimed). S is an out parameter, so any prior value is dropped;
+   --  callers therefore establish Is_Reclaimed (S) first (a fresh Store is
+   --  reclaimed by its Default_Initial_Condition).
    --  (Migrations for pre-existing older DBs -- store.py _migrate -- are out
    --  of scope for now; fresh DBs need none.)
    --  @param S The store to open (initialized on return).
    --  @param DB_Path Filesystem path to the SQLite DB (or ":memory:").
    --  @param Result The outcome of the open attempt.
 
-   procedure Close (S : in out Store) with Post => not Is_Open (S);
-   --  Close the store's connection, releasing all owned resources.
-   --  @param S The store to close.
+   procedure Close (S : in out Store)
+     with Post    => not Is_Open (S) and then Is_Reclaimed (S),
+          Global  => (In_Out => Sqlite_Vec_Spark.DBMS),
+          Depends => (Sqlite_Vec_Spark.DBMS =>+ null, S => null, null => S);
+   --  Close the store's connection, releasing all owned resources. Idempotent;
+   --  leaves S reclaimed. Depends spells out the finalizer data flow (as for
+   --  Sqlite_Vec_Spark.Close): S's new value is a constant, its old connection
+   --  reaches C only as an address (flowing nowhere in SPARK) and its old path
+   --  is freed, while DBMS is updated in place -- so a caller that finalizes a
+   --  Store and never reads it back needs no "set but not used" suppression.
+   --  @param S The store to close; left reclaimed.
 
    type Op_Status is (Success, Db_Error);
    --  Generic outcome for the row-touching operations below.
@@ -641,6 +674,14 @@ package Memcp_Store with SPARK_Mode => On is
 
 private
 
+   --  Hide the representation from clients' proof context: the Ownership
+   --  annotation on Store requires its private part to be either SPARK_Mode
+   --  (Off) or hidden, and hiding keeps this body's query logic IN SPARK.
+   --  Clients (Memcp_Resources) reason about Store abstractly -- through
+   --  Is_Open, the Needs_Reclamation obligation, and the operation contracts --
+   --  exactly as this crate's clients do for Sqlite_Vec_Spark.Database.
+   pragma Annotate (GNATprove, Hide_Info, "Private_Part");
+
    type Path_Access is access String;
    --  Owning handle for the opened DB path, remembered at Open so save_session
    --  can place raw transcripts under <db_parent>/sessions/... (store.py
@@ -660,5 +701,11 @@ private
    --  Whether the store's connection is currently open.
    --  @param S The store to test.
    --  @return True iff S holds an open SQLite connection.
+
+   function Is_Reclaimed (S : Store) return Boolean is
+     (Sqlite_Vec_Spark.Is_Reclaimed (S.DB) and then S.DB_Path = null);
+   --  Completion of the reclamation predicate: reclaimed exactly when the owned
+   --  connection is reclaimed and the remembered path has been released. Both
+   --  owning components must be reclaimed before a Store is dropped.
 
 end Memcp_Store;

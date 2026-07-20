@@ -7,12 +7,16 @@
 --  Like Memcp_Envelope (the inbound half of the json marshalling), this unit is
 --  trusted composition-root glue -- not in SPARK_Mode. It parses each tool's
 --  `arguments` and renders each result with Memcp_Json, and runs the request
---  against the Memcp_Resources singletons; the verified surface is the units it
+--  against a Memcp_Resources object; the verified surface is the units it
 --  stands on (Memcp_Store Silver, json Silver, Spark_Mcp.Writer Silver). Invoke
---  reaches the Store/Embedder through Memcp_Resources because its generic seam
---  (Id/Arguments/Result) has nowhere to pass them.
+--  takes the Resources as its first parameter: the generic seam
+--  (Id/Arguments/Result) has nowhere to pass it, so the composition root wraps
+--  Invoke in a nested adapter that closes over its Resources object and forwards
+--  here (see memcp.adb). That keeps the owned Store/Embedder a tracked local
+--  rather than hidden package state.
 
 with Spark_Mcp.Tools;
+with Memcp_Resources;
 
 package Memcp_Tools with SPARK_Mode => On is
 
@@ -149,11 +153,16 @@ package Memcp_Tools with SPARK_Mode => On is
    --  @return The JSON Schema text describing the tool's arguments.
 
    procedure Invoke
-     (Id        : Tool_Id;
+     (R         : Memcp_Resources.Resources;
+      Id        : Tool_Id;
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
    with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
-   --  Run tool Id against the Memcp_Resources singletons and render its reply.
+   --  Run tool Id against the Resources R and render its reply. R is observed
+   --  (an `in` parameter); a mutating tool (save/forget/upload_session) mutates
+   --  the SQLite subsystem (DBMS), not R. Not the generic actual itself -- the
+   --  composition root passes a 3-argument adapter that closes over R and calls
+   --  here (see the seam note above).
    --  `Arguments` is the request's params.arguments as raw JSON text ("{}" if
    --  none). Each tool parses the fields it needs with memcp's own JSON
    --  instantiation (Memcp_Json) -- spark_mcp itself stays json-free -- runs the
@@ -165,6 +174,7 @@ package Memcp_Tools with SPARK_Mode => On is
    --  precondition mirrors the generic formal's contract, so a tool may build a
    --  result straight from Arguments and still uphold the Len <= Max_Field
    --  predicate on Invocation_Result.
+   --  @param R The resources (open Store, maybe-loaded Embedder) to run against.
    --  @param Id The tool to invoke.
    --  @param Arguments The request's params.arguments as raw JSON text.
    --  @param Result Out; the freshly allocated invocation result to hand back.
