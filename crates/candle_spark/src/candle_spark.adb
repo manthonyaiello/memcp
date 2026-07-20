@@ -71,17 +71,17 @@ is
    ----------
 
    procedure Load
-     (E          : out Embedder;
+     (E          : in out Embedder;
       Model_Path : String;
       Result     : out Status)
    is
       Handle : System.Address;
       St     : Interfaces.C.int;
    begin
-      --  Start reclaimed (null, null); Embedder is limited, so the handle
-      --  fields are set component-wise, never by a whole-record aggregate.
-      E.Handle := System.Null_Address;
-      E.Token  := null;
+      --  Reclaim any model E already holds first, so re-loading into the same
+      --  handle cannot leak the prior C allocation. Unload is idempotent and
+      --  posts Is_Reclaimed, so a never-loaded E is simply left (null, null).
+      Unload (E);
 
       C_Load
         (Path   => Model_Path,
