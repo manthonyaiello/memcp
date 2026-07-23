@@ -10,7 +10,7 @@
 
 with Spark_Mcp.Requests;
 
-package Memcp_Envelope with SPARK_Mode => On is
+package Memcp.Envelope with SPARK_Mode => On is
 
    function Parse_Envelope
      (Request : String) return Spark_Mcp.Requests.Envelope;
@@ -22,4 +22,4 @@ package Memcp_Envelope with SPARK_Mode => On is
    --  @return The decoded neutral Envelope, or a Bad_Json/Bad_Request envelope
    --  when the text is not valid JSON-RPC.
 
-end Memcp_Envelope;
+end Memcp.Envelope;

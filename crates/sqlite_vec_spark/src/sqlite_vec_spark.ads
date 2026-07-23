@@ -409,7 +409,7 @@ private
    --  hiding keeps the wrapper bodies in SPARK (unlike SPARK_Mode (Off), which
    --  would eject them). Clients reason about Database/Statement abstractly --
    --  through Is_Open/Is_Valid, the Needs_Reclamation obligation, and the
-   --  operation contracts -- exactly as they do for Memcp_Json.Doc.
+   --  operation contracts -- exactly as they do for Memcp.Json.Doc.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
 
    type Ownership_Token is access Boolean;

@@ -18,10 +18,10 @@
 --  Like the C/Rust binding crates (Sqlite_Vec_Spark.DBMS, Spark_Mcp.Http.
 --  Network), this is a SPARK-On spec stating the effect over a trusted body,
 --  because the underlying facility has no SPARK contracts. Ada.Text_IO, by
---  contrast, *is* SPARK-annotated in this run-time, which is why Memcp_Log can
+--  contrast, *is* SPARK-annotated in this run-time, which is why Memcp.Log can
 --  stay fully in SPARK without a trusted body -- the choices differ only
 --  because the run-time contracts do.
-package Memcp_Env
+package Memcp.Env
   with SPARK_Mode    => On,
        Abstract_State => Environment,
        Initializes    => Environment
@@ -35,4 +35,4 @@ is
      with Global => (Input => Environment);
    --  The value of environment variable Name (Name must Exist).
 
-end Memcp_Env;
+end Memcp.Env;

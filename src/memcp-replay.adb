@@ -2,9 +2,9 @@ with Ada.Containers; use type Ada.Containers.Count_Type;
 
 with SPARK.Containers.Formal.Unbounded_Vectors;
 
-with Memcp_Text;
+with Memcp.Text;
 
-package body Memcp_Replay with
+package body Memcp.Replay with
   SPARK_Mode    => On,
   Refined_State =>
     (State =>
@@ -37,7 +37,7 @@ is
    Clock_Cur : Natural := 0;
    Embs      : Emb_Vectors.Vector;
    Misses    : Natural := 0;
-   Miss_Text : Memcp_Text.Builder;
+   Miss_Text : Memcp.Text.Builder;
 
    ------------
    -- Enable --
@@ -57,7 +57,7 @@ is
       Emb_Vectors.Clear (Embs);
       Clock_Cur := 0;
       Misses    := 0;
-      Memcp_Text.Reset (Miss_Text);
+      Memcp.Text.Reset (Miss_Text);
    end Begin_Call;
 
    ---------------
@@ -136,8 +136,8 @@ is
       if Misses < Natural'Last then
          Misses := Misses + 1;
       end if;
-      Memcp_Text.Reset (Miss_Text);
-      Memcp_Text.Add (Miss_Text, Text);
+      Memcp.Text.Reset (Miss_Text);
+      Memcp.Text.Add (Miss_Text, Text);
    end Lookup_Embedding;
 
    ----------------
@@ -145,6 +145,6 @@ is
    ----------------
 
    function Miss_Count return Natural is (Misses);
-   function Last_Miss  return String  is (Memcp_Text.Value (Miss_Text));
+   function Last_Miss  return String  is (Memcp.Text.Value (Miss_Text));
 
-end Memcp_Replay;
+end Memcp.Replay;

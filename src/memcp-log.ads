@@ -15,7 +15,7 @@ with Ada.Text_IO;
 --  SPARK-annotated in this run-time (Abstract_State => File_System), so the
 --  logging effect is modelled honestly as an In_Out on Ada.Text_IO.File_System
 --  rather than hidden behind a trusted body.
-package Memcp_Log with SPARK_Mode => On is
+package Memcp.Log with SPARK_Mode => On is
 
    procedure Error (Message : String)
      with Global            => (In_Out => Ada.Text_IO.File_System),
@@ -28,4 +28,4 @@ package Memcp_Log with SPARK_Mode => On is
    --  Record a recoverable anomaly (e.g. a replay-corpus miss) on the
    --  diagnostic channel.
 
-end Memcp_Log;
+end Memcp.Log;

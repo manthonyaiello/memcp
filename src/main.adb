@@ -11,7 +11,7 @@
 
 with Ada.Text_IO;
 
-with Memcp_Env;
+with Memcp.Env;
 
 with Spark_Mcp;
 with Spark_Mcp.Tools;
@@ -19,11 +19,11 @@ with Spark_Mcp.Server;
 with Spark_Mcp.Http;
 with Spark_Mcp.Http.Serve;
 
-with Memcp_Resources;
-with Memcp_Tools;
-with Memcp_Envelope;
+with Memcp.Resources;
+with Memcp.Tools;
+with Memcp.Envelope;
 
-procedure Memcp with SPARK_Mode => On is
+procedure Main with SPARK_Mode => On is
 
    --  Environment (mirrors server.py main): MEMCP_DB_PATH, MEMCP_PORT, and
    --  MEMCP_MODEL_PATH (weights; see candle_spark/scripts/install-model.sh).
@@ -42,9 +42,9 @@ procedure Memcp with SPARK_Mode => On is
 
    function Env (Name, Default : String) return String is
    begin
-      if Memcp_Env.Exists (Name) then
+      if Memcp.Env.Exists (Name) then
          declare
-            V : constant String := Memcp_Env.Value (Name);
+            V : constant String := Memcp.Env.Value (Name);
          begin
             if V'Length in 1 .. Max_Env then
                return R : String (1 .. V'Length) do
@@ -101,59 +101,67 @@ procedure Memcp with SPARK_Mode => On is
    --  The owned resources, a tracked local (see the header note). Fresh, so
    --  reclaimed by its Default_Initial_Condition -- which discharges Open's
    --  Pre => Is_Reclaimed (R).
-   R       : Memcp_Resources.Resources;
-   Open_St : Memcp_Resources.Status;
-   use type Memcp_Resources.Status;
+   R       : Memcp.Resources.Resources;
+   Open_St : Memcp.Resources.Status;
+   use type Memcp.Resources.Status;
 
-begin
-   Memcp_Resources.Open (R, DB_Path, Model_Path, Open_St);
-   if Open_St /= Memcp_Resources.Ready then
-      Ada.Text_IO.Put_Line
-        ("memcp: could not open store at " & DB_Path & "; aborting");
-      Memcp_Resources.Close (R);   --  reclaim before the scope exits
-      return;
-   end if;
+   --  Named steps, in the order Main's statements call them. Both close over
+   --  R (an up-level reference, not a parameter) exactly as Invoke_Tool below
+   --  does -- that up-level access to the one tracked local is what lets
+   --  SPARK check its open/close lifecycle by ownership (see the header
+   --  note); passing R around as a parameter would defeat that.
 
-   Ada.Text_IO.Put_Line
-     ("memcp serving on http://127.0.0.1:" & Port'Image
-      & " (db=" & DB_Path
-      & ", embedder="
-      & (if Memcp_Resources.Embedder_Loaded (R)
-         then "loaded"
-         else "off [" & Model_Path & "]") & ")");
+   procedure Open_Database (Status : out Memcp.Resources.Status) is
+   begin
+      Memcp.Resources.Open (R, DB_Path, Model_Path, Status);
+   end Open_Database;
 
-   --  Instantiate the core + transport HERE, where R is open, so the tool seam
-   --  can close over it. Invoke_Tool is the 3-argument generic actual the core
-   --  expects; it forwards to the 4-argument Memcp_Tools.Invoke, threading R.
-   declare
+   --  Wires the concrete tools into the generic MCP core and the core into
+   --  the HTTP transport, then serves until the transport gives up. All of
+   --  this is instantiated HERE, where R is open, so the tool seam
+   --  (Invoke_Tool) can close over it.
+   --  Connect_To_Server is proved in its own context (not inlined into
+   --  Main), so the length bounds Env's postcondition already put on
+   --  DB_Path/Model_Path -- facts about "constants with variable input"
+   --  that don't otherwise cross that analysis boundary -- have to be
+   --  restated here for the startup log line below to be provably bounded.
+   procedure Connect_To_Server (Port : Spark_Mcp.Http.Port_Number)
+     with Pre => DB_Path'Length <= Max_Env
+                 and then Default_Model_Path'Length <= Max_Env + 31
+                 and then Model_Path'Length
+                            <= Natural'Max (Max_Env, Default_Model_Path'Length)
+   is
+
+      --  The 3-argument generic actual the core expects; it forwards to the
+      --  4-argument Memcp.Tools.Invoke, threading R.
       procedure Invoke_Tool
-        (Id        : Memcp_Tools.Tool_Id;
+        (Id        : Memcp.Tools.Tool_Id;
          Arguments : String;
          Result    : out Spark_Mcp.Tools.Result_Ptr)
         with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
 
       procedure Invoke_Tool
-        (Id        : Memcp_Tools.Tool_Id;
+        (Id        : Memcp.Tools.Tool_Id;
          Arguments : String;
          Result    : out Spark_Mcp.Tools.Result_Ptr)
       is
       begin
-         Memcp_Tools.Invoke (R, Id, Arguments, Result);
+         Memcp.Tools.Invoke (R, Id, Arguments, Result);
       end Invoke_Tool;
 
       --  The generic MCP core, specialized to memcp's 9 tools. Parse_Envelope
-      --  is the one json-dependent formal -- memcp supplies it (Memcp_Envelope,
+      --  is the one json-dependent formal -- memcp supplies it (Memcp.Envelope,
       --  built on the json crate) so spark_mcp itself stays json-free.
       package MCP is new Spark_Mcp.Server
         (Server_Name    => "memcp",
          Server_Version => "0.1.0",
-         Instructions   => Memcp_Tools.Instructions,
-         Tool_Id        => Memcp_Tools.Tool_Id,
-         Name           => Memcp_Tools.Name,
-         Description     => Memcp_Tools.Description,
-         Input_Schema    => Memcp_Tools.Input_Schema,
+         Instructions   => Memcp.Tools.Instructions,
+         Tool_Id        => Memcp.Tools.Tool_Id,
+         Name           => Memcp.Tools.Name,
+         Description     => Memcp.Tools.Description,
+         Input_Schema    => Memcp.Tools.Input_Schema,
          Invoke          => Invoke_Tool,
-         Parse_Envelope  => Memcp_Envelope.Parse_Envelope);
+         Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
 
       --  The transport, specialized to the core's Dispatch. Both seams are
       --  procedures handing out exactly-sized ownership allocations, but of
@@ -183,14 +191,32 @@ begin
       end Dispatch_Owned;
 
       procedure Run is new Spark_Mcp.Http.Serve (On_Request => Dispatch_Owned);
-   begin
-      begin
-         Run (Port);
-      exception
-         when others =>
-            Ada.Text_IO.Put_Line ("memcp: transport error; shutting down");
-      end;
-   end;
 
-   Memcp_Resources.Close (R);
-end Memcp;
+   begin
+      Ada.Text_IO.Put_Line
+         ("memcp serving on http://127.0.0.1:" & Port'Image
+         & " (db=" & DB_Path
+         & ", embedder="
+         & (if Memcp.Resources.Embedder_Loaded (R)
+            then "loaded"
+            else "off [" & Model_Path & "]") & ")");
+            
+      Run (Port);
+   exception
+      when others =>
+         Ada.Text_IO.Put_Line ("memcp: transport error; shutting down");
+   end Connect_To_Server;
+
+begin
+   Open_Database (Open_St);
+
+   if Open_St = Memcp.Resources.Ready then
+      Connect_To_Server (Port);
+
+   else
+      Ada.Text_IO.Put_Line
+        ("memcp: could not open store at " & DB_Path & "; aborting");
+   end if;
+
+   Memcp.Resources.Close (R);
+end Main;

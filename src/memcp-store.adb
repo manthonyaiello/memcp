@@ -10,9 +10,9 @@ with Ada.Calendar.Time_Zones;
 
 with SPARK.Containers.Types;
 
-with Memcp_Log;
+with Memcp.Log;
 
-package body Memcp_Store with SPARK_Mode => On is
+package body Memcp.Store with SPARK_Mode => On is
 
    package Sql renames Sqlite_Vec_Spark;
    use type Sql.Status;
@@ -484,7 +484,7 @@ package body Memcp_Store with SPARK_Mode => On is
    begin
       Exec (S, "ROLLBACK", Ok);
       if not Ok then
-         Memcp_Log.Error
+         Memcp.Log.Error
            ("transaction ROLLBACK failed; database may be left "
             & "mid-transaction");
       end if;
@@ -1396,7 +1396,7 @@ package body Memcp_Store with SPARK_Mode => On is
 
       if not Exists then
          Rollback (S);
-         Status := (if Ok then Memcp_Store.Success else Db_Error);
+         Status := (if Ok then Memcp.Store.Success else Db_Error);
          return;
       end if;
 
@@ -1440,7 +1440,7 @@ package body Memcp_Store with SPARK_Mode => On is
             Exec (S, "COMMIT", Ok);
             if Ok then
                Deleted := True;
-               Status  := Memcp_Store.Success;
+               Status  := Memcp.Store.Success;
             else
                Rollback (S);
             end if;
@@ -2291,4 +2291,4 @@ package body Memcp_Store with SPARK_Mode => On is
       end;
    end Reindex_Session;
 
-end Memcp_Store;
+end Memcp.Store;

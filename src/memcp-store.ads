@@ -32,7 +32,7 @@ with SPARK.Containers.Formal.Unbounded_Vectors;
 with Sqlite_Vec_Spark;
 with Candle_Spark;
 
-package Memcp_Store with SPARK_Mode => On is
+package Memcp.Store with SPARK_Mode => On is
 
    Embedding_Dim  : constant := 384;
    --  Vector dimension. Mirrors store.py's module constant; must match
@@ -65,7 +65,7 @@ package Memcp_Store with SPARK_Mode => On is
    --  ownership is carried by its own owning components -- so its Is_Reclaimed
    --  is just "the connection is reclaimed and the path is released". Promoting
    --  the partial view to an ownership type is what lets a holder of a Store
-   --  (Memcp_Resources) see the reclamation obligation and have GNATprove check
+   --  (Memcp.Resources) see the reclamation obligation and have GNATprove check
    --  that a Store is Closed before it is dropped or re-Opened.
 
    function Is_Open (S : Store) return Boolean;
@@ -677,7 +677,7 @@ private
    --  Hide the representation from clients' proof context: the Ownership
    --  annotation on Store requires its private part to be either SPARK_Mode
    --  (Off) or hidden, and hiding keeps this body's query logic IN SPARK.
-   --  Clients (Memcp_Resources) reason about Store abstractly -- through
+   --  Clients (Memcp.Resources) reason about Store abstractly -- through
    --  Is_Open, the Needs_Reclamation obligation, and the operation contracts --
    --  exactly as this crate's clients do for Sqlite_Vec_Spark.Database.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
@@ -708,4 +708,4 @@ private
    --  connection is reclaimed and the remembered path has been released. Both
    --  owning components must be reclaimed before a Store is dropped.
 
-end Memcp_Store;
+end Memcp.Store;

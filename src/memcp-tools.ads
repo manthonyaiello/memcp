@@ -4,11 +4,11 @@
 --
 --  Wire names and behaviour mirror src/memcp/server.py 1:1.
 --
---  Like Memcp_Envelope (the inbound half of the json marshalling), this unit is
+--  Like Memcp.Envelope (the inbound half of the json marshalling), this unit is
 --  trusted composition-root glue -- not in SPARK_Mode. It parses each tool's
---  `arguments` and renders each result with Memcp_Json, and runs the request
---  against a Memcp_Resources object; the verified surface is the units it
---  stands on (Memcp_Store Silver, json Silver, Spark_Mcp.Writer Silver). Invoke
+--  `arguments` and renders each result with Memcp.Json, and runs the request
+--  against a Memcp.Resources object; the verified surface is the units it
+--  stands on (Memcp.Store Silver, json Silver, Spark_Mcp.Writer Silver). Invoke
 --  takes the Resources as its first parameter: the generic seam
 --  (Id/Arguments/Result) has nowhere to pass it, so the composition root wraps
 --  Invoke in a nested adapter that closes over its Resources object and forwards
@@ -16,9 +16,9 @@
 --  rather than hidden package state.
 
 with Spark_Mcp.Tools;
-with Memcp_Resources;
+with Memcp.Resources;
 
-package Memcp_Tools with SPARK_Mode => On is
+package Memcp.Tools with SPARK_Mode => On is
 
    type Tool_Id is
      (Recent,          --  The N most recent diary Headers.
@@ -153,7 +153,7 @@ package Memcp_Tools with SPARK_Mode => On is
    --  @return The JSON Schema text describing the tool's arguments.
 
    procedure Invoke
-     (R         : Memcp_Resources.Resources;
+     (R         : Memcp.Resources.Resources;
       Id        : Tool_Id;
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
@@ -165,8 +165,8 @@ package Memcp_Tools with SPARK_Mode => On is
    --  here (see the seam note above).
    --  `Arguments` is the request's params.arguments as raw JSON text ("{}" if
    --  none). Each tool parses the fields it needs with memcp's own JSON
-   --  instantiation (Memcp_Json) -- spark_mcp itself stays json-free -- runs the
-   --  request against the Memcp_Resources Store/Embedder, and renders the reply.
+   --  instantiation (Memcp.Json) -- spark_mcp itself stays json-free -- runs the
+   --  request against the Memcp.Resources Store/Embedder, and renders the reply.
    --
    --  A procedure handing out an ownership allocation (Spark_Mcp.Tools.
    --  Result_Ptr): the reshaped seam that lets a real tool mutate the Store
@@ -238,4 +238,4 @@ private
    --  (server.py INSTRUCTIONS), describing the Header -> Summary -> Details
    --  retrieval ladder, effective use, and the save() contract.
 
-end Memcp_Tools;
+end Memcp.Tools;

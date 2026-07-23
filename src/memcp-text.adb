@@ -1,4 +1,4 @@
-package body Memcp_Text with SPARK_Mode => On is
+package body Memcp.Text with SPARK_Mode => On is
 
    -----------
    -- Reset --
@@ -63,4 +63,4 @@ package body Memcp_Text with SPARK_Mode => On is
       end return;
    end Value;
 
-end Memcp_Text;
+end Memcp.Text;

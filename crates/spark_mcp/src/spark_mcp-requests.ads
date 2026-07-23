@@ -15,7 +15,7 @@
 --  The string fields are fixed String components sized by the *_Len
 --  discriminants, matching Spark_Mcp.Tools: no controlled type, no cap, no
 --  copy-out. The record is therefore indefinite and built fully-initialized in
---  one aggregate (see Memcp_Envelope.Decode and No_Parser); an error Kind sets
+--  one aggregate (see Memcp.Envelope.Decode and No_Parser); an error Kind sets
 --  every length to 0.
 
 package Spark_Mcp.Requests with SPARK_Mode => On is
@@ -77,7 +77,7 @@ package Spark_Mcp.Requests with SPARK_Mode => On is
    --  rather than a silently-wrong result. It lets the reusable core be built,
    --  proved, and unit-tested with NO JSON library at all (the tests drive
    --  Respond directly); an application that wants a live Dispatch supplies its
-   --  own JSON-based parser at instantiation (see memcp's Memcp_Envelope).
+   --  own JSON-based parser at instantiation (see memcp's Memcp.Envelope).
    --  @param Request The raw request text (ignored; no decoding is attempted).
    --  @return An Envelope with Kind => Unimplemented and every *_Len => 0.
 

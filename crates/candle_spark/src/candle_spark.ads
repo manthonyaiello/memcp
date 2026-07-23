@@ -144,7 +144,7 @@ private
    --  hiding keeps the wrapper body IN SPARK (unlike SPARK_Mode (Off), which
    --  would eject it). Clients reason about Embedder abstractly -- through
    --  Is_Loaded, the Needs_Reclamation obligation, and the operation contracts
-   --  -- exactly as for Sqlite_Vec_Spark.Database and Memcp_Json.Doc.
+   --  -- exactly as for Sqlite_Vec_Spark.Database and Memcp.Json.Doc.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
 
    type Ownership_Token is access Boolean;
