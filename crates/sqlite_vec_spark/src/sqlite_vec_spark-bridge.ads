@@ -22,10 +22,12 @@
 --  procedure may carry an In_Out global, and modelling every mutation as one
 --  DBMS effect is what makes SPARK treat two statements over the same
 --  connection as potentially interfering (the Ada.Text_IO File_System stance).
---  The read-only imports (the column_* readers, changes, last_insert_rowid)
---  return their value directly and carry Global => null: no DBMS effect, so the
---  parent's value-returning read functions stay non-volatile and usable in
---  ordinary expressions.
+--  The value-returning imports (the column_* readers, changes,
+--  last_insert_rowid) read mutable C-side state, so they carry
+--  Volatile_Function, Global => (Input => DBMS) -- DBMS has Async_Writers, so
+--  two calls may legitimately differ and SPARK must not fold them. The one
+--  value reader that is a procedure (column_text_copy, filling an out buffer)
+--  carries Global => (Input => DBMS) for the same read dependency.
 --    * Spec-only, because the Import must live on the declaration itself: the
 --      calling convention has to be known where callers see the subprogram, so
 --      neither a pragma nor a `with Import` aspect can complete a plain
@@ -84,14 +86,14 @@ is
 
    function Last_Insert_Rowid (Db : System.Address) return Interfaces.Integer_64
      with Import, Convention => C, External_Name => "sqlite3_last_insert_rowid",
-          Global => null;
+          Volatile_Function, Global => (Input => DBMS);
    --  Rowid of the most recent INSERT on Db (sqlite3_last_insert_rowid).
    --  @param Db The open connection.
    --  @return The rowid of the most recent successful INSERT.
 
    function Changes (Db : System.Address) return Interfaces.C.int
      with Import, Convention => C, External_Name => "sqlite3_changes",
-          Global => null;
+          Volatile_Function, Global => (Input => DBMS);
    --  Rows changed by the most recent INSERT/UPDATE/DELETE (sqlite3_changes).
    --  @param Db The open connection.
    --  @return The number of rows changed by the last mutation.
@@ -189,7 +191,7 @@ is
      (Stmt : System.Address; Col : Interfaces.C.int)
       return Interfaces.Integer_64
      with Import, Convention => C, External_Name => "sqlite3_column_int64",
-          Global => null;
+          Volatile_Function, Global => (Input => DBMS);
    --  Read a 0-based column of the current row as a 64-bit integer.
    --  @param Stmt The statement positioned on a result row.
    --  @param Col The 0-based column index.
@@ -199,7 +201,7 @@ is
      (Stmt : System.Address; Col : Interfaces.C.int)
       return Interfaces.IEEE_Float_64
      with Import, Convention => C, External_Name => "sqlite3_column_double",
-          Global => null;
+          Volatile_Function, Global => (Input => DBMS);
    --  Read a 0-based column of the current row as a double.
    --  @param Stmt The statement positioned on a result row.
    --  @param Col The 0-based column index.
@@ -208,7 +210,7 @@ is
    function Column_Type
      (Stmt : System.Address; Col : Interfaces.C.int) return Interfaces.C.int
      with Import, Convention => C, External_Name => "sqlite3_column_type",
-          Global => null;
+          Volatile_Function, Global => (Input => DBMS);
    --  The SQLite datatype code of a 0-based column (used to detect SQL NULL).
    --  @param Stmt The statement positioned on a result row.
    --  @param Col The 0-based column index.
@@ -217,7 +219,8 @@ is
    function Column_Text_Len
      (Stmt : System.Address; Col : Interfaces.C.int) return Interfaces.C.size_t
      with Import, Convention => C,
-          External_Name => "memcp_sqlite_column_text_len", Global => null;
+          External_Name => "memcp_sqlite_column_text_len",
+          Volatile_Function, Global => (Input => DBMS);
    --  Byte length of a 0-based text column, so the caller can allocate an
    --  exact-size buffer before the copy.
    --  @param Stmt The statement positioned on a result row.
@@ -231,7 +234,7 @@ is
       Len  : Interfaces.C.size_t)
      with Import, Convention => C,
           External_Name => "memcp_sqlite_column_text_copy",
-          Global => null, Always_Terminates => True;
+          Global => (Input => DBMS), Always_Terminates => True;
    --  Copy a 0-based text column into a caller-owned buffer of exactly Len bytes
    --  (see the parent's Column_Text).
    --  @param Stmt The statement positioned on a result row.

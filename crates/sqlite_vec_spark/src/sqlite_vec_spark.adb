@@ -358,7 +358,14 @@ is
    --------------------
 
    function Column_Is_Null (S : Statement; Col : Natural) return Boolean is
-     (Bridge.Column_Type (S.Handle, Interfaces.C.int (Col)) = SQLITE_NULL_TYPE);
+      --  Capture the volatile read into a local: DBMS has Async_Writers, so the
+      --  Bridge.Column_Type call may appear only in a non-interfering context,
+      --  not as an operand of "=".
+      Kind : constant Interfaces.C.int :=
+        Bridge.Column_Type (S.Handle, Interfaces.C.int (Col));
+   begin
+      return Kind = SQLITE_NULL_TYPE;
+   end Column_Is_Null;
 
    -----------------
    -- Column_Text --
