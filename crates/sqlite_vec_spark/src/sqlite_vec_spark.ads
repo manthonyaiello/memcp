@@ -51,7 +51,10 @@ with System;
 
 package Sqlite_Vec_Spark
   with SPARK_Mode     => On,
-       Abstract_State => (DBMS with External),
+       Abstract_State => (DBMS with External => (Async_Writers    => True,
+                                                 Async_Readers    => True,
+                                                 Effective_Writes => True,
+                                                 Effective_Reads  => False)),
        Initializes    => DBMS
 is
 
@@ -59,11 +62,22 @@ is
    --  across the C boundary. It is External for the same reason Spark_Mcp_Http's
    --  Network is: a database file has genuine asynchronous peers -- other OS
    --  processes and connections can read or write it (especially under WAL) --
-   --  so its state is not owned by this program alone. Marking it External is
-   --  both honest about that and exactly what makes Open/Close carry weight:
-   --  an External write is always effective (an async reader might observe it),
-   --  so a Close whose handle is then discarded reads as a real effect, not a
-   --  no-op flow-flags as ineffective.
+   --  so its state is not owned by this program alone. The External properties
+   --  are set explicitly:
+   --
+   --    * Async_Writers => True -- a peer may change the state between two of our
+   --      reads. This is the crux: it forbids SPARK from assuming a value reader
+   --      is referentially transparent (f (x) = f (x)), which for the cursor and
+   --      counter readers below is simply false -- sqlite3_changes, _column_* and
+   --      _last_insert_rowid all move as the connection/statement is mutated.
+   --    * Async_Readers => True -- a peer may observe our writes, so a Close whose
+   --      handle is then discarded reads as a real effect, not a dead store.
+   --    * Effective_Writes => True -- our writes matter (per Async_Readers).
+   --    * Effective_Reads => False -- reading the state does not itself change it.
+   --      This is what lets the value readers stay *functions*: a volatile
+   --      function may carry Global => (Input => DBMS), but only because reading
+   --      has no In_Out effect. (An Effective_Reads => True object could be read
+   --      only by a procedure with an In_Out global.)
    --
    --  DBMS refines to *null* in the body (the constituents live on the far side
    --  of the FFI), which means -- as with Network -- the C imports that carry
@@ -88,15 +102,23 @@ is
    --  analysis rather than hidden behind the seam (see Spark_Mcp.Server.Invoke
    --  and Spark_Mcp_Http.Serve, whose contracts were written to admit it).
    --
-   --  The read-only operations (Is_Open/Is_Valid on the handle, and the value
-   --  readers Last_Insert_Rowid, Changes and the Column_* family) carry
-   --  Global => null. A column read genuinely depends on DBMS, but declaring
-   --  that would make each a *volatile function*, which SPARK forbids in the
-   --  ordinary expression contexts the store reads them from (aggregates, `not`,
-   --  operands). Since the row-positioning discipline they rely on is already
-   --  beyond what SPARK can police across the C boundary (documented, not
-   --  proved), modelling them as pure reads of the opaque handle is the honest
-   --  and workable choice -- the "almost all" carve-out from the rule above.
+   --  Is_Open/Is_Valid carry Global => null and stay pure: they read the
+   --  Ada-side ownership token, not DBMS, so f (x) = f (x) genuinely holds.
+   --
+   --  The value readers are the opposite case. Last_Insert_Rowid, Changes and
+   --  the Column_* family read mutable C-side state, so they carry
+   --  Volatile_Function, Global => (Input => DBMS): honest about the dependency,
+   --  and the only sound choice -- Global => null would let SPARK treat two
+   --  reads of a moving counter/cursor as equal. Because DBMS has
+   --  Async_Writers => True, a volatile-function call may appear only in a
+   --  "non-interfering context" (SPARK RM 7.1.3): the whole right-hand side of an
+   --  assignment or object declaration, a return expression, or an actual
+   --  parameter -- but NOT nested inside `not`, an aggregate, or another operand.
+   --  Effective_Reads => False is what keeps them functions rather than
+   --  procedures. A reader needed inside a compound expression is captured into a
+   --  local first (see the call sites in Memcp_Store). The row-positioning
+   --  discipline the cursor readers rely on remains beyond what SPARK can police
+   --  across the C boundary (documented, not proved).
 
    --  Opaque connection handle over the C `sqlite3*`. Limited: owns the
    --  connection, must not be copied (see the design note above).
@@ -217,7 +239,8 @@ is
    --  @param Result Ok on success, or Error.
 
    function Last_Insert_Rowid (DB : Database) return Interfaces.Integer_64
-     with Pre => Is_Open (DB);
+     with Pre => Is_Open (DB),
+          Volatile_Function, Global => (Input => DBMS);
    --  Rowid of the most recent successful INSERT on DB (sqlite3_last_insert_
    --  rowid) -- the store.py `cur.lastrowid` after every INSERT. Meaningful
    --  only straight after the INSERT's Step returned Done.
@@ -225,7 +248,8 @@ is
    --  @return The rowid of the most recent successful INSERT on DB.
 
    function Changes (DB : Database) return Natural
-     with Pre => Is_Open (DB);
+     with Pre => Is_Open (DB),
+          Volatile_Function, Global => (Input => DBMS);
    --  Rows changed by the most recent INSERT/UPDATE/DELETE (sqlite3_changes) --
    --  e.g. forget_summary's "was a row removed?".
    --  @param DB The open connection to query.
@@ -337,7 +361,8 @@ is
 
    function Column_Int64
      (S : Statement; Col : Natural) return Interfaces.Integer_64
-     with Pre => Is_Valid (S);
+     with Pre => Is_Valid (S),
+          Volatile_Function, Global => (Input => DBMS);
    --  Read column Col of the current row as a 64-bit integer. All Column_*
    --  reads are valid only when the most recent Step returned Row, and only
    --  until the next Step/Reset/Finalize on S (a lifetime SPARK cannot police
@@ -349,7 +374,8 @@ is
 
    function Column_Double
      (S : Statement; Col : Natural) return Interfaces.IEEE_Float_64
-     with Pre => Is_Valid (S);
+     with Pre => Is_Valid (S),
+          Volatile_Function, Global => (Input => DBMS);
    --  Read column Col of the current row as a double. The vec0 KNN `distance`
    --  column comes back here (a C double).
    --  @param S The valid statement positioned on a result row.
@@ -357,7 +383,8 @@ is
    --  @return The column value as an IEEE_Float_64.
 
    function Column_Is_Null (S : Statement; Col : Natural) return Boolean
-     with Pre => Is_Valid (S);
+     with Pre => Is_Valid (S),
+          Volatile_Function, Global => (Input => DBMS);
    --  True when the column holds SQL NULL. Callers use this to tell a genuine
    --  NULL (nullable session_id, raw_path) from an empty-string Column_Text.
    --  @param S The valid statement positioned on a result row.
@@ -366,7 +393,8 @@ is
 
    function Column_Text (S : Statement; Col : Natural) return Text_Ptr
      with Pre  => Is_Valid (S),
-          Post => Column_Text'Result /= null;
+          Post => Column_Text'Result /= null,
+          Volatile_Function, Global => (Input => DBMS);
    --  A fresh, exactly-sized, caller-owned copy of the column's text (see the
    --  design note). Never null; a NULL or empty column yields "" (length 0).
    --  The caller must Free the result.

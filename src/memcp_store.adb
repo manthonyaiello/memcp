@@ -722,7 +722,11 @@ package body Memcp_Store with SPARK_Mode => On is
             Head : Sql.Text_Ptr := Sql.Column_Text (Stmt, 4);
             Bod  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
             Kind : Sql.Text_Ptr := Sql.Column_Text (Stmt, 6);
-            Has_S : constant Boolean := not Sql.Column_Is_Null (Stmt, 2);
+            --  Volatile reads captured into locals: DBMS has Async_Writers, so a
+            --  reader may not appear inside `not` or a record aggregate.
+            Null_S : constant Boolean := Sql.Column_Is_Null (Stmt, 2);
+            Has_S  : constant Boolean := not Null_S;
+            Id_C   : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
          begin
             Result := new Summary'
               (Project_Len  => Proj.all'Length,
@@ -731,7 +735,7 @@ package body Memcp_Store with SPARK_Mode => On is
                Headline_Len => Head.all'Length,
                Body_Len     => Bod.all'Length,
                Kind_Len     => Kind.all'Length,
-               Id           => Sql.Column_Int64 (Stmt, 0),
+               Id           => Id_C,
                Has_Session  => Has_S,
                Project      => Proj.all,
                Session      => Sess.all,
@@ -828,7 +832,10 @@ package body Memcp_Store with SPARK_Mode => On is
                Bod   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
                Head  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 6);
                Kind  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 7);
-               Has_S : constant Boolean := not Sql.Column_Is_Null (Stmt, 3);
+               --  Volatile read captured into a local (see the get-summary note):
+               --  a reader may not be an operand of `not`.
+               Null_S : constant Boolean := Sql.Column_Is_Null (Stmt, 3);
+               Has_S  : constant Boolean := not Null_S;
             begin
                Diary_Vectors.Append
                  (Result,
@@ -899,7 +906,10 @@ package body Memcp_Store with SPARK_Mode => On is
             Cnt   : constant Row_Id := Sql.Column_Int64 (Stmt, 1);
             Nm    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 0);
             Lat   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 2);
-            Has_L : constant Boolean := not Sql.Column_Is_Null (Stmt, 2);
+            --  Volatile read captured into a local (see the get-summary note):
+            --  a reader may not be an operand of `not`.
+            Null_L : constant Boolean := Sql.Column_Is_Null (Stmt, 2);
+            Has_L  : constant Boolean := not Null_L;
          begin
             Project_Vectors.Append
               (Result,
@@ -1137,7 +1147,10 @@ package body Memcp_Store with SPARK_Mode => On is
                      Head  : Sql.Text_Ptr := Sql.Column_Text (M, 4);
                      Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 5);
                      Kind  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
-                     Has_S : constant Boolean := not Sql.Column_Is_Null (M, 2);
+                     --  Volatile read captured into a local (see the get-summary
+                     --  note): a reader may not be an operand of `not`.
+                     Null_S : constant Boolean := Sql.Column_Is_Null (M, 2);
+                     Has_S  : constant Boolean := not Null_S;
                      Passes : constant Boolean :=
                        (Len_P = 0 or else Contains (Projects, Proj.all))
                        and then (not Has_Since or else Crea.all >= Since)
