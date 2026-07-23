@@ -1,4 +1,4 @@
-package body Memcp_Resources with SPARK_Mode => On is
+package body Memcp.Resources with SPARK_Mode => On is
 
    use type MS.Open_Status;
    use type Candle_Spark.Status;
@@ -330,4 +330,4 @@ package body Memcp_Resources with SPARK_Mode => On is
          Has_Created, Created_At, Summary_Id, Diary_Id, Written, Status);
    end Save_Autorecap;
 
-end Memcp_Resources;
+end Memcp.Resources;

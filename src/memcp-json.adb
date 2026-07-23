@@ -7,7 +7,7 @@ with JSON.Parsers;
 
 with Spark_Mcp.Writer;
 
-package body Memcp_Json with SPARK_Mode => On is
+package body Memcp.Json with SPARK_Mode => On is
 
    --  Ownership-reclamation discards. Types.Free / Parsers.Destroy release
    --  owned memory and null their argument; a Parse whose tree is discarded
@@ -28,13 +28,17 @@ package body Memcp_Json with SPARK_Mode => On is
      (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
       Reason => "the parser is destroyed after Parse; its post-state is unread");
 
-   --  Same value model as Memcp_Envelope: the numeric bounds only limit what the
+   --  Same value model as Memcp.Envelope: the numeric bounds only limit what the
    --  tokenizer accepts; tool arguments read strings/ints and re-serialised
    --  subtrees, so the exact numeric range is immaterial. 64-bit integers cover
    --  every id/ordinal a tool passes to the Store.
-   package Types is new JSON.Types
+   --  Standard.JSON, not the bare "JSON": Memcp.Json's own simple name (Json)
+   --  shadows the withed library unit JSON here (Ada's usual rule for a name
+   --  that is both a library unit and, case-insensitively, the current
+   --  package's own identifier), so the reference must be fully qualified.
+   package Types is new Standard.JSON.Types
      (Integer_Type => Long_Long_Integer, Float_Type => Long_Float);
-   package Parsers is new JSON.Parsers
+   package Parsers is new Standard.JSON.Parsers
      (Types => Types, Default_Maximum_Depth => 512);
 
    use type Types.Value_Kind;
@@ -210,8 +214,8 @@ package body Memcp_Json with SPARK_Mode => On is
    -- Get_Names --
    ---------------
 
-   function Get_Names (D : Doc; Key : String) return Memcp_Store.Name_List is
-      use Memcp_Store;
+   function Get_Names (D : Doc; Key : String) return Memcp.Store.Name_List is
+      use Memcp.Store;
       Result : Name_List := Name_Vectors.Empty_Vector;
       M      : constant access constant Types.JSON_Value := Member (D, Key);
    begin
@@ -259,4 +263,4 @@ package body Memcp_Json with SPARK_Mode => On is
    function F (V : Interfaces.IEEE_Float_64) return String is
      (Ada.Strings.Fixed.Trim (V'Image, Ada.Strings.Both));
 
-end Memcp_Json;
+end Memcp.Json;

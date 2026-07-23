@@ -2,9 +2,9 @@ with JSON.Types;
 with JSON.Parsers;
 with JSON.Streams;
 
-package body Memcp_Envelope with SPARK_Mode => On is
+package body Memcp.Envelope with SPARK_Mode => On is
 
-   --  Ownership-reclamation discards (see Memcp_Json for the rationale): Free /
+   --  Ownership-reclamation discards (see Memcp.Json for the rationale): Free /
    --  Destroy null their argument as they reclaim it, and a Parse whose tree is
    --  discarded keeps only its Status. The reclaimed handles are not read after.
    pragma Warnings
@@ -227,4 +227,4 @@ package body Memcp_Envelope with SPARK_Mode => On is
       end;
    end Parse_Envelope;
 
-end Memcp_Envelope;
+end Memcp.Envelope;

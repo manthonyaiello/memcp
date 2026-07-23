@@ -10,9 +10,9 @@ Pending SPARK-team review of whether a cleaner idiom exists (see Note).
 now proves, at every call site, that an open connection is `Close`d and a valid
 statement is `Finalize`d before it goes out of scope or is overwritten — the
 resource-leak obligation that previously rested on hand-audited discipline in
-`Memcp_Store`.
+`Memcp.Store`.
 
-This joins the existing use of the same annotation on `Memcp_Json.Doc`.
+This joins the existing use of the same annotation on `Memcp.Json.Doc`.
 
 ## The ownership anchor
 
@@ -68,12 +68,12 @@ type Statement is limited private
 1. **The private part is hidden, not turned off.** An `Ownership` type requires
    its private part to be `SPARK_Mode (Off)` *or* hidden. We use
    `pragma Annotate (GNATprove, Hide_Info, "Private_Part")` — the
-   `Memcp_Json.Doc` device — which keeps the wrapper bodies *in* SPARK.
+   `Memcp.Json.Doc` device — which keeps the wrapper bodies *in* SPARK.
    `SPARK_Mode (Off)` would have ejected the whole proven binding body.
 
 2. **The releasing operations post `Is_Reclaimed` explicitly.** Under
    `Hide_Info`, clients cannot see that `Is_Reclaimed` is `not Is_Open`, so the
-   contracts state it directly (as `Memcp_Json.Close` posts `Is_Closed`):
+   contracts state it directly (as `Memcp.Json.Close` posts `Is_Closed`):
 
    ```ada
    procedure Close    (DB : in out Database)  with Post =>
@@ -90,7 +90,7 @@ type Statement is limited private
 
 `make build` is clean (no new warnings). `make prove` (GNATprove Silver,
 `--level=2`) reports **all checks proved (5451)** — up from 5211, the extra ~240
-being the new resource-leak obligations, all discharged. `Memcp_Store` re-proved
+being the new resource-leak obligations, all discharged. `Memcp.Store` re-proved
 with **no contract changes**: `Is_Open` / `Is_Valid` become opaque to clients
 under `Hide_Info`, but each has `Global => null` and depends only on its
 `in`-mode handle, so GNATprove carries their truth across operations from the
@@ -98,7 +98,7 @@ operation postconditions alone.
 
 ## Warning suppressions
 
-The ownership annotation does **not** retire `Memcp_Store`'s
+The ownership annotation does **not** retire `Memcp.Store`'s
 `"...is set by ""Finalize"" but not used after the call"` suppression. That is a
 flow observation about the ineffective final write — `Finalize` is `in out` and
 nulls the handle, and that reclaimed value is never read again — which is

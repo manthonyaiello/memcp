@@ -1,4 +1,4 @@
-package body Memcp_Log with SPARK_Mode => On is
+package body Memcp.Log with SPARK_Mode => On is
 
    --  A fixed prefix followed by the message, emitted as two writes rather
    --  than one concatenation: this keeps the line free of any length/overflow
@@ -24,4 +24,4 @@ package body Memcp_Log with SPARK_Mode => On is
       Ada.Text_IO.Put_Line (Message);
    end Warning;
 
-end Memcp_Log;
+end Memcp.Log;

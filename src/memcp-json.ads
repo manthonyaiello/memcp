@@ -1,5 +1,5 @@
 --  The tool layer's JSON marshalling helper: the ONE json-touching unit besides
---  Memcp_Envelope. Inbound, it parses a tool's `arguments` object (raw JSON
+--  Memcp.Envelope. Inbound, it parses a tool's `arguments` object (raw JSON
 --  text off the seam) and hands back typed fields; outbound, it renders scalars
 --  as JSON text (strings escaped via the proved Spark_Mcp.Writer).
 --
@@ -11,9 +11,9 @@
 
 with Interfaces;
 
-with Memcp_Store;
+with Memcp.Store;
 
-package Memcp_Json with SPARK_Mode => On is
+package Memcp.Json with SPARK_Mode => On is
 
    --  A parsed `arguments` object. Own it: Open parses (never raising -- bad or
    --  non-object JSON just yields Valid => False), Close frees. It owns a heap
@@ -89,7 +89,7 @@ package Memcp_Json with SPARK_Mode => On is
    --  @param Key The member name to look up.
    --  @return True when Key is present and its value is an integer.
 
-   function Get_Names (D : Doc; Key : String) return Memcp_Store.Name_List;
+   function Get_Names (D : Doc; Key : String) return Memcp.Store.Name_List;
    --  The string-array member Key as a Store Name_List (project / session_id
    --  filters). Absent, null, or not-an-array yields an empty list; non-string
    --  elements are skipped. The Store refuses a list longer than
@@ -134,8 +134,8 @@ private
    type Impl_Access is access Impl_Record;
    --  Taft-amendment type: the parser + parsed value tree live in a record
    --  completed in the body, so this spec never `with`s the json crate (only
-   --  Memcp_Json's body decodes JSON, keeping the json dependency contained
-   --  exactly as Memcp_Envelope does). null when Open failed / after Close.
+   --  Memcp.Json's body decodes JSON, keeping the json dependency contained
+   --  exactly as Memcp.Envelope does). null when Open failed / after Close.
 
    type Doc is limited record
       Is_Valid : Boolean := False;   --  True when Open parsed object JSON.
@@ -148,4 +148,4 @@ private
    --  @param D The document to test.
    --  @return True when D holds no value tree.
 
-end Memcp_Json;
+end Memcp.Json;

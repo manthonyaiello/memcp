@@ -5,11 +5,11 @@ with Ada.Strings.Maps;
 with JSON.Types;
 with JSON.Parsers;
 
-with Memcp_Text;
+with Memcp.Text;
 
-package body Memcp_Extractor with SPARK_Mode => On is
+package body Memcp.Extractor with SPARK_Mode => On is
 
-   --  Ownership-reclamation discards (see Memcp_Json for the rationale): Free /
+   --  Ownership-reclamation discards (see Memcp.Json for the rationale): Free /
    --  Destroy null their argument as they reclaim it, and a Parse whose tree is
    --  discarded keeps only its Status. The reclaimed handles are not read after.
    pragma Warnings
@@ -161,11 +161,11 @@ package body Memcp_Extractor with SPARK_Mode => On is
       Ok      : out Boolean)
    is
       Groups : constant Natural := Encoded'Length / 4;
-      B      : Memcp_Text.Builder;
+      B      : Memcp.Text.Builder;
    begin
       Decoded := null;
       Ok      := False;
-      Memcp_Text.Reset (B);
+      Memcp.Text.Reset (B);
 
       --  Standard base64 is always a whole number of 4-char groups (padding
       --  included); anything else is malformed (Python's "Incorrect padding").
@@ -195,7 +195,7 @@ package body Memcp_Extractor with SPARK_Mode => On is
                if C3 /= '=' or else not Is_Last then
                   return;
                end if;
-               Memcp_Text.Add (B, Character'Val (N0 * 4 + N1 / 16));
+               Memcp.Text.Add (B, Character'Val (N0 * 4 + N1 / 16));
 
             elsif C3 = '=' then
                --  One-pad group "xxx=": two bytes, only as the final group.
@@ -206,8 +206,8 @@ package body Memcp_Extractor with SPARK_Mode => On is
                if N2 < 0 then
                   return;
                end if;
-               Memcp_Text.Add (B, Character'Val (N0 * 4 + N1 / 16));
-               Memcp_Text.Add (B, Character'Val ((N1 mod 16) * 16 + N2 / 4));
+               Memcp.Text.Add (B, Character'Val (N0 * 4 + N1 / 16));
+               Memcp.Text.Add (B, Character'Val ((N1 mod 16) * 16 + N2 / 4));
 
             else
                --  Full group -> three bytes.
@@ -216,15 +216,15 @@ package body Memcp_Extractor with SPARK_Mode => On is
                if N2 < 0 or else N3 < 0 then
                   return;
                end if;
-               Memcp_Text.Add (B, Character'Val (N0 * 4 + N1 / 16));
-               Memcp_Text.Add (B, Character'Val ((N1 mod 16) * 16 + N2 / 4));
-               Memcp_Text.Add (B, Character'Val ((N2 mod 4) * 64 + N3));
+               Memcp.Text.Add (B, Character'Val (N0 * 4 + N1 / 16));
+               Memcp.Text.Add (B, Character'Val ((N1 mod 16) * 16 + N2 / 4));
+               Memcp.Text.Add (B, Character'Val ((N2 mod 4) * 64 + N3));
             end if;
          end;
 
          --  A decoded transcript past the field budget is refused (never a
          --  runtime fault); the caller reports it like malformed base64.
-         if Memcp_Text.Overflowed (B) then
+         if Memcp.Text.Overflowed (B) then
             return;
          end if;
       end loop;
@@ -233,7 +233,7 @@ package body Memcp_Extractor with SPARK_Mode => On is
       --  do the same so a non-UTF-8 payload is refused, not persisted as
       --  mojibake and later re-emitted by fetch_turns/fetch_chunks.
       declare
-         V : constant String := Memcp_Text.Value (B);
+         V : constant String := Memcp.Text.Value (B);
       begin
          if not Valid_Utf8 (V) then
             return;   --  Ok stays False -- the caller reports it like bad base64
@@ -333,7 +333,7 @@ package body Memcp_Extractor with SPARK_Mode => On is
    --  field (a bare string, or a list of typed parts, only "text" kept) into B,
    --  joined with a blank line. Appends nothing when nothing survives.
    procedure Append_Text_Parts
-     (B       : in out Memcp_Text.Builder;
+     (B       : in out Memcp.Text.Builder;
       Content : access constant Types.JSON_Value)
    is
       Count : Natural := 0;
@@ -345,9 +345,9 @@ package body Memcp_Extractor with SPARK_Mode => On is
             return;
          end if;
          if Count > 0 then
-            Memcp_Text.Add (B, ASCII.LF & ASCII.LF);
+            Memcp.Text.Add (B, ASCII.LF & ASCII.LF);
          end if;
-         Memcp_Text.Add (B, S);
+         Memcp.Text.Add (B, S);
          if Count < Natural'Last then
             Count := Count + 1;
          end if;
@@ -413,23 +413,23 @@ package body Memcp_Extractor with SPARK_Mode => On is
                   Role_Raw : constant String := Str_Member (Msg, "role");
                   Role     : constant String :=
                     (if Role_Raw'Length > 0 then Role_Raw else T_Kind);
-                  PB       : Memcp_Text.Builder;
+                  PB       : Memcp.Text.Builder;
                begin
-                  Memcp_Text.Reset (PB);
+                  Memcp.Text.Reset (PB);
                   Append_Text_Parts (PB, Obj_Get (Msg, "content"));
 
-                  if Memcp_Text.Length (PB) > 0 then
+                  if Memcp.Text.Length (PB) > 0 then
                      declare
-                        Parts : constant String := Memcp_Text.Value (PB);
-                        TB    : Memcp_Text.Builder;
+                        Parts : constant String := Memcp.Text.Value (PB);
+                        TB    : Memcp.Text.Builder;
                      begin
-                        Memcp_Text.Reset (TB);
-                        Memcp_Text.Add (TB, "[");
-                        Memcp_Text.Add (TB, Role);
-                        Memcp_Text.Add (TB, "] ");
-                        Memcp_Text.Add (TB, Parts);
+                        Memcp.Text.Reset (TB);
+                        Memcp.Text.Add (TB, "[");
+                        Memcp.Text.Add (TB, Role);
+                        Memcp.Text.Add (TB, "] ");
+                        Memcp.Text.Add (TB, Parts);
                         declare
-                           S : constant String := Memcp_Text.Value (TB);
+                           S : constant String := Memcp.Text.Value (TB);
                         begin
                            if Turn_Vectors.Length (Turns)
                              < Turn_Vectors.Capacity_Range'Last
@@ -467,7 +467,7 @@ package body Memcp_Extractor with SPARK_Mode => On is
    -------------------
 
    function Extract_Recap (Transcript : String) return String is
-      Last  : Memcp_Text.Builder;
+      Last  : Memcp.Text.Builder;
       Start : Natural := Transcript'First;
 
       procedure Process_Line (Line : String) is
@@ -489,8 +489,8 @@ package body Memcp_Extractor with SPARK_Mode => On is
                Content : constant String := Strip (Str_Member (Doc, "content"));
             begin
                if Content'Length > 0 then
-                  Memcp_Text.Reset (Last);   --  keep only the last one
-                  Memcp_Text.Add (Last, Content);
+                  Memcp.Text.Reset (Last);   --  keep only the last one
+                  Memcp.Text.Add (Last, Content);
                end if;
             end;
          end if;
@@ -499,7 +499,7 @@ package body Memcp_Extractor with SPARK_Mode => On is
       end Process_Line;
 
    begin
-      Memcp_Text.Reset (Last);
+      Memcp.Text.Reset (Last);
       for I in Transcript'Range loop
          pragma Loop_Invariant
            (Start >= Transcript'First and then Start <= I);
@@ -511,7 +511,7 @@ package body Memcp_Extractor with SPARK_Mode => On is
       if Start <= Transcript'Last then
          Process_Line (Strip (Transcript (Start .. Transcript'Last)));
       end if;
-      return Memcp_Text.Value (Last);
+      return Memcp.Text.Value (Last);
    end Extract_Recap;
 
-end Memcp_Extractor;
+end Memcp.Extractor;

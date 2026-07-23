@@ -1,5 +1,5 @@
 --  A small, SPARK-proved bounded string builder shared by the marshalling
---  layers (Memcp_Tools' JSON serializers, Memcp_Extractor's turn assembly).
+--  layers (Memcp.Tools' JSON serializers, Memcp.Extractor's turn assembly).
 --
 --  Building an arbitrary-length string by concatenation in a loop is the one
 --  spot where AoRTE is not free: a growing String index can overflow. This
@@ -15,7 +15,7 @@ with SPARK.Containers.Formal.Unbounded_Vectors;
 
 with Spark_Mcp;
 
-package Memcp_Text with SPARK_Mode => On is
+package Memcp.Text with SPARK_Mode => On is
 
    Max_Len : constant := Spark_Mcp.Max_Field;
    --  The cap: the same field budget the whole response layer rests on.
@@ -77,4 +77,4 @@ private
      Char_Vectors.Capacity_Range (Max_Len);
    --  The cap expressed in the vector's capacity units.
 
-end Memcp_Text;
+end Memcp.Text;

@@ -1,11 +1,11 @@
 --  memcp's concrete tool set: each Invoke branch parses its arguments with
---  Memcp_Json, runs the request against the Memcp_Resources object passed in,
+--  Memcp.Json, runs the request against the Memcp.Resources object passed in,
 --  and renders the reply as JSON text matching the matching @mcp.tool in
 --  server.py.
 --
 --  SPARK_Mode On. It is pure marshalling: it holds no state (the Store/Embedder
 --  live in the Resources object, reached through its total operations),
---  builds every result through the bounded Memcp_Text builder (so the response
+--  builds every result through the bounded Memcp.Text builder (so the response
 --  layer's Max_Field budget holds by construction), and provably never raises
 --  -- so no exception handler is needed and Dispatch's "never raises" contract
 --  is a theorem, not folklore. The Doc parsed from `arguments` is the one owning
@@ -18,14 +18,14 @@ with Interfaces;             use type Interfaces.Integer_64;
 with Spark_Mcp;              use Spark_Mcp;
 
 with Candle_Spark;
-with Memcp_Store;
-with Memcp_Replay;
-with Memcp_Json;
-with Memcp_Log;
-with Memcp_Extractor;
-with Memcp_Text;
+with Memcp.Store;
+with Memcp.Replay;
+with Memcp.Json;
+with Memcp.Log;
+with Memcp.Extractor;
+with Memcp.Text;
 
-package body Memcp_Tools with SPARK_Mode => On is
+package body Memcp.Tools with SPARK_Mode => On is
 
    --  Each tool Closes the Doc it parsed from `arguments` on every path; the
    --  Doc is an ownership handle nulled by Close and never read afterwards, so
@@ -43,9 +43,9 @@ package body Memcp_Tools with SPARK_Mode => On is
      (GNATprove, Off, "*is set by ""Save_Autorecap"" but not used after the call",
       Reason => "this caller uses only Summary_Id, not the parallel Diary_Id");
 
-   package MS renames Memcp_Store;
-   package MJ renames Memcp_Json;
-   package MR renames Memcp_Resources;
+   package MS renames Memcp.Store;
+   package MJ renames Memcp.Json;
+   package MR renames Memcp.Resources;
    use type MS.Op_Status;
    use type MS.Summary_Ptr;
 
@@ -75,17 +75,17 @@ package body Memcp_Tools with SPARK_Mode => On is
    --  The builder-fed overload: a serializer that overflowed the field budget
    --  truncated its JSON at the cap, so its Value is malformed. Consulting
    --  Overflowed is the ONLY reliable signal -- Value'Length is bounded by
-   --  Max_Field by construction (Memcp_Text.Length's postcondition), so a
+   --  Max_Field by construction (Memcp.Text.Length's postcondition), so a
    --  length check can never catch a payload truncated exactly at the cap.
    --  Emitting truncated JSON as a Success is the bug this overload closes.
-   function OK (Buf : Memcp_Text.Builder) return Result_Ptr is
+   function OK (Buf : Memcp.Text.Builder) return Result_Ptr is
    begin
-      if Memcp_Text.Overflowed (Buf) then
+      if Memcp.Text.Overflowed (Buf) then
          return new Spark_Mcp.Tools.Invocation_Result'
            (Spark_Mcp.Tools.Failure (Internal_Error, "result too large"));
       end if;
       return new Spark_Mcp.Tools.Invocation_Result'
-        (Spark_Mcp.Tools.Success (Memcp_Text.Value (Buf)));
+        (Spark_Mcp.Tools.Success (Memcp.Text.Value (Buf)));
    end OK;
 
    function Err (Code : Error_Code; Msg : String) return Result_Ptr is
@@ -607,14 +607,14 @@ package body Memcp_Tools with SPARK_Mode => On is
    procedure Salvage
      (Diary       : String;
       Summary     : String;
-      Out_Diary   : out Memcp_Text.Builder;
-      Out_Summary : out Memcp_Text.Builder;
+      Out_Diary   : out Memcp.Text.Builder;
+      Out_Summary : out Memcp.Text.Builder;
       Did         : out Boolean)
    is
-      procedure Emit (B : out Memcp_Text.Builder; Text : String) is
+      procedure Emit (B : out Memcp.Text.Builder; Text : String) is
       begin
-         Memcp_Text.Reset (B);
-         Memcp_Text.Add (B, Text);
+         Memcp.Text.Reset (B);
+         Memcp.Text.Add (B, Text);
       end Emit;
 
       Found : Boolean;
@@ -660,8 +660,8 @@ package body Memcp_Tools with SPARK_Mode => On is
       end if;
 
       --  No salvageable boundary: signal the caller to reuse the inputs.
-      Memcp_Text.Reset (Out_Diary);
-      Memcp_Text.Reset (Out_Summary);
+      Memcp.Text.Reset (Out_Diary);
+      Memcp.Text.Reset (Out_Summary);
       Did := False;
    end Salvage;
 
@@ -669,14 +669,14 @@ package body Memcp_Tools with SPARK_Mode => On is
    -- List serializers --
    ----------------------
 
-   --  Each builds its JSON array into the caller's bounded Memcp_Text builder;
+   --  Each builds its JSON array into the caller's bounded Memcp.Text builder;
    --  OK (Buf) then emits it only if it did not overflow the field budget.
 
-   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp_Text.Builder)
+   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp.Text.Builder)
    is
    begin
-      Memcp_Text.Reset (Buf);
-      Memcp_Text.Add (Buf, "[");
+      Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "[");
       for I in MS.Diary_Vectors.First_Index (V)
                .. MS.Diary_Vectors.Last_Index (V)
       loop
@@ -684,35 +684,35 @@ package body Memcp_Tools with SPARK_Mode => On is
             E : constant MS.Diary_Entry := MS.Diary_Vectors.Element (V, I);
          begin
             if I > MS.Diary_Vectors.First_Index (V) then
-               Memcp_Text.Add (Buf, ",");
+               Memcp.Text.Add (Buf, ",");
             end if;
-            Memcp_Text.Add (Buf, "{""diary_id"":");
-            Memcp_Text.Add (Buf, N (E.Id));
-            Memcp_Text.Add (Buf, ",""project"":");
-            Memcp_Text.Add (Buf, Q (E.Project));
-            Memcp_Text.Add (Buf, ",""summary_id"":");
-            Memcp_Text.Add (Buf, N (E.Summary_Id));
-            Memcp_Text.Add (Buf, ",""session_id"":");
-            Memcp_Text.Add
+            Memcp.Text.Add (Buf, "{""diary_id"":");
+            Memcp.Text.Add (Buf, N (E.Id));
+            Memcp.Text.Add (Buf, ",""project"":");
+            Memcp.Text.Add (Buf, Q (E.Project));
+            Memcp.Text.Add (Buf, ",""summary_id"":");
+            Memcp.Text.Add (Buf, N (E.Summary_Id));
+            Memcp.Text.Add (Buf, ",""session_id"":");
+            Memcp.Text.Add
               (Buf, (if E.Has_Session then Q (E.Session) else "null"));
-            Memcp_Text.Add (Buf, ",""created_at"":");
-            Memcp_Text.Add (Buf, Q (E.Created_At));
-            Memcp_Text.Add (Buf, ",""headline"":");
-            Memcp_Text.Add (Buf, Q (E.Headline));
-            Memcp_Text.Add (Buf, ",""kind"":");
-            Memcp_Text.Add (Buf, Q (E.Kind));
-            Memcp_Text.Add (Buf, "}");
+            Memcp.Text.Add (Buf, ",""created_at"":");
+            Memcp.Text.Add (Buf, Q (E.Created_At));
+            Memcp.Text.Add (Buf, ",""headline"":");
+            Memcp.Text.Add (Buf, Q (E.Headline));
+            Memcp.Text.Add (Buf, ",""kind"":");
+            Memcp.Text.Add (Buf, Q (E.Kind));
+            Memcp.Text.Add (Buf, "}");
          end;
       end loop;
-      Memcp_Text.Add (Buf, "]");
+      Memcp.Text.Add (Buf, "]");
    end Ser_Diary;
 
    procedure Ser_Projects
-     (V : MS.Project_Info_List; Buf : out Memcp_Text.Builder)
+     (V : MS.Project_Info_List; Buf : out Memcp.Text.Builder)
    is
    begin
-      Memcp_Text.Reset (Buf);
-      Memcp_Text.Add (Buf, "[");
+      Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "[");
       for I in MS.Project_Vectors.First_Index (V)
                .. MS.Project_Vectors.Last_Index (V)
       loop
@@ -720,27 +720,27 @@ package body Memcp_Tools with SPARK_Mode => On is
             E : constant MS.Project_Info := MS.Project_Vectors.Element (V, I);
          begin
             if I > MS.Project_Vectors.First_Index (V) then
-               Memcp_Text.Add (Buf, ",");
+               Memcp.Text.Add (Buf, ",");
             end if;
-            Memcp_Text.Add (Buf, "{""project"":");
-            Memcp_Text.Add (Buf, Q (E.Name));
-            Memcp_Text.Add (Buf, ",""diary_count"":");
-            Memcp_Text.Add (Buf, N (E.Diary_Count));
-            Memcp_Text.Add (Buf, ",""latest_at"":");
-            Memcp_Text.Add
+            Memcp.Text.Add (Buf, "{""project"":");
+            Memcp.Text.Add (Buf, Q (E.Name));
+            Memcp.Text.Add (Buf, ",""diary_count"":");
+            Memcp.Text.Add (Buf, N (E.Diary_Count));
+            Memcp.Text.Add (Buf, ",""latest_at"":");
+            Memcp.Text.Add
               (Buf, (if E.Has_Latest then Q (E.Latest_At) else "null"));
-            Memcp_Text.Add (Buf, "}");
+            Memcp.Text.Add (Buf, "}");
          end;
       end loop;
-      Memcp_Text.Add (Buf, "]");
+      Memcp.Text.Add (Buf, "]");
    end Ser_Projects;
 
    procedure Ser_Summary_Hits
-     (V : MS.Summary_Hit_List; Buf : out Memcp_Text.Builder)
+     (V : MS.Summary_Hit_List; Buf : out Memcp.Text.Builder)
    is
    begin
-      Memcp_Text.Reset (Buf);
-      Memcp_Text.Add (Buf, "[");
+      Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "[");
       for I in MS.Summary_Hit_Vectors.First_Index (V)
                .. MS.Summary_Hit_Vectors.Last_Index (V)
       loop
@@ -749,35 +749,35 @@ package body Memcp_Tools with SPARK_Mode => On is
               MS.Summary_Hit_Vectors.Element (V, I);
          begin
             if I > MS.Summary_Hit_Vectors.First_Index (V) then
-               Memcp_Text.Add (Buf, ",");
+               Memcp.Text.Add (Buf, ",");
             end if;
-            Memcp_Text.Add (Buf, "{""summary_id"":");
-            Memcp_Text.Add (Buf, N (E.Id));
-            Memcp_Text.Add (Buf, ",""project"":");
-            Memcp_Text.Add (Buf, Q (E.Project));
-            Memcp_Text.Add (Buf, ",""session_id"":");
-            Memcp_Text.Add
+            Memcp.Text.Add (Buf, "{""summary_id"":");
+            Memcp.Text.Add (Buf, N (E.Id));
+            Memcp.Text.Add (Buf, ",""project"":");
+            Memcp.Text.Add (Buf, Q (E.Project));
+            Memcp.Text.Add (Buf, ",""session_id"":");
+            Memcp.Text.Add
               (Buf, (if E.Has_Session then Q (E.Session) else "null"));
-            Memcp_Text.Add (Buf, ",""created_at"":");
-            Memcp_Text.Add (Buf, Q (E.Created_At));
-            Memcp_Text.Add (Buf, ",""headline"":");
-            Memcp_Text.Add (Buf, Q (E.Headline));
-            Memcp_Text.Add (Buf, ",""kind"":");
-            Memcp_Text.Add (Buf, Q (E.Kind));
-            Memcp_Text.Add (Buf, ",""distance"":");
-            Memcp_Text.Add (Buf, F (E.Distance));
-            Memcp_Text.Add (Buf, "}");
+            Memcp.Text.Add (Buf, ",""created_at"":");
+            Memcp.Text.Add (Buf, Q (E.Created_At));
+            Memcp.Text.Add (Buf, ",""headline"":");
+            Memcp.Text.Add (Buf, Q (E.Headline));
+            Memcp.Text.Add (Buf, ",""kind"":");
+            Memcp.Text.Add (Buf, Q (E.Kind));
+            Memcp.Text.Add (Buf, ",""distance"":");
+            Memcp.Text.Add (Buf, F (E.Distance));
+            Memcp.Text.Add (Buf, "}");
          end;
       end loop;
-      Memcp_Text.Add (Buf, "]");
+      Memcp.Text.Add (Buf, "]");
    end Ser_Summary_Hits;
 
    procedure Ser_Chunk_Hits
-     (V : MS.Chunk_Hit_List; Buf : out Memcp_Text.Builder)
+     (V : MS.Chunk_Hit_List; Buf : out Memcp.Text.Builder)
    is
    begin
-      Memcp_Text.Reset (Buf);
-      Memcp_Text.Add (Buf, "[");
+      Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "[");
       for I in MS.Chunk_Hit_Vectors.First_Index (V)
                .. MS.Chunk_Hit_Vectors.Last_Index (V)
       loop
@@ -785,38 +785,38 @@ package body Memcp_Tools with SPARK_Mode => On is
             E : constant MS.Chunk_Hit := MS.Chunk_Hit_Vectors.Element (V, I);
          begin
             if I > MS.Chunk_Hit_Vectors.First_Index (V) then
-               Memcp_Text.Add (Buf, ",");
+               Memcp.Text.Add (Buf, ",");
             end if;
-            Memcp_Text.Add (Buf, "{""chunk_id"":");
-            Memcp_Text.Add (Buf, N (E.Id));
-            Memcp_Text.Add (Buf, ",""session_row_id"":");
-            Memcp_Text.Add (Buf, N (E.Session_Row_Id));
-            Memcp_Text.Add (Buf, ",""session_id"":");
-            Memcp_Text.Add (Buf, Q (E.Session));
-            Memcp_Text.Add (Buf, ",""project"":");
-            Memcp_Text.Add (Buf, Q (E.Project));
-            Memcp_Text.Add (Buf, ",""ordinal"":");
-            Memcp_Text.Add (Buf, N (E.Ordinal));
-            Memcp_Text.Add (Buf, ",""body"":");
-            Memcp_Text.Add (Buf, Q (E.Content));
-            Memcp_Text.Add (Buf, ",""created_at"":");
-            Memcp_Text.Add (Buf, Q (E.Created_At));
-            Memcp_Text.Add (Buf, ",""distance"":");
-            Memcp_Text.Add (Buf, F (E.Distance));
-            Memcp_Text.Add (Buf, "}");
+            Memcp.Text.Add (Buf, "{""chunk_id"":");
+            Memcp.Text.Add (Buf, N (E.Id));
+            Memcp.Text.Add (Buf, ",""session_row_id"":");
+            Memcp.Text.Add (Buf, N (E.Session_Row_Id));
+            Memcp.Text.Add (Buf, ",""session_id"":");
+            Memcp.Text.Add (Buf, Q (E.Session));
+            Memcp.Text.Add (Buf, ",""project"":");
+            Memcp.Text.Add (Buf, Q (E.Project));
+            Memcp.Text.Add (Buf, ",""ordinal"":");
+            Memcp.Text.Add (Buf, N (E.Ordinal));
+            Memcp.Text.Add (Buf, ",""body"":");
+            Memcp.Text.Add (Buf, Q (E.Content));
+            Memcp.Text.Add (Buf, ",""created_at"":");
+            Memcp.Text.Add (Buf, Q (E.Created_At));
+            Memcp.Text.Add (Buf, ",""distance"":");
+            Memcp.Text.Add (Buf, F (E.Distance));
+            Memcp.Text.Add (Buf, "}");
          end;
       end loop;
-      Memcp_Text.Add (Buf, "]");
+      Memcp.Text.Add (Buf, "]");
    end Ser_Chunk_Hits;
 
    --  fetch_turns: the turn's session_id is the request argument (the Chunk
    --  record has no session field), matching server.py.
    procedure Ser_Turns
-     (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp_Text.Builder)
+     (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp.Text.Builder)
    is
    begin
-      Memcp_Text.Reset (Buf);
-      Memcp_Text.Add (Buf, "[");
+      Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "[");
       for I in MS.Chunk_Vectors.First_Index (V)
                .. MS.Chunk_Vectors.Last_Index (V)
       loop
@@ -824,22 +824,22 @@ package body Memcp_Tools with SPARK_Mode => On is
             E : constant MS.Chunk := MS.Chunk_Vectors.Element (V, I);
          begin
             if I > MS.Chunk_Vectors.First_Index (V) then
-               Memcp_Text.Add (Buf, ",");
+               Memcp.Text.Add (Buf, ",");
             end if;
-            Memcp_Text.Add (Buf, "{""session_id"":");
-            Memcp_Text.Add (Buf, Q (Session_Id));
-            Memcp_Text.Add (Buf, ",""project"":");
-            Memcp_Text.Add (Buf, Q (E.Project));
-            Memcp_Text.Add (Buf, ",""ordinal"":");
-            Memcp_Text.Add (Buf, N (E.Ordinal));
-            Memcp_Text.Add (Buf, ",""body"":");
-            Memcp_Text.Add (Buf, Q (E.Content));
-            Memcp_Text.Add (Buf, ",""created_at"":");
-            Memcp_Text.Add (Buf, Q (E.Created_At));
-            Memcp_Text.Add (Buf, "}");
+            Memcp.Text.Add (Buf, "{""session_id"":");
+            Memcp.Text.Add (Buf, Q (Session_Id));
+            Memcp.Text.Add (Buf, ",""project"":");
+            Memcp.Text.Add (Buf, Q (E.Project));
+            Memcp.Text.Add (Buf, ",""ordinal"":");
+            Memcp.Text.Add (Buf, N (E.Ordinal));
+            Memcp.Text.Add (Buf, ",""body"":");
+            Memcp.Text.Add (Buf, Q (E.Content));
+            Memcp.Text.Add (Buf, ",""created_at"":");
+            Memcp.Text.Add (Buf, Q (E.Created_At));
+            Memcp.Text.Add (Buf, "}");
          end;
       end loop;
-      Memcp_Text.Add (Buf, "]");
+      Memcp.Text.Add (Buf, "]");
    end Ser_Turns;
 
    -----------
@@ -849,7 +849,7 @@ package body Memcp_Tools with SPARK_Mode => On is
    --  An embedder is usable when a model is loaded OR we are replaying recorded
    --  vectors (conformance). Every embedding-gate consults this.
    function Embedder_Available (R : MR.Resources) return Boolean is
-     (MR.Embedder_Loaded (R) or else Memcp_Replay.Enabled);
+     (MR.Embedder_Loaded (R) or else Memcp.Replay.Enabled);
 
    --  Embed one text. Under replay the recorded vector is injected by text
    --  lookup (a miss is counted and surfaced by the harness); otherwise the
@@ -860,15 +860,15 @@ package body Memcp_Tools with SPARK_Mode => On is
    is
       Found : Boolean;
    begin
-      if Memcp_Replay.Enabled then
-         Memcp_Replay.Lookup_Embedding (Text, Emb, Found);
+      if Memcp.Replay.Enabled then
+         Memcp.Replay.Lookup_Embedding (Text, Emb, Found);
          if not Found then
             --  A replay run expects every embedding to be pre-recorded; a miss
             --  means the corpus is out of step with the request stream and the
             --  zero fallback vector will skew similarity. Record it -- the
             --  Python source stays silent here, but the whole point of replay
             --  is determinism, so a miss is worth surfacing.
-            Memcp_Log.Warning
+            Memcp.Log.Warning
               ("replay: no recorded embedding for query text; "
                & "using zero fallback vector");
          end if;
@@ -905,7 +905,7 @@ package body Memcp_Tools with SPARK_Mode => On is
       D       : MJ.Doc;
       Entries : MS.Diary_Entry_List;
       St      : MS.Op_Status;
-      Buf     : Memcp_Text.Builder;
+      Buf     : Memcp.Text.Builder;
    begin
       MJ.Open (D, Arguments);
       if not MJ.Has (D, "projects") then
@@ -932,7 +932,7 @@ package body Memcp_Tools with SPARK_Mode => On is
    is
       Projs : MS.Project_Info_List;
       St    : MS.Op_Status;
-      Buf   : Memcp_Text.Builder;
+      Buf   : Memcp.Text.Builder;
    begin
       MR.List_Projects (R, Projs, St);
       if St = MS.Success then
@@ -953,8 +953,8 @@ package body Memcp_Tools with SPARK_Mode => On is
          Project    : constant String := MJ.Get_Str (D, "project");
          Diary_In   : constant String := MJ.Get_Str (D, "diary");
          Summary_In : constant String := MJ.Get_Str (D, "summary");
-         Bd_Buf     : Memcp_Text.Builder;
-         Sm_Buf     : Memcp_Text.Builder;
+         Bd_Buf     : Memcp.Text.Builder;
+         Sm_Buf     : Memcp.Text.Builder;
          Salvaged   : Boolean;
       begin
          --  Recover a leaked <parameter> boundary before the emptiness gate:
@@ -962,7 +962,7 @@ package body Memcp_Tools with SPARK_Mode => On is
          --  saving beats rejecting (which loses the memory with no retry).
          Salvage (Diary_In, Summary_In, Bd_Buf, Sm_Buf, Salvaged);
          if Salvaged then
-            Memcp_Log.Warning
+            Memcp.Log.Warning
               ("save: recovered a leaked <parameter> boundary; "
                & "split diary/summary");
          end if;
@@ -971,9 +971,9 @@ package body Memcp_Tools with SPARK_Mode => On is
             --  reuse the original arguments rather than round-tripping them
             --  through the builders.
             Diary   : constant String :=
-              (if Salvaged then Memcp_Text.Value (Bd_Buf) else Diary_In);
+              (if Salvaged then Memcp.Text.Value (Bd_Buf) else Diary_In);
             Summary : constant String :=
-              (if Salvaged then Memcp_Text.Value (Sm_Buf) else Summary_In);
+              (if Salvaged then Memcp.Text.Value (Sm_Buf) else Summary_In);
             Emb     : Candle_Spark.Embedding;
             Emb_Ok  : Boolean;
          begin
@@ -995,16 +995,16 @@ package body Memcp_Tools with SPARK_Mode => On is
                      Res     : MS.Save_Result;
                      St      : MS.Op_Status;
                      Rep     : constant Boolean :=
-                       Memcp_Replay.Enabled and then Memcp_Replay.Has_Clock;
+                       Memcp.Replay.Enabled and then Memcp.Replay.Has_Clock;
                      Arg_Cre : constant Boolean := MJ.Has_Str (D, "created_at");
                      Has_Cre : constant Boolean := Rep or else Arg_Cre;
                      TS      : constant String :=
-                       (if Rep then Memcp_Replay.Peek_Clock
+                       (if Rep then Memcp.Replay.Peek_Clock
                         elsif Arg_Cre then MJ.Get_Str (D, "created_at")
                         else "");
                   begin
                      if Rep then
-                        Memcp_Replay.Advance_Clock;
+                        Memcp.Replay.Advance_Clock;
                      end if;
                      MR.Save
                        (R,
@@ -1091,7 +1091,7 @@ package body Memcp_Tools with SPARK_Mode => On is
                declare
                   Hits : MS.Summary_Hit_List;
                   St   : MS.Op_Status;
-                  Buf  : Memcp_Text.Builder;
+                  Buf  : Memcp.Text.Builder;
                begin
                   MR.Search_Summaries
                     (R,
@@ -1143,26 +1143,26 @@ package body Memcp_Tools with SPARK_Mode => On is
                --  Built through the bounded builder: the body field can be
                --  large, so a raw concatenation could not be bounded for AoRTE.
                declare
-                  Buf : Memcp_Text.Builder;
+                  Buf : Memcp.Text.Builder;
                begin
-                  Memcp_Text.Reset (Buf);
-                  Memcp_Text.Add (Buf, "{""summary_id"":");
-                  Memcp_Text.Add (Buf, N (Ptr.Id));
-                  Memcp_Text.Add (Buf, ",""project"":");
-                  Memcp_Text.Add (Buf, Q (Ptr.Project));
-                  Memcp_Text.Add (Buf, ",""session_id"":");
-                  Memcp_Text.Add
+                  Memcp.Text.Reset (Buf);
+                  Memcp.Text.Add (Buf, "{""summary_id"":");
+                  Memcp.Text.Add (Buf, N (Ptr.Id));
+                  Memcp.Text.Add (Buf, ",""project"":");
+                  Memcp.Text.Add (Buf, Q (Ptr.Project));
+                  Memcp.Text.Add (Buf, ",""session_id"":");
+                  Memcp.Text.Add
                     (Buf,
                      (if Ptr.Has_Session then Q (Ptr.Session) else "null"));
-                  Memcp_Text.Add (Buf, ",""created_at"":");
-                  Memcp_Text.Add (Buf, Q (Ptr.Created_At));
-                  Memcp_Text.Add (Buf, ",""headline"":");
-                  Memcp_Text.Add (Buf, Q (Ptr.Headline));
-                  Memcp_Text.Add (Buf, ",""body"":");
-                  Memcp_Text.Add (Buf, Q (Ptr.Content));
-                  Memcp_Text.Add (Buf, ",""kind"":");
-                  Memcp_Text.Add (Buf, Q (Ptr.Kind));
-                  Memcp_Text.Add (Buf, "}");
+                  Memcp.Text.Add (Buf, ",""created_at"":");
+                  Memcp.Text.Add (Buf, Q (Ptr.Created_At));
+                  Memcp.Text.Add (Buf, ",""headline"":");
+                  Memcp.Text.Add (Buf, Q (Ptr.Headline));
+                  Memcp.Text.Add (Buf, ",""body"":");
+                  Memcp.Text.Add (Buf, Q (Ptr.Content));
+                  Memcp.Text.Add (Buf, ",""kind"":");
+                  Memcp.Text.Add (Buf, Q (Ptr.Kind));
+                  Memcp.Text.Add (Buf, "}");
                   Result := OK (Buf);
                end;
             end if;
@@ -1203,7 +1203,7 @@ package body Memcp_Tools with SPARK_Mode => On is
                declare
                   Hits : MS.Chunk_Hit_List;
                   St   : MS.Op_Status;
-                  Buf  : Memcp_Text.Builder;
+                  Buf  : Memcp.Text.Builder;
                begin
                   MR.Search_Chunks
                     (R,
@@ -1270,7 +1270,7 @@ package body Memcp_Tools with SPARK_Mode => On is
             declare
                Turns : MS.Chunk_List;
                St    : MS.Op_Status;
-               Buf   : Memcp_Text.Builder;
+               Buf   : Memcp.Text.Builder;
             begin
                MR.Fetch_Turns
                  (R,
@@ -1297,7 +1297,7 @@ package body Memcp_Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Fetch_Turns;
 
-   package ME renames Memcp_Extractor;
+   package ME renames Memcp.Extractor;
 
    --  The body of upload_session once the transcript is decoded: extract turns,
    --  embed each, save the session, then (for a fresh session with a recap
@@ -1348,12 +1348,12 @@ package body Memcp_Tools with SPARK_Mode => On is
          St  : MS.Op_Status;
          --  First replay clock: the session-row / chunks timestamp.
          Rep : constant Boolean :=
-           Memcp_Replay.Enabled and then Memcp_Replay.Has_Clock;
+           Memcp.Replay.Enabled and then Memcp.Replay.Has_Clock;
          TS  : constant String :=
-           (if Rep then Memcp_Replay.Peek_Clock else "");
+           (if Rep then Memcp.Replay.Peek_Clock else "");
       begin
          if Rep then
-            Memcp_Replay.Advance_Clock;
+            Memcp.Replay.Advance_Clock;
          end if;
          MR.Save_Session
            (R,
@@ -1386,17 +1386,17 @@ package body Memcp_Tools with SPARK_Mode => On is
                      declare
                         Emb      : Candle_Spark.Embedding;
                         Rep2     : constant Boolean :=
-                          Memcp_Replay.Enabled
-                          and then Memcp_Replay.Has_Clock;
+                          Memcp.Replay.Enabled
+                          and then Memcp.Replay.Has_Clock;
                         TS2      : constant String :=
-                          (if Rep2 then Memcp_Replay.Peek_Clock else "");
+                          (if Rep2 then Memcp.Replay.Peek_Clock else "");
                         Sum_Id   : MS.Row_Id;
                         Diary_Id : MS.Row_Id;
                         R_St     : MS.Op_Status;
                      begin
                         Embed_One (R, Recap, Emb);
                         if Rep2 then
-                           Memcp_Replay.Advance_Clock;
+                           Memcp.Replay.Advance_Clock;
                         end if;
                         MR.Save_Autorecap
                           (R,
@@ -1500,4 +1500,4 @@ package body Memcp_Tools with SPARK_Mode => On is
       end case;
    end Invoke;
 
-end Memcp_Tools;
+end Memcp.Tools;

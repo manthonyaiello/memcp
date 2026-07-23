@@ -1,5 +1,5 @@
 --  Standalone driver for memcp's end-to-end Dispatch: the real json-based
---  Parse_Envelope (Memcp_Envelope) feeding spark_mcp's routing. Dependency-
+--  Parse_Envelope (Memcp.Envelope) feeding spark_mcp's routing. Dependency-
 --  light (no AUnit) so it runs the moment memcp builds. -gnata turns the SPARK
 --  Pre/Post along the path into executable checks.
 

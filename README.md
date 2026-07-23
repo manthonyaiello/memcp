@@ -223,7 +223,7 @@ checks, so a contract violation fails the run.
 | Driver | Exercises |
 | --- | --- |
 | `test_dispatch` | end-to-end `Dispatch`: the real json `Parse_Envelope` → routing |
-| `test_store` | `Memcp_Store` write/read/list against an in-memory DB |
+| `test_store` | `Memcp.Store` write/read/list against an in-memory DB |
 | `test_tools` | the 9 tools' JSON marshalling (embedder-off paths) |
 | `test_spark_mcp` | the json-free `spark_mcp` core: Writer + Respond routing |
 | `sqlite_smoke` | the `sqlite_vec_spark` binding: open → vec0 → KNN match |

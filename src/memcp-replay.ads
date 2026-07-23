@@ -12,7 +12,7 @@
 
 with Candle_Spark;
 
-package Memcp_Replay with
+package Memcp.Replay with
   SPARK_Mode     => On,
   Abstract_State => State,
   Initializes    => State
@@ -76,4 +76,4 @@ is
    --  The most recent missed text (for a diagnostic line).
    --  @return The text of the most recent missed lookup, or "" if none missed.
 
-end Memcp_Replay;
+end Memcp.Replay;

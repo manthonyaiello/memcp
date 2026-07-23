@@ -5,7 +5,7 @@ with Ada.Environment_Variables;
 --  of the process environment it reads. The spec's Input => Environment
 --  contract is what callers see; correctness of the two one-line forwarders is
 --  by inspection.
-package body Memcp_Env with SPARK_Mode => Off is
+package body Memcp.Env with SPARK_Mode => Off is
 
    function Exists (Name : String) return Boolean is
      (Ada.Environment_Variables.Exists (Name));
@@ -13,4 +13,4 @@ package body Memcp_Env with SPARK_Mode => Off is
    function Value (Name : String) return String is
      (Ada.Environment_Variables.Value (Name));
 
-end Memcp_Env;
+end Memcp.Env;

@@ -1,7 +1,7 @@
 --  Ports extractor.py: base64-decode an uploaded transcript and split a Claude
 --  Code `.jsonl` into the verbatim conversation turns memcp embeds, plus the
 --  last `※ recap` line. It parses each line with the json library directly
---  (contained here, exactly as Memcp_Envelope does).
+--  (contained here, exactly as Memcp.Envelope does).
 --
 --  SPARK_Mode On. The neutral value carriers are SPARK-friendly: a decoded
 --  transcript is an owning access-to-String (Transcript_Ptr, freed by the
@@ -17,7 +17,7 @@ with SPARK.Containers.Formal.Unbounded_Vectors;
 
 with Spark_Mcp;
 
-package Memcp_Extractor with SPARK_Mode => On is
+package Memcp.Extractor with SPARK_Mode => On is
 
    type Turn (Len : Natural) is record
       Text : String (1 .. Len);
@@ -81,4 +81,4 @@ package Memcp_Extractor with SPARK_Mode => On is
    --  @param Transcript The full decoded transcript text (1-based).
    --  @return The recap text, or "" when the transcript has no away_summary.
 
-end Memcp_Extractor;
+end Memcp.Extractor;

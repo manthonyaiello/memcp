@@ -4,7 +4,7 @@
 --  operations below -- SPARK forbids handing out an access to an owned object,
 --  so a caller passes the Resources object in and the operation reads the
 --  Store/Embedder from it. Every operation is a thin, precondition-free
---  pass-through to the proved units beneath (Memcp_Store, Candle_Spark): it
+--  pass-through to the proved units beneath (Memcp.Store, Candle_Spark): it
 --  guards the Store's own preconditions internally (Is_Open, non-empty
 --  project, ...) and degrades to Db_Error / an empty result rather than
 --  requiring the caller to establish them.
@@ -30,20 +30,20 @@
 --  read like Fetch_Summary is In_Out on DBMS because stepping a cursor mutates
 --  connection state, and SPARK does not attempt to prove that one statement
 --  cannot influence another over the same connection (the Ada.Text_IO
---  File_System stance). This effect propagates on up: through Memcp_Tools.Invoke
+--  File_System stance). This effect propagates on up: through Memcp.Tools.Invoke
 --  into the generic Spark_Mcp.Server.Dispatch seam and the Spark_Mcp.Http.Serve
 --  loop, each re-analysed at memcp's instantiation, so the DBMS mutation stays
 --  visible to flow analysis rather than hidden behind the seam.
 
 with Ada.Text_IO;
 
-with Memcp_Store;
+with Memcp.Store;
 with Candle_Spark;
 with Sqlite_Vec_Spark;
 
-package Memcp_Resources with SPARK_Mode => On is
+package Memcp.Resources with SPARK_Mode => On is
 
-   package MS renames Memcp_Store;
+   package MS renames Memcp.Store;
 
    type Resources is limited private
      with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
@@ -123,7 +123,7 @@ package Memcp_Resources with SPARK_Mode => On is
    --  Close the Store and unload the Embedder, leaving R reclaimed. Idempotent
    --  -- safe on an already-reclaimed R -- so a caller may Close on every exit
    --  path (including after a Store_Failed Open) to discharge R at end of scope.
-   --  Depends (as for Memcp_Store.Close): R's new value is a constant and its
+   --  Depends (as for Memcp.Store.Close): R's new value is a constant and its
    --  old handles reach C only as addresses, so a caller that Closes R and
    --  never reads it back needs no "set but not used" flow suppression.
    --  @param R The resources to close; left reclaimed.
@@ -351,7 +351,7 @@ private
    --  annotation on Resources requires its private part to be either SPARK_Mode
    --  (Off) or hidden, and hiding keeps this body IN SPARK. Clients reason about
    --  Resources abstractly -- through Is_Open, the Needs_Reclamation obligation,
-   --  and the operation contracts -- exactly as for Memcp_Store.Store and
+   --  and the operation contracts -- exactly as for Memcp.Store.Store and
    --  Candle_Spark.Embedder.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
 
@@ -374,4 +374,4 @@ private
    function Embedder_Loaded (R : Resources) return Boolean is
      (Candle_Spark.Is_Loaded (R.The_Embedder));
 
-end Memcp_Resources;
+end Memcp.Resources;

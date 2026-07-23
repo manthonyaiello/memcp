@@ -1,6 +1,6 @@
 --  End-to-end test of memcp's Dispatch: raw JSON-RPC 2.0 request text in,
 --  response text out. This exercises the piece wired up in this step -- the
---  json-based Memcp_Envelope.Parse_Envelope supplying spark_mcp's generic
+--  json-based Memcp.Envelope.Parse_Envelope supplying spark_mcp's generic
 --  formal -- plus all of Respond's routing behind it. Mirrors the request
 --  shapes in ../../tests/test_server.py (Python) at the wire level.
 
@@ -12,9 +12,9 @@ with Spark_Mcp;
 with Spark_Mcp.Tools;
 with Spark_Mcp.Server;
 
-with Memcp_Tools;
-with Memcp_Envelope;
-with Memcp_Resources;
+with Memcp.Tools;
+with Memcp.Envelope;
+with Memcp.Resources;
 
 procedure Test_Dispatch is
 
@@ -43,34 +43,34 @@ procedure Test_Dispatch is
    --  A throwaway in-memory Resources the tools run against; the seam is a
    --  3-argument adapter that closes over it (mirrors memcp.adb). Opened in the
    --  body below before any request is dispatched.
-   Res : Memcp_Resources.Resources;
+   Res : Memcp.Resources.Resources;
 
    procedure Invoke_Tool
-     (Id        : Memcp_Tools.Tool_Id;
+     (Id        : Memcp.Tools.Tool_Id;
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
      with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
 
    procedure Invoke_Tool
-     (Id        : Memcp_Tools.Tool_Id;
+     (Id        : Memcp.Tools.Tool_Id;
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
    is
    begin
-      Memcp_Tools.Invoke (Res, Id, Arguments, Result);
+      Memcp.Tools.Invoke (Res, Id, Arguments, Result);
    end Invoke_Tool;
 
    --  The real composition: memcp's tools + the json-based envelope parser.
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
       Server_Version => "0.1.0",
-      Instructions   => Memcp_Tools.Instructions,
-      Tool_Id        => Memcp_Tools.Tool_Id,
-      Name           => Memcp_Tools.Name,
-      Description     => Memcp_Tools.Description,
-      Input_Schema    => Memcp_Tools.Input_Schema,
+      Instructions   => Memcp.Tools.Instructions,
+      Tool_Id        => Memcp.Tools.Tool_Id,
+      Name           => Memcp.Tools.Name,
+      Description     => Memcp.Tools.Description,
+      Input_Schema    => Memcp.Tools.Input_Schema,
       Invoke          => Invoke_Tool,
-      Parse_Envelope  => Memcp_Envelope.Parse_Envelope);
+      Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
 
    --  Dispatch is now a procedure handing out an ownership allocation (null for
    --  a notification). This wrapper keeps the assertions below reading as raw
@@ -91,14 +91,14 @@ procedure Test_Dispatch is
       end;
    end Dispatch_Str;
 
-   Open_St : Memcp_Resources.Status;
+   Open_St : Memcp.Resources.Status;
 
 begin
    --  The tools run against Res; open a throwaway in-memory store so a
    --  tools/call routes to a live tool (no model loaded, so the embedding tools
    --  would report "embedder unavailable" -- not exercised here; this file tests
    --  routing, not tool behaviour).
-   Memcp_Resources.Open (Res, ":memory:", "", Open_St);
+   Memcp.Resources.Open (Res, ":memory:", "", Open_St);
 
    -------------------------------------------------------------------------
    --  initialize -- integer id echoed verbatim
@@ -123,7 +123,7 @@ begin
       "ping: string id echoed verbatim, empty result");
 
    -------------------------------------------------------------------------
-   --  tools/list -- catalog built from Memcp_Tools
+   --  tools/list -- catalog built from Memcp.Tools
    -------------------------------------------------------------------------
    declare
       R : constant String := Dispatch_Str
@@ -237,7 +237,7 @@ begin
       "unknown method: id still echoed (a valid envelope)");
 
    -------------------------------------------------------------------------
-   Memcp_Resources.Close (Res);
+   Memcp.Resources.Close (Res);
 
    Ada.Text_IO.New_Line;
    if Failures = 0 then

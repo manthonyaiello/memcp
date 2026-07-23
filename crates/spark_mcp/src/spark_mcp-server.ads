@@ -53,7 +53,7 @@
 --    (see the Envelope vocabulary in Spark_Mcp.Requests). Defaults to
 --    Requests.No_Parser, which reports Unimplemented (=> Internal_Error) -- so
 --    the core builds and is testable with no JSON dependency; memcp supplies
---    the real parser at instantiation (see Memcp_Envelope).
+--    the real parser at instantiation (see Memcp.Envelope).
 
 with Spark_Mcp.Requests;
 with Spark_Mcp.Tools;
