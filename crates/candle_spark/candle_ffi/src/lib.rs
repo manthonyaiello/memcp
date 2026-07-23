@@ -18,7 +18,7 @@ use std::slice;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
-use tokenizers::Tokenizer;
+use tokenizers::{Tokenizer, TruncationParams};
 
 /// Embedding dimension -- must match store.py EMBEDDING_DIM and the Ada
 /// `Dimension`.
@@ -41,8 +41,20 @@ fn load_impl(path: &str) -> Result<EmbedModel, Err> {
     let config: Config =
         serde_json::from_str(&std::fs::read_to_string(format!("{path}/config.json"))?)?;
 
-    let tokenizer =
+    let mut tokenizer =
         Tokenizer::from_file(format!("{path}/tokenizer.json")).map_err(|e| e.to_string())?;
+
+    // The provisioned tokenizer.json bakes in a Fixed(128) padding strategy and
+    // a 128-token truncation. The raw `tokenizers` crate honours both in
+    // `encode`, which breaks `embed_impl`'s "single text => no padding"
+    // invariant: pad tokens would flow through the maskless forward and dominate
+    // the plain mean-pool (worst for short text). Disable padding so every
+    // pooled token is real, and truncate at 256 to match the Python side's
+    // sentence-transformers `max_seq_length` for embedding parity.
+    tokenizer.with_padding(None);
+    tokenizer
+        .with_truncation(Some(TruncationParams { max_length: 256, ..Default::default() }))
+        .map_err(|e| e.to_string())?;
 
     // Safe use of mmap: the file outlives the borrow and is not mutated.
     let vb = unsafe {
