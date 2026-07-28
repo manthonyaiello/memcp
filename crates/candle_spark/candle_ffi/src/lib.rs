@@ -13,6 +13,7 @@
 
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::ptr;
 use std::slice;
 
 use candle_core::{DType, Device, Tensor};
@@ -97,6 +98,11 @@ fn embed_impl(m: &EmbedModel, text: &str, out: &mut [f32]) -> Result<(), Err> {
 /// int32 status via `*status`: 0 ok; <0 error. On ok, `*out_handle` owns the
 /// engine and must be released with `candle_embed_free`.
 ///
+/// `*out_handle` is written on every path -- NULL first, then the engine on
+/// success -- because the Ada import declares it an `out` parameter of an
+/// ownership type, which promises the caller a fully initialized handle to
+/// reclaim whatever the status says.
+///
 /// # Safety
 /// `path` must point to `len` valid bytes; `out_handle` and `status` must be
 /// valid, writable pointers (or null, which is reported as an error / ignored).
@@ -108,7 +114,13 @@ pub extern "C" fn candle_embed_load(
     status: *mut i32,
 ) {
     let code = catch_unwind(AssertUnwindSafe(|| {
-        if path.is_null() || out_handle.is_null() {
+        if out_handle.is_null() {
+            return -1;
+        }
+        // Before anything that can fail, so the caller's handle is initialized
+        // on every path out of here (see the doc comment).
+        unsafe { *out_handle = ptr::null_mut() };
+        if path.is_null() {
             return -1;
         }
         let bytes = unsafe { slice::from_raw_parts(path, len) };
@@ -171,17 +183,34 @@ pub extern "C" fn candle_embed(
     }
 }
 
-/// Release a handle from `candle_embed_load`. Null is a no-op.
+/// Release the engine behind `*handle` and null the caller's pointer.
+///
+/// Takes `void **` rather than `void *`, and nulls it, for the Ada ownership
+/// model: the Ada handle type is a SPARK ownership type, so its release
+/// operation is an `in out` parameter whose postcondition says the handle is
+/// left in the reclaimed (null) state. Passing the handle by reference is what
+/// makes that postcondition *executable* -- in a build with assertions on
+/// (`ADAFLAGS=-gnata`) every `Unload` checks at run time that the pointer really
+/// was released, rather than the Ada side merely asserting it. Deleting the
+/// `*handle = null` below is therefore a caught mutation, not a silent leak. It
+/// also makes the release idempotent and use-after-free impossible through this
+/// handle: a second call sees NULL and does nothing.
 ///
 /// # Safety
-/// `handle` must be a live pointer from `candle_embed_load` (or null), and must
-/// not be used again after this call.
+/// `handle` must be a valid, writable `*mut *mut c_void` (or null, a no-op),
+/// and `*handle` must be a live pointer from `candle_embed_load` or null.
 #[no_mangle]
-pub extern "C" fn candle_embed_free(handle: *mut c_void) {
+pub extern "C" fn candle_embed_free(handle: *mut *mut c_void) {
     if handle.is_null() {
         return;
     }
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        drop(unsafe { Box::from_raw(handle as *mut EmbedModel) });
-    }));
+    let engine = unsafe { *handle };
+    if !engine.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            drop(unsafe { Box::from_raw(engine as *mut EmbedModel) });
+        }));
+    }
+    // Unconditionally after the drop, panic or not: the pointer is dead either
+    // way, and the Ada postcondition promises the caller a reclaimed handle.
+    unsafe { *handle = ptr::null_mut() };
 }

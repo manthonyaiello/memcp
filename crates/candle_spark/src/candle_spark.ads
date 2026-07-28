@@ -24,11 +24,10 @@
 --
 --  SPARK_Mode is On: the wrapper is proven, and only the foreign inference body
 --  is trusted. The Pre/Post here are the boundary contract -- SPARK proves the
---  Pre at call sites and assumes the Post; a test build with assertions enabled
+--  Pre at call sites and assumes the Post; a build with assertions enabled
 --  (-gnata) executes the Post to check the real engine honours it.
 
 with Interfaces;
-with System;
 
 package Candle_Spark
   with SPARK_Mode => On
@@ -67,11 +66,11 @@ is
    --  tracking rules out. This mirrors Sqlite_Vec_Spark.Database/Statement.
    --
    --  Needs_Reclamation: a loaded model owns a C allocation that Unload must
-   --  release. The full view anchors that ownership on a small Ada access
-   --  "token" (allocated when the C load succeeds, freed by Unload), because
-   --  the raw engine pointer -- a bare System.Address -- is not subject to
-   --  SPARK ownership on its own. GNATprove then proves, at every call site,
-   --  that a loaded Embedder is Unloaded before it is dropped.
+   --  release, and GNATprove proves at every call site that a loaded Embedder
+   --  is Unloaded before it is dropped. The obligation rests on the engine
+   --  pointer itself, which the private part models as a SPARK ownership type
+   --  (see the note there) -- so "reclaimed" means the pointer was released,
+   --  not that some parallel bookkeeping was updated.
    type Embedder is limited private
      with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
           Default_Initial_Condition =>
@@ -85,9 +84,9 @@ is
    function Is_Reclaimed (E : Embedder) return Boolean
      with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
    --  Reclamation predicate for the Needs_Reclamation annotation above. An
-   --  unloaded embedder holds no C allocation and no token, so that is the
-   --  reclaimed state GNATprove requires before the object is dropped. Ghost:
-   --  it exists only for proof, never at run time.
+   --  unloaded embedder holds no C allocation, so that is the reclaimed state
+   --  GNATprove requires before the object is dropped. Ghost: it exists only
+   --  for proof, never at run time.
    --  @param E The embedder handle to test.
    --  @return True iff E owns no model (equivalently, not Is_Loaded (E)).
 
@@ -123,10 +122,12 @@ is
      with Post    => not Is_Loaded (E) and then Is_Reclaimed (E),
           Depends => (E => null, null => E);
    --  Release the foreign allocation. Idempotent; leaves E not-loaded.
-   --  Depends: E's new value is a constant (null handle/token) and its old
-   --  handle reaches C only as a System.Address (flowing nowhere in SPARK), so
-   --  a caller that never reads E afterwards needs no "set but not used"
-   --  suppression. (Unload has no global effect SPARK can see, so a call whose
+   --  Depends: E's new value is a constant (the reclaimed handle) and its old
+   --  handle flows nowhere SPARK models -- it reaches the engine's own C-side
+   --  state, which this crate does not model as abstract state -- so a caller
+   --  that never reads E afterwards needs no "set but not used" suppression.
+   --  This is exactly what the C_Free import's own `Handle => null` says, one
+   --  level down. (Unload has no global effect SPARK can see, so a call whose
    --  reclaiming write is then overwritten still reads as "no effect" -- that is
    --  a separate flow fact this clause does not address.)
    --  @param E The embedder handle to release.
@@ -147,38 +148,124 @@ private
    --  -- exactly as for Sqlite_Vec_Spark.Database and Memcp.Json.Doc.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
 
-   type Ownership_Token is access Boolean;
-   --  The SPARK ownership anchor. The raw engine pointer is a bare
-   --  System.Address, which SPARK does not track as an owned resource; so the
-   --  full view carries, alongside the address, a one-Boolean heap allocation
-   --  whose lifetime shadows the C handle's: allocated the instant the C load
-   --  succeeds, freed the instant Unload releases the C handle. Because this
-   --  component is a genuine Ada access, the enclosing record is "subject to
-   --  ownership", which is what lets Needs_Reclamation apply. The Boolean
-   --  payload is irrelevant -- only null vs non-null (reclaimed vs owned)
-   --  matters. Same device as Sqlite_Vec_Spark's Ownership_Token.
+   --  The raw engine pointer, modelled as a SPARK *ownership type*.
+   --
+   --  This is where the crate's resource discipline is anchored. Engine_Handle
+   --  is a private type whose full view is outside SPARK (the nested private
+   --  part below is SPARK_Mode (Off)) carrying the Ownership annotation -- the
+   --  shape SPARK's ownership annotations exist for, and the one the SPARK
+   --  User's Guide uses for Text_IO.File_Descriptor and C_Strings.Chars_Ptr.
+   --  Inside SPARK the handle then behaves like an owning access value:
+   --  assigning it MOVES it, dropping or overwriting a non-reclaimed one is a
+   --  leak GNATprove reports, and the only way to reach the reclaimed value is
+   --  to call the release operation whose postcondition says so.
+   --
+   --  Why this rather than an access-to-Boolean "ownership token" beside the
+   --  address (the shape this crate carried until now): the token was a second
+   --  object whose lifetime had to shadow the C handle's, and *that* invariant
+   --  -- free the token exactly when the C resource is released -- was true by
+   --  review only, enforced nowhere. An Unload that freed the token and never
+   --  called candle_embed_free proved clean, leaking the engine. Here the
+   --  object SPARK tracks IS the pointer, so there is nothing to keep in
+   --  lockstep. What remains is a single assumption of the form this crate
+   --  already makes everywhere: that the C behind an import does what its
+   --  contract says. It sits on C_Free's postcondition, and because
+   --  candle_embed_free takes the handle by reference and nulls it, that
+   --  assumption is *executable* rather than merely assumed: in a build with
+   --  assertions on (ADAFLAGS=-gnata -- this crate's Alire profile is release,
+   --  so they are off by default) every Unload checks at run time that the
+   --  handle really was released. Verified non-vacuous by deleting the Rust
+   --  side's `*handle = null` and watching that postcondition fail.
+   --
+   --  The type is deliberately NOT limited: Load and Unload reset a handle by
+   --  assigning Null_Engine_Handle, which a limited type would forbid.
+   --  Ada-level copying is blocked one level up -- Embedder is limited -- and
+   --  inside SPARK a copy is a move, so the source is unusable afterwards.
+   --
+   --  The declaration pattern below -- Needs_Reclamation plus a
+   --  Reclaimed_Value constant, Predefined_Equality restricted to that
+   --  constant, and a ghost Is_Null tying the two together -- is lifted from
+   --  SPARK.C.Strings.chars_ptr in the shipped SPARK library, which models
+   --  exactly this situation (an owned C pointer), and matches
+   --  Sqlite_Vec_Spark's Handles package. Two details are load-bearing:
+   --
+   --    * Predefined_Equality => "Only_Null" / "Null_Value". "=" on a hidden
+   --      pointer is not a meaning SPARK can reason about in general (two
+   --      handles are interchangeable in no useful sense), so the annotations
+   --      license exactly the comparison this crate makes -- against the
+   --      reclaimed value -- and reject any other.
+   --
+   --    * The Default_Initial_Condition goes through the ghost Is_Null rather
+   --      than naming Null_Engine_Handle directly. It has to: a DIC that
+   --      mentions a deferred constant freezes it at the type declaration,
+   --      before its full declaration below, which is illegal ("full constant
+   --      declaration appears too late") as soon as assertions are enabled.
+   --      Routing through a function whose *postcondition* names the constant
+   --      defers that freeze.
+   package Handles is
+
+      type Engine_Handle is private
+        with Default_Initial_Condition => Is_Null (Engine_Handle),
+             Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
+             Annotate => (GNATprove, Predefined_Equality, "Only_Null");
+      --  The C `void *` from candle_embed_load. Owns the loaded engine (a
+      --  boxed Rust EmbedModel) until candle_embed_free releases it.
+
+      Null_Engine_Handle : constant Engine_Handle
+        with Annotate => (GNATprove, Ownership, "Reclaimed_Value"),
+             Annotate => (GNATprove, Predefined_Equality, "Null_Value");
+      --  The reclaimed value: an Engine_Handle equal to this owns nothing, so
+      --  GNATprove permits dropping or overwriting it. This annotation is what
+      --  ties "the pointer is null" to "the engine has been released".
+
+      function Is_Null (H : Engine_Handle) return Boolean
+        with Ghost, Global => null,
+             Post => Is_Null'Result = (H = Null_Engine_Handle);
+      --  Ghost spelling of "reclaimed", for the Default_Initial_Condition
+      --  above. Executable code uses the comparison directly.
+
+   private
+      pragma SPARK_Mode (Off);
+
+      --  Full view: a plain C pointer, and nothing else. The designated type is
+      --  a placeholder that is never allocated or dereferenced on the Ada side
+      --  -- every value comes from candle_ffi and goes back to it -- so all this
+      --  representation has to provide is a pointer that is null by default and
+      --  comparable to null.
+      type Embed_Model is limited null record;
+
+      type Engine_Handle is access all Embed_Model;
+
+      Null_Engine_Handle : constant Engine_Handle := null;
+
+      function Is_Null (H : Engine_Handle) return Boolean is (H = null);
+   end Handles;
+
+   use type Handles.Engine_Handle;
+   --  For the null comparisons in the predicates below.
 
    type Embedder is limited record
-      Handle : System.Address  := System.Null_Address;
-      --  Raw pointer to the foreign engine allocation; Null_Address when unloaded.
-      Token  : Ownership_Token := null;
-      --  Ownership anchor; non-null exactly while Handle names a loaded model
-      --  (maintained in lockstep by Load/Unload).
+      Handle : Handles.Engine_Handle;
+      --  The owned engine pointer; Null_Engine_Handle (the default) when not
+      --  loaded.
    end record;
-   --  Full view of the opaque Embedder handle. The raw C pointer (only
-   --  null-comparison is ever used) plus the ownership token, default-
-   --  initialized to (null, null) so a fresh handle is not-loaded, reclaimed,
-   --  and an unloaded one stays that way.
+   --  Full view of Embedder: the owning handle, and nothing beside it. The
+   --  record survives only to keep Embedder limited (no Ada-level copy of a
+   --  loaded model) and to leave room for future per-engine state; the
+   --  ownership obligation Needs_Reclamation puts on Embedder is discharged
+   --  through this component, whose own type carries it.
 
-   function Is_Loaded (E : Embedder) return Boolean is (E.Token /= null);
-   --  A model is loaded iff it holds an ownership token. Token tracks the C
-   --  handle's liveness (see Load/Unload), so this is equivalent to a non-null
-   --  Handle while keeping the liveness and reclamation predicates on one field.
+   function Is_Loaded (E : Embedder) return Boolean is
+     (E.Handle /= Handles.Null_Engine_Handle);
+   --  A model is loaded iff its handle is not the reclaimed value. Liveness and
+   --  reclamation are now the same fact about the same object, rather than two
+   --  facts about a pointer and a token.
    --  @param E The embedder handle to query.
-   --  @return True iff E holds an ownership token.
+   --  @return True iff E holds a loaded model.
 
-   function Is_Reclaimed (E : Embedder) return Boolean is (E.Token = null);
+   function Is_Reclaimed (E : Embedder) return Boolean is
+     (E.Handle = Handles.Null_Engine_Handle);
    --  Completion of the reclamation predicate: reclaimed exactly when the
-   --  ownership token has been freed (equivalently, not Is_Loaded (E)).
+   --  handle is the reclaimed value (equivalently, not Is_Loaded (E)).
 
 end Candle_Spark;

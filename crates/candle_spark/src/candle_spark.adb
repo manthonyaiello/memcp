@@ -5,11 +5,10 @@
 --
 --  The three imports below ARE the trust seam: SPARK does not analyze their
 --  foreign bodies, it proves the Pre at each call and assumes the Post. Under
---  -gnata (test builds) those Posts execute and check the real engine. Only
+--  -gnata those Posts execute and check the real engine. Only
 --  text crosses inward; the output is a caller-owned Embedding the engine fills,
 --  so no allocation crosses the boundary.
 
-with Ada.Unchecked_Deallocation;
 with Interfaces.C;
 
 package body Candle_Spark
@@ -17,22 +16,20 @@ package body Candle_Spark
 is
 
    use type Interfaces.C.int;
-   use type System.Address;
 
-   --  Reclaim the ownership token (see the private part note). Freeing it is
-   --  what discharges the Needs_Reclamation obligation; it nulls its argument,
-   --  so an unloaded handle is left in the reclaimed state. Same device as
-   --  Sqlite_Vec_Spark's Free_Token.
-   procedure Free_Token is
-     new Ada.Unchecked_Deallocation (Boolean, Ownership_Token);
-
-   --  int32_t candle_embed_load(const char *path, uintptr_t len,
-   --                            void **out_handle, int32_t *status);
+   --  void candle_embed_load(const char *path, uintptr_t len,
+   --                         void **out_handle, int32_t *status);
    --  Loads the model directory; on status 0, *out_handle owns the engine.
+   --  candle_embed_load writes *out_handle on every path (NULL first, then the
+   --  engine on success), so Handle really is initialized on return -- which is
+   --  what an `out` parameter of an ownership type promises. No postcondition:
+   --  the caller must be prepared to reclaim Handle whatever St says (a future
+   --  partial-load failure could leave an engine behind), exactly as
+   --  Sqlite_Vec_Spark.Bridge.Open does.
    procedure C_Load
      (Path   : String;
       Len    : Interfaces.C.size_t;
-      Handle : out System.Address;
+      Handle : out Handles.Engine_Handle;
       St     : out Interfaces.C.int)
      with Import            => True,
           Convention        => C,
@@ -47,7 +44,7 @@ is
    --  stays in -1.0 .. 1.0 -- the boundary trust that lets every consumer
    --  inherit the range with no Post to carry.
    procedure C_Embed
-     (Handle  : System.Address;
+     (Handle  : Handles.Engine_Handle;
       Text    : String;
       Len     : Interfaces.C.size_t;
       Out_Buf : out Embedding;
@@ -55,16 +52,34 @@ is
      with Import            => True,
           Convention        => C,
           External_Name     => "candle_embed",
+          Pre               => Handle /= Handles.Null_Engine_Handle,
           Global            => null,
           Always_Terminates => True;
+   --  Pre: candle_embed dereferences the handle to reach the BERT model, so a
+   --  reclaimed one there is undefined behaviour rather than an error code --
+   --  which is exactly why the obligation belongs on the Ada side of the seam.
+   --  It discharges at the one call site from Embed's own Is_Loaded precondition.
 
-   --  void candle_embed_free(void *handle);
-   procedure C_Free (Handle : System.Address)
+   --  void candle_embed_free(void **handle);
+   procedure C_Free (Handle : in out Handles.Engine_Handle)
      with Import            => True,
           Convention        => C,
           External_Name     => "candle_embed_free",
           Global            => null,
-          Always_Terminates => True;
+          Always_Terminates => True,
+          Depends           => (Handle => null, null => Handle),
+          Post              => Handle = Handles.Null_Engine_Handle;
+   --  Release the engine and leave Handle reclaimed. `in out` (hence the
+   --  `void **` on the C side, which nulls the caller's pointer) is what makes
+   --  the Post *executable*: with assertions on (ADAFLAGS=-gnata) every Unload
+   --  checks at run time that the handle really was released, rather than the
+   --  Ada side merely assuming it. Tolerates an already-reclaimed handle, which
+   --  is what makes Unload idempotent and lets Load's failure path free
+   --  unconditionally. Depends is Unload's clause one level down: the new
+   --  handle is a constant (`Handle => null`) and the old one flows nowhere
+   --  SPARK models (`null => Handle`) -- it reaches the engine's own C-side
+   --  state, which this crate does not model as abstract state -- which is what
+   --  keeps Unload's caller-facing clause exactly as it was.
 
    ----------
    -- Load --
@@ -75,27 +90,26 @@ is
       Model_Path : String;
       Result     : out Status)
    is
-      Handle : System.Address;
-      St     : Interfaces.C.int;
+      St : Interfaces.C.int;
    begin
-      --  Start reclaimed (null, null); Embedder is limited, so the handle
-      --  fields are set component-wise, never by a whole-record aggregate.
-      E.Handle := System.Null_Address;
-      E.Token  := null;
-
+      --  Load straight into E.Handle: staging through a local would MOVE the
+      --  handle out of the local on assignment, which buys nothing here.
       C_Load
         (Path   => Model_Path,
          Len    => Interfaces.C.size_t (Model_Path'Length),
-         Handle => Handle,
+         Handle => E.Handle,
          St     => St);
 
-      if St = 0 then
-         E.Handle := Handle;
-         --  Loaded: take ownership. The token now shadows Handle's life.
-         E.Token  := new Boolean'(True);
-         Result   := Ok;
+      if St = 0 and then Is_Loaded (E) then
+         Result := Ok;
       else
-         --  E stays (null, null) -- not loaded, reclaimed.
+         --  Two failures in one branch: a genuine error code, and a success
+         --  code with a reclaimed handle (which candle_ffi does not produce,
+         --  but which the Post (Is_Loaded = (Result = Ok)) has to rule out to
+         --  be a theorem). Either way, free unconditionally -- C_Free tolerates
+         --  a reclaimed handle, and it is what discharges E's ownership
+         --  obligation on this path.
+         C_Free (E.Handle);
          Result := Load_Failed;
       end if;
    end Load;
@@ -142,13 +156,10 @@ is
 
    procedure Unload (E : in out Embedder) is
    begin
-      if E.Handle /= System.Null_Address then
-         C_Free (E.Handle);
-      end if;
-      E.Handle := System.Null_Address;
-      --  Release the ownership token: this is the reclamation step. Idempotent
-      --  -- Free_Token on a null token is a no-op -- so Unload stays idempotent.
-      Free_Token (E.Token);
+      --  One call: C_Free releases the engine and leaves the handle reclaimed,
+      --  which IS the reclamation step -- there is no second object to keep in
+      --  lockstep. Idempotent, because it tolerates an already-reclaimed handle.
+      C_Free (E.Handle);
    end Unload;
 
 end Candle_Spark;
