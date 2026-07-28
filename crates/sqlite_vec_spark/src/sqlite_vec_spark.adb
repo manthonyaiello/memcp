@@ -1,28 +1,14 @@
---  Wrapper body: proven-SPARK wrappers over the C trust seam, which lives
---  entirely in the child Sqlite_Vec_Spark.Bridge (see its spec). There is no
---  Import in this body -- every crossing of the SQLite/sqlite-vec C ABI goes
---  through Bridge, so this layer is all proof: it proves each Bridge call's Pre
---  and maps the raw result codes onto Status.
+--  Proven-SPARK wrappers over the SQLite / sqlite-vec C ABI. Every ABI crossing
+--  goes through the child Sqlite_Vec_Spark.Bridge; there is no Import here.
+--  This body proves each Bridge call's Pre and maps result codes onto Status.
 --
---  Strings cross as Ada arrays: RM B.3 passes an array to a C-convention import
---  as a pointer to its first element, so no 'Address arithmetic appears. Where
---  SQLite needs a NUL-terminated C string (open_v2, exec -- no length arg) the
---  wrapper appends ASCII.NUL; everywhere else it passes an explicit length and
---  no NUL (avoiding embedded-NUL surprises).
---
---  Because Database/Statement are limited (no copy), handle fields are mutated
---  component-wise (DB.Handle := ...), never by whole-record aggregate.
---
---  Handles are ownership types (see the spec's private part), which shapes the
---  two acquiring wrappers below: Open and Prepare hand their handle component
---  straight to the Bridge as the `out` parameter, rather than opening into a
---  local and copying it in on success. A copy would be a *move*, leaving the
---  local unreadable for the rest of the wrapper -- and the reason for the local
---  is gone anyway, since a handle that turns out to be unusable is released
---  through the very component it landed in. That release is unconditional on
---  every failure path: the shims tolerate an already-null pointer, and SPARK
---  knows nothing about which failures leave a resource behind, so reclaiming
---  always is both cheaper to prove and closer to what SQLite documents.
+--  open_v2 and exec take no length argument, so those wrappers append
+--  ASCII.NUL; everywhere else an explicit length is passed and no NUL, so an
+--  embedded NUL does not truncate the value. Database and Statement are
+--  limited: handle
+--  fields are mutated component-wise (DB.Handle := ...), never by whole-record
+--  aggregate. Open and Prepare pass the handle component itself as the Bridge
+--  `out` parameter; a copy out of a local would be a move.
 
 with Interfaces.C;
 with Sqlite_Vec_Spark.Bridge;
@@ -47,8 +33,7 @@ is
    -- Local helpers --
    ----------------------
 
-   --  Map a raw SQLite result code onto the Status subset. Total: any
-   --  unrecognized code is Error.
+   --  Map a raw SQLite result code onto Status; unrecognized codes are Error.
    function To_Status (Rc : Interfaces.C.int) return Status is
      (case Rc is
          when SQLITE_OK         => Ok,
@@ -59,14 +44,10 @@ is
          when SQLITE_MISUSE     => Misuse,
          when others            => Error);
 
-   --  THE escape hatch, scoped to one statement -- cloned from
-   --  Spark_Mcp.Http.Bridge.Alloc_Uninit. SPARK forbids uninitialized
-   --  allocators (String has no default initialization), but blank-filling a
-   --  buffer Bridge.Column_Text_Copy is about to overwrite in full would write
-   --  every column body twice. Global => null is the trusted claim that the
-   --  fresh allocation is wholly owned by Data. Sound because Column_Text either
-   --  leaves it empty (Length = 0) or fills it via Bridge.Column_Text_Copy on
-   --  the next statement, before any SPARK code reads it.
+   --  Allocate without blank-filling, avoiding a second write of every column
+   --  body: Bridge.Column_Text_Copy overwrites the buffer in full. Sound because
+   --  Column_Text either leaves it empty (Length = 0) or fills it before any
+   --  SPARK code reads it; Global => null claims the allocation is owned by Data.
    procedure Alloc_Uninit (Length : Natural; Data : out Text_Ptr)
      with Post => Data /= null and then Data'Length = Length,
           Global => null, Always_Terminates => True;
@@ -89,9 +70,8 @@ is
    is
       Rc : Interfaces.C.int;
    begin
-      --  vec0 must be registered before the connection is opened. This is the
-      --  one path that returns without having called Bridge.Open, so it is also
-      --  the one that has to establish the reclaimed handle itself.
+      --  vec0 must be registered before the connection is opened. The only path
+      --  that returns without calling Bridge.Open, so it nulls the handle itself.
       declare
          Reg_Rc : Interfaces.C.int;
       begin
@@ -103,29 +83,21 @@ is
          end if;
       end;
 
-      --  Filename is NUL-terminated (open_v2 takes no length argument).
       Bridge.Open (Path => Path & ASCII.NUL, Db => DB.Handle, Rc => Rc);
 
-      --  Two failures in one branch: a genuine error code, and a success code
-      --  with a null handle (which SQLite does not do, but which the Post
-      --  (Is_Open = (Result = Ok)) has to rule out to be a theorem). Either way
-      --  open_v2 may have left a connection behind -- it does so on some
-      --  failures -- so Close unconditionally; it tolerates a null handle, and
-      --  it is what discharges DB's ownership obligation on this path.
+      --  Two failures in one branch: an error code, and an OK code with a null
+      --  handle (SQLite does not do this, but the Post has to rule it out).
+      --  Close unconditionally: open_v2 can leave a connection behind on
+      --  failure, and Close tolerates a null handle.
       if Rc /= SQLITE_OK or else not Is_Open (DB) then
          Bridge.Close (DB.Handle);
          Result := Error;
          return;
       end if;
 
-      --  Per-connection setup, mirroring store.py's _conn: enforce foreign
-      --  keys, enable WAL (a no-op on :memory:, which returns "memory", not an
-      --  error). Both in one exec. A non-OK code here means the connection is
-      --  not properly initialized, so treat it like an open failure -- close and
-      --  report Error -- rather than serve on a half-configured connection.
-      --  (In practice these PRAGMAs do not fail for a file or :memory:; the
-      --  check also keeps the setup exec's DBMS effect live under the body's
-      --  null refinement, where a discarded result would read as no effect.)
+      --  Per-connection setup: enforce foreign keys, enable WAL (a no-op on
+      --  :memory:, which returns "memory", not an error). A non-OK code leaves a
+      --  half-configured connection, so treat it like an open failure.
       declare
          Setup_Rc : Interfaces.C.int;
       begin
@@ -146,9 +118,8 @@ is
    -- Close --
    -----------
 
-   --  One call: releasing the connection and leaving DB reclaimed are the same
-   --  step now, and Bridge.Close's Post is what says so. Idempotent, because
-   --  the shim tolerates an already-null pointer.
+   --  Idempotent: the shim tolerates an already-null pointer, and Bridge.Close's
+   --  Post is what leaves DB reclaimed.
    procedure Close (DB : in out Database) is
    begin
       Bridge.Close (DB.Handle);
@@ -209,11 +180,10 @@ is
       if Rc = SQLITE_OK and then Is_Valid (Stmt) then
          Result := Ok;
       else
-         --  No usable statement, either because prepare_v2 failed or because it
-         --  succeeded with a null handle (whitespace-only SQL). prepare_v2 nulls
-         --  its out handle on error, but nothing here relies on that: Finalize
-         --  unconditionally, which tolerates a null handle and is what
-         --  discharges Stmt's ownership obligation on this path.
+         --  No usable statement: prepare_v2 failed, or succeeded with a null
+         --  handle (whitespace-only SQL). Finalize unconditionally rather than
+         --  rely on prepare_v2 nulling its out handle; it tolerates a null
+         --  handle.
          Bridge.Finalize (Stmt.Handle);
          Result := To_Status (Rc);
          if Result = Ok then
@@ -316,7 +286,7 @@ is
    -- Finalize --
    --------------
 
-   --  As with Close: one call, and Bridge.Finalize's Post is the reclamation.
+   --  Idempotent, like Close; Bridge.Finalize's Post is the reclamation.
    procedure Finalize (S : in out Statement) is
    begin
       Bridge.Finalize (S.Handle);
@@ -343,9 +313,8 @@ is
    --------------------
 
    function Column_Is_Null (S : Statement; Col : Natural) return Boolean is
-      --  Capture the volatile read into a local: DBMS has Async_Writers, so the
-      --  Bridge.Column_Type call may appear only in a non-interfering context,
-      --  not as an operand of "=".
+      --  The volatile read is captured into a local; Bridge.Column_Type cannot
+      --  appear as an operand of "=".
       Kind : constant Interfaces.C.int :=
         Bridge.Column_Type (S.Handle, Interfaces.C.int (Col));
    begin
@@ -359,9 +328,8 @@ is
    function Column_Text (S : Statement; Col : Natural) return Text_Ptr is
       Raw    : constant Interfaces.C.size_t :=
         Bridge.Column_Text_Len (S.Handle, Interfaces.C.int (Col));
-      --  Clamp the size_t to Natural for the allocation. A text column larger
-      --  than Natural'Last (~2 GiB) is not a real memcp value; the clamp is an
-      --  AoRTE guard that never fires in practice.
+      --  Clamp the size_t to Natural for the allocation: an AoRTE guard for a
+      --  text column larger than Natural'Last (~2 GiB).
       Length : constant Natural :=
         (if Raw > Interfaces.C.size_t (Natural'Last)
          then Natural'Last

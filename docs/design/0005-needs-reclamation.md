@@ -1,117 +1,90 @@
-# 0005 — `Needs_Reclamation` for the SQLite handles
+# 0005 — Ownership anchored on the native handle
 
-Status: **Implemented** on branch `design/5-needs-reclamation` (PR #11). Refs #5.
-Pending SPARK-team review of whether a cleaner idiom exists (see Note).
+Status: **Implemented** in `sqlite_vec_spark` and `candle_spark`. Refs #5, #32,
+#35.
 
-## What we did
+Every native resource this project holds — a SQLite connection, a prepared
+statement, a loaded embedding model — is owned by an Ada object annotated
+`Needs_Reclamation`, and the obligation rests on the **raw C pointer itself**,
+modelled as a SPARK ownership type in the binding's private part. GNATprove then
+proves at every call site that a connection is `Close`d, a statement
+`Finalize`d and a model `Unload`ed before it is dropped or overwritten. This
+joins the same annotation on `Memcp.Json.Doc`.
 
-`Sqlite_Vec_Spark.Database` and `Sqlite_Vec_Spark.Statement` are annotated
-`Needs_Reclamation` (`crates/sqlite_vec_spark/src/sqlite_vec_spark.ads`). SPARK
-now proves, at every call site, that an open connection is `Close`d and a valid
-statement is `Finalize`d before it goes out of scope or is overwritten — the
-resource-leak obligation that previously rested on hand-audited discipline in
-`Memcp.Store`.
+## The handle pattern, and where it comes from
 
-This joins the existing use of the same annotation on `Memcp.Json.Doc`.
+Each binding declares a nested `Handles` package: a private type carrying
+`Needs_Reclamation`, a deferred `Reclaimed_Value` constant, `Predefined_Equality`
+narrowed to `Only_Null` / `Null_Value`, and a ghost `Is_Null` whose
+postcondition ties the two together.
 
-## The ownership anchor
+That shape is **lifted from `SPARK.C.Strings.chars_ptr` in the shipped SPARK
+library**, which models exactly this situation, an owned C pointer; the SPARK
+User's Guide uses the same shape for `Text_IO.File_Descriptor`. Any further C or
+Rust binding in this repo should copy it rather than invent a variant.
 
-A `Needs_Reclamation` type must have a full view that is *subject to ownership*
-(SPARK's phrase): it must contain an Ada access. The SQLite handles do not —
-each is a bare `System.Address` over a C `sqlite3*` / `sqlite3_stmt*`, which
-SPARK does not track as an owned resource. The address alone therefore cannot be
-the ownership anchor.
+Three local choices go with it:
 
-So each handle's full view carries, alongside the address, a small owning
-**token** — `type Ownership_Token is access Boolean` — whose lifetime shadows
-the C handle's:
+- **One handle type per C type.** `sqlite3*` and `sqlite3_stmt*` are distinct
+  Ada types, so the C seam cannot hand a connection to a statement's release
+  operation.
+- **The handle types are not limited**, because release assigns the reclaimed
+  value. Ada-level copying is blocked one level up, on the visible `limited`
+  `Database` / `Statement` / `Embedder`.
+- **The private part is hidden** (`pragma Annotate (GNATprove, Hide_Info,
+  "Private_Part")`) rather than `SPARK_Mode (Off)`, which is what keeps the
+  wrapper bodies inside SPARK instead of ejecting the whole proven binding.
 
-- **allocated** (`new Boolean'(True)`) the instant the C `open` / `prepare`
-  succeeds — in `Open` and `Prepare`;
-- **freed** (`Free_Token`, an `Unchecked_Deallocation`) the instant the C handle
-  is released — in `Close` and `Finalize`.
+## The ownership token is gone
 
-Because the token is a genuine Ada access, the enclosing record is subject to
-ownership and the annotation applies. The Boolean payload is irrelevant; only
-null vs non-null — reclaimed vs owned — matters. Cost is one heap word per
-handle, allocated and freed on the paths that already cross the C boundary.
+Reclamation was originally anchored on a token — `type Ownership_Token is access
+Boolean` — carried beside the raw address purely to give SPARK an Ada access to
+track. It cost a heap word per handle, and it required the token's lifetime to
+shadow the C resource's exactly: allocate on acquire, free on release, an
+invariant no tool checked and nothing but review enforced. It also proved the
+wrong thing — that the *token* was reclaimed, not that the pointer was released.
 
-The liveness and reclamation predicates are keyed on the token, so they stay in
-lockstep on one field:
+Anchoring on the pointer removes both the shadow allocation and the lockstep
+invariant. What remains is a single assumption about foreign code: the
+postconditions on the release imports (`Bridge.Close`, `Bridge.Finalize`,
+`C_Free`) that the handle is left at the reclaimed value.
 
-```ada
-function Is_Open  (DB : Database)  return Boolean is (DB.Token /= null);
-function Is_Valid (S  : Statement) return Boolean is (S.Token  /= null);
+## Release convention for native handles
 
-function Is_Reclaimed (DB : Database) return Boolean is (DB.Token = null)
-  with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
-function Is_Reclaimed (S  : Statement) return Boolean is (S.Token  = null)
-  with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
-```
+Every release entry point on the foreign side takes a **pointer to the caller's
+pointer** — `sqlite3**`, `sqlite3_stmt**`, `*mut *mut c_void` — and nulls it.
+This is why those are shims rather than direct imports of
+`sqlite3_close_v2` / `sqlite3_finalize`: an `in out` handle must reach C as a
+pointer-to-pointer for C to be able to null it.
 
-Annotated API (visible part):
+The point is that the assumption above becomes **executable**. The release
+wrapper's `Post` is a run-time check under `-gnata`, which the test builds use,
+so the one thing the proof takes on trust is the one thing the tests verify.
+Idempotence then falls out, since `close_v2`, `finalize` and
+`candle_embed_free` all accept NULL.
 
-```ada
-type Database is limited private
-  with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
-       Default_Initial_Condition =>
-         not Is_Open (Database) and then Is_Reclaimed (Database);
+## Acquire into the component; release unconditionally
 
-type Statement is limited private
-  with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
-       Default_Initial_Condition =>
-         not Is_Valid (Statement) and then Is_Reclaimed (Statement);
-```
+The acquiring wrappers (`Open`, `Prepare`, `Load`) pass the record's handle
+component **directly** as the foreign `out` parameter. They do not acquire into a
+local and copy on success: inside SPARK that copy is a move, which leaves the
+local unreadable for the rest of the wrapper.
 
-## Two rules the API had to satisfy
+A handle that comes back unusable is released through that same component,
+**unconditionally on every failure path**. `sqlite3_open_v2` can hand back a
+connection that still needs closing even when it reports failure, and SPARK
+cannot know which failures leave a resource behind — so releasing always is both
+honest and cheaper to prove. The release tolerates an already-null pointer, so
+this costs nothing.
 
-1. **The private part is hidden, not turned off.** An `Ownership` type requires
-   its private part to be `SPARK_Mode (Off)` *or* hidden. We use
-   `pragma Annotate (GNATprove, Hide_Info, "Private_Part")` — the
-   `Memcp.Json.Doc` device — which keeps the wrapper bodies *in* SPARK.
-   `SPARK_Mode (Off)` would have ejected the whole proven binding body.
+## Where it lives
 
-2. **The releasing operations post `Is_Reclaimed` explicitly.** Under
-   `Hide_Info`, clients cannot see that `Is_Reclaimed` is `not Is_Open`, so the
-   contracts state it directly (as `Memcp.Json.Close` posts `Is_Closed`):
-
-   ```ada
-   procedure Close    (DB : in out Database)  with Post =>
-     not Is_Open  (DB) and then Is_Reclaimed (DB);
-   procedure Finalize (S  : in out Statement) with Post =>
-     not Is_Valid (S)  and then Is_Reclaimed (S);
-   procedure Open    (...) with Post =>
-     (Is_Open  (DB)   = (Result = Ok)) and then (Is_Reclaimed (DB)   = (Result /= Ok));
-   procedure Prepare (...) with Post =>
-     (Is_Valid (Stmt) = (Result = Ok)) and then (Is_Reclaimed (Stmt) = (Result /= Ok));
-   ```
-
-## Proof
-
-`make build` is clean (no new warnings). `make prove` (GNATprove Silver,
-`--level=2`) reports **all checks proved (5451)** — up from 5211, the extra ~240
-being the new resource-leak obligations, all discharged. `Memcp.Store` re-proved
-with **no contract changes**: `Is_Open` / `Is_Valid` become opaque to clients
-under `Hide_Info`, but each has `Global => null` and depends only on its
-`in`-mode handle, so GNATprove carries their truth across operations from the
-operation postconditions alone.
-
-## Warning suppressions
-
-The ownership annotation does **not** retire `Memcp.Store`'s
-`"...is set by ""Finalize"" but not used after the call"` suppression. That is a
-flow observation about the ineffective final write — `Finalize` is `in out` and
-nulls the handle, and that reclaimed value is never read again — which is
-orthogonal to reclamation: the annotation proves the resource *is released*, not
-that the final write is read. Removing the suppression keeps the proof green
-(5451, zero unproved) but resurfaces the warning across the store, so it stays.
-No other suppression here relates to Database/Statement reclamation.
-
-## Note (pending SPARK-team review)
-
-The owning-token indirection exists only to give SPARK an ownership anchor for a
-resource that is really a C pointer. It is sound and cheap, but it is a device.
-The SPARK team is being consulted on whether a first-class mechanism lets
-`Needs_Reclamation` apply to a `System.Address`-backed handle directly, without
-a shadow allocation; if so, the token would be removed and the predicates
-re-keyed on the handle. The annotated API above would not change.
+- `crates/sqlite_vec_spark/src/sqlite_vec_spark.ads` — private part: `Handles`,
+  `Database`, `Statement`, the `Is_Reclaimed` predicates.
+- `crates/sqlite_vec_spark/src/sqlite_vec_spark-bridge.ads` — the release
+  postconditions that are the crate's trust boundary.
+- `crates/sqlite_vec_spark/csrc/shim.c` — `memcp_sqlite_close`,
+  `memcp_sqlite_finalize`.
+- `crates/candle_spark/src/candle_spark.ads` / `.adb` (`C_Free`) and
+  `crates/candle_spark/candle_ffi/src/lib.rs` (`candle_embed_free`) — the same
+  pattern for `Embedder`.

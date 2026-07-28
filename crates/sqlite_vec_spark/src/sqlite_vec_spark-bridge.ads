@@ -1,81 +1,40 @@
---  Sqlite_Vec_Spark.Bridge: the C trust seam for the whole crate.
+--  C trust seam for the crate: every SQLite and sqlite-vec import is declared
+--  here, keeping the parent body free of Import. Private: nothing outside
+--  Sqlite_Vec_Spark may reach the raw seam.
 --
---  Every call across the SQLite/sqlite-vec C ABI is imported here, so the parent
---  body is pure proven-SPARK wrappers with no Import in sight -- the same split
---  as Spark_Mcp_Http.Serve (proven) over Spark_Mcp_Http.Bridge (the C/Rust
---  seam). SPARK does not analyze the foreign bodies; it proves each Pre at the
---  call site and assumes the Global/termination contracts below.
+--  A private child, and spec-only: the mutating imports name DBMS, which the
+--  parent body refining it cannot do, and the handle types come from the
+--  parent's private part; Import must sit on the declaration itself, so this
+--  package has no body.
 --
---  Why a child, and why spec-only:
+--  Every operation that changes connection or statement state -- open, close,
+--  exec, prepare, the binds, step, reset, finalize, vec registration -- carries
+--  Global => (In_Out => DBMS) and so is a procedure; those that report a result
+--  code do so through an `out Rc`, via the void-returning shims in shim.c. The
+--  value readers (column_*, changes, last_insert_rowid) carry
+--  Global => (Input => DBMS), and the value-returning ones also
+--  Volatile_Function.
 --
---    * A child, because DBMS is null-refined in the parent body (its
---      constituents live across the FFI) and SPARK only lets the abstract name
---      be mentioned outside its refinement region. Every mutating import carries
---      Global => (In_Out => DBMS), so none of them can be declared in the body
---      that refines it; here they can. Being a *private* child also gives this
---      spec visibility of the parent's private part, which is where the handle
---      types below come from -- the parent could not declare them here instead,
---      as a parent spec cannot with its own child.
+--  Both SQLite pointers cross the seam as the parent's ownership types,
+--  Handles.Db_Handle and Handles.Stmt_Handle, so the resource discipline is
+--  stated here, on the imports that acquire and release:
 --
---  Effect model (see the parent spec's DBMS note): every operation that changes
---  connection or statement state -- open, close, exec, prepare, the binds, step,
---  reset, finalize, and vec registration -- carries Global => (In_Out => DBMS).
---  This is why each such import is a *procedure* reporting its result code
---  through an `out Rc` (via the void-returning shims in shim.c): only a
---  procedure may carry an In_Out global, and modelling every mutation as one
---  DBMS effect is what makes SPARK treat two statements over the same
---  connection as potentially interfering (the Ada.Text_IO File_System stance).
---  The value-returning imports (the column_* readers, changes,
---  last_insert_rowid) read mutable C-side state, so they carry
---  Volatile_Function, Global => (Input => DBMS) -- DBMS has Async_Writers, so
---  two calls may legitimately differ and SPARK must not fold them. The one
---  value reader that is a procedure (column_text_copy, filling an out buffer)
---  carries Global => (Input => DBMS) for the same read dependency.
---    * Spec-only, because the Import must live on the declaration itself: the
---      calling convention has to be known where callers see the subprogram, so
---      neither a pragma nor a `with Import` aspect can complete a plain
---      declaration from a body. Every entry is therefore its own import, and
---      the package needs no body.
+--    * Open and Prepare promise nothing about the `out` handle:
+--      sqlite3_open_v2 can hand back a connection that still needs closing even
+--      when it fails, so the wrappers reclaim on every failure path.
 --
---  Ownership model. The two SQLite pointers cross this seam as the parent's
---  ownership types, Handles.Db_Handle and Handles.Stmt_Handle, not as bare
---  addresses -- so the resource discipline is stated *here*, on the imports that
---  actually acquire and release the resources, and proved everywhere else:
+--    * Close and Finalize are shims over sqlite3_close_v2 / sqlite3_finalize
+--      that null the caller's pointer, which is why the handle is `in out` and
+--      reaches C as a pointer-to-pointer. Both tolerate an already-reclaimed
+--      handle -- no precondition -- so they are idempotent and the failure
+--      paths in Open and Prepare can release unconditionally.
 --
---    * Open and Prepare take their handle as `out`. Neither promises anything
---      about it: sqlite3_open_v2 may hand back a connection that still needs
---      closing even when it fails, and SPARK is told nothing beyond "this may
---      own a resource", which is exactly the honest reading. The wrapper
---      bodies therefore have to reclaim the handle on every failure path, and
---      GNATprove checks that they do.
+--    * Everything else takes the handle as `in` and requires it non-null:
+--      sqlite3_step, sqlite3_changes and the column readers dereference it, so
+--      a null handle is undefined behaviour rather than an error code.
 --
---    * Close and Finalize take theirs as `in out` with a postcondition that it
---      is left at the reclaimed value. These two postconditions are the crate's
---      whole release contract, and they are assumptions about C in the same
---      sense as every other contract in this package -- with the difference
---      that the shims null the caller's pointer, so the assumption is checked
---      at run time whenever assertions are on (the test builds use -gnata).
---      This is why both are shims over sqlite3_close_v2 / sqlite3_finalize
---      rather than direct imports of them: an `in out` handle must reach C as
---      a pointer-to-pointer for the C side to be able to null it.
---
---    * Everything else takes a handle as `in` -- an observe, in SPARK's terms,
---      which neither transfers nor releases ownership -- and its ABI is the
---      plain pointer the C functions expect. Each of those carries
---      Pre => <handle> /= <the reclaimed value>: using a connection or a
---      statement requires having one. C does not check this and in most of these
---      cases cannot survive it -- sqlite3_step, sqlite3_changes and the column
---      readers dereference the pointer, so a null handle is undefined behaviour
---      rather than an error code -- which is precisely why the obligation
---      belongs here, in Ada. GNATprove discharges it at every call site from the
---      wrappers' own Is_Open / Is_Valid preconditions, so it costs nothing to
---      carry, and -gnata builds check it at run time.
---
---      Close and Finalize deliberately have NO such precondition: tolerating an
---      already-reclaimed handle is what makes them idempotent and what lets the
---      failure paths in Open and Prepare release unconditionally.
---
---  Private, because nothing outside Sqlite_Vec_Spark may reach the raw C seam.
+--  The column readers are valid only once Step has returned SQLITE_ROW and only
+--  until the next Step, Reset or Finalize on that statement.
 
 with Ada.Streams;
 with Interfaces;
@@ -100,9 +59,7 @@ is
      with Import, Convention => C, External_Name => "memcp_sqlite_open",
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Open (or create) a connection. Path must be NUL-terminated (open_v2 takes
-   --  no length argument). No postcondition on Db: a failed open_v2 may still
-   --  return a connection that must be closed, so the caller must be prepared
-   --  to reclaim Db whatever Rc says (see the ownership note above).
+   --  no length argument). No postcondition on Db: reclaim it whatever Rc says.
    --  @param Path NUL-terminated filesystem path to open or create.
    --  @param Db The connection handle, owned by the caller from here on.
    --  @param Rc The raw SQLite result code.
@@ -113,9 +70,8 @@ is
           Depends => (Db => null, DBMS =>+ Db),
           Post => Db = Handles.Null_Db_Handle;
    --  Release the connection and leave Db reclaimed (memcp_sqlite_close, a shim
-   --  over sqlite3_close_v2 that nulls the caller's pointer). Tolerates an
-   --  already-reclaimed handle, which is what makes the wrappers' Close
-   --  idempotent and lets the failure paths in Open call it unconditionally.
+   --  over sqlite3_close_v2 that nulls the caller's pointer). Idempotent:
+   --  tolerates an already-reclaimed handle.
    --  @param Db The connection handle to release; left reclaimed.
 
    procedure Exec
@@ -125,9 +81,8 @@ is
      with Import, Convention => C, External_Name => "memcp_sqlite_exec",
           Pre    => Db /= Handles.Null_Db_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
-   --  Run NUL-terminated SQL with no result rows (memcp_sqlite_exec shim over
-   --  sqlite3_exec; the always-NULL callback/arg/errmsg arguments are folded
-   --  into the shim).
+   --  Run NUL-terminated SQL with no result rows (memcp_sqlite_exec: a
+   --  sqlite3_exec shim with NULL callback, arg and errmsg).
    --  @param Db The open connection.
    --  @param SQL NUL-terminated SQL producing no result rows.
    --  @param Rc The raw SQLite result code.
@@ -158,9 +113,10 @@ is
      with Import, Convention => C, External_Name => "memcp_sqlite_prepare",
           Pre    => Db /= Handles.Null_Db_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
-   --  Compile one SQL statement (memcp_sqlite_prepare shim). No postcondition
-   --  on Stmt, for the reason given on Open: the caller owns whatever comes
-   --  back and must reclaim it if the compile did not yield a usable statement.
+   --  Compile one SQL statement (memcp_sqlite_prepare shim over
+   --  sqlite3_prepare_v2). No postcondition on Stmt: reclaim whatever comes
+   --  back even when the compile failed. Stmt points into Db, so Db must
+   --  outlive Stmt.
    --  @param Db The open connection.
    --  @param SQL The SQL text (explicit length, not NUL-terminated).
    --  @param Nbyte The byte length of SQL.
@@ -249,9 +205,8 @@ is
           Depends => (Stmt => null, DBMS =>+ Stmt),
           Post => Stmt = Handles.Null_Stmt_Handle;
    --  Destroy the statement and leave Stmt reclaimed (memcp_sqlite_finalize, a
-   --  shim over sqlite3_finalize that nulls the caller's pointer). Tolerates an
-   --  already-reclaimed handle, so Finalize is idempotent and Prepare's failure
-   --  path can call it unconditionally.
+   --  shim over sqlite3_finalize that nulls the caller's pointer). Idempotent:
+   --  tolerates an already-reclaimed handle.
    --  @param Stmt The statement to destroy; left reclaimed.
 
    function Column_Int64
@@ -309,8 +264,8 @@ is
           External_Name => "memcp_sqlite_column_text_copy",
           Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (Input => DBMS), Always_Terminates => True;
-   --  Copy a 0-based text column into a caller-owned buffer of exactly Len bytes
-   --  (see the parent's Column_Text).
+   --  Copy a 0-based text column into a caller-owned buffer of exactly Len
+   --  bytes, taken from Column_Text_Len on the same row.
    --  @param Stmt The statement positioned on a result row.
    --  @param Col The 0-based column index.
    --  @param Dst The exact-size destination buffer.

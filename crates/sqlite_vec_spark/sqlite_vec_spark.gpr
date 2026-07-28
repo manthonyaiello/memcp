@@ -4,10 +4,9 @@ project Sqlite_Vec_Spark is
    for Library_Name use "Sqlite_Vec_Spark";
    for Library_Version use Project'Library_Name & ".so." & Sqlite_Vec_Spark_Config.Crate_Version;
 
-   --  Ada wrappers + the vendored C amalgamations (sqlite3.c, sqlite-vec.c) and
-   --  our shim.c, all compiled by gprbuild into this one library -- no system
-   --  libsqlite3, no separate build system. csrc/ is populated by
-   --  scripts/fetch-deps.sh (sha256-pinned); shim.c is committed.
+   --  The vendored amalgamations (sqlite3.c, sqlite-vec.c) and shim.c build into
+   --  this library: no system libsqlite3. scripts/fetch-deps.sh populates csrc/
+   --  sha256-pinned; shim.c is committed.
    for Languages use ("Ada", "C");
    for Source_Dirs use ("src/", "config/", "csrc/");
    for Object_Dir use "obj/" & Sqlite_Vec_Spark_Config.Build_Profile;
@@ -22,10 +21,8 @@ project Sqlite_Vec_Spark is
    package Compiler is
       for Default_Switches ("Ada") use Sqlite_Vec_Spark_Config.Ada_Compiler_Switches & ("-gnatyM99");
 
-      --  The two amalgamations are vendored third-party C: optimize, silence
-      --  their warnings (we do not own them). sqlite-vec.c must see SQLITE_CORE
-      --  (static-link path: include sqlite3.h, no sqlite3ext.h indirection).
-      --  shim.c is ours -- warn on it.
+      --  -w on the amalgamations: vendored, not ours to fix. SQLITE_CORE puts
+      --  sqlite-vec.c on the static-link path. shim.c is ours, hence -Wall.
       for Switches ("sqlite3.c") use
         ("-O2", "-w",
          "-DSQLITE_THREADSAFE=1",       --  safe for a future connection-per-thread
@@ -39,9 +36,8 @@ project Sqlite_Vec_Spark is
       for Switches ("Ada") use ("-Es"); --  Symbolic traceback
    end Binder;
 
-   --  What a CPU-only static SQLite build needs beyond libSystem on macOS.
-   --  (Linux would also want -ldl -lpthread; Darwin folds those into libSystem.)
-   --  Propagates to whatever links this library (the memcp bin).
+   --  All the static SQLite build needs beyond libSystem on macOS; Linux would
+   --  also want -ldl -lpthread. Propagates to anything linking this library.
    package Linker is
       for Linker_Options use ("-lm");
    end Linker;
