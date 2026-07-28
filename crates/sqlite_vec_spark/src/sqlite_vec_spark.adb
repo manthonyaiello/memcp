@@ -12,6 +12,17 @@
 --
 --  Because Database/Statement are limited (no copy), handle fields are mutated
 --  component-wise (DB.Handle := ...), never by whole-record aggregate.
+--
+--  Handles are ownership types (see the spec's private part), which shapes the
+--  two acquiring wrappers below: Open and Prepare hand their handle component
+--  straight to the Bridge as the `out` parameter, rather than opening into a
+--  local and copying it in on success. A copy would be a *move*, leaving the
+--  local unreadable for the rest of the wrapper -- and the reason for the local
+--  is gone anyway, since a handle that turns out to be unusable is released
+--  through the very component it landed in. That release is unconditional on
+--  every failure path: the shims tolerate an already-null pointer, and SPARK
+--  knows nothing about which failures leave a resource behind, so reclaiming
+--  always is both cheaper to prove and closer to what SQLite documents.
 
 with Interfaces.C;
 with Sqlite_Vec_Spark.Bridge;
@@ -22,7 +33,6 @@ package body Sqlite_Vec_Spark
 is
    use type Interfaces.C.int;
    use type Interfaces.C.size_t;
-   use type System.Address;
 
    --  SQLite result / type codes we care about (sqlite3.h).
    SQLITE_OK         : constant := 0;
@@ -32,12 +42,6 @@ is
    SQLITE_ROW        : constant := 100;
    SQLITE_DONE       : constant := 101;
    SQLITE_NULL_TYPE  : constant := 5;   --  sqlite3_column_type value for NULL
-
-   --  Reclaim the ownership token (see the private part note). Freeing it is
-   --  what discharges the Needs_Reclamation obligation; it nulls its argument,
-   --  so a closed/finalized handle is left in the reclaimed state.
-   procedure Free_Token is
-     new Ada.Unchecked_Deallocation (Boolean, Ownership_Token);
 
    ----------------------
    -- Local helpers --
@@ -83,43 +87,36 @@ is
       Path   : String;
       Result : out Status)
    is
-      Handle : System.Address;
-      Rc     : Interfaces.C.int;
+      Rc : Interfaces.C.int;
    begin
-      DB.Handle := System.Null_Address;
-      DB.Token  := null;
-
-      --  vec0 must be registered before the connection is opened.
+      --  vec0 must be registered before the connection is opened. This is the
+      --  one path that returns without having called Bridge.Open, so it is also
+      --  the one that has to establish the reclaimed handle itself.
       declare
          Reg_Rc : Interfaces.C.int;
       begin
          Bridge.Register_Vec (Reg_Rc);
          if Reg_Rc /= SQLITE_OK then
-            Result := Error;
+            DB.Handle := Handles.Null_Db_Handle;
+            Result    := Error;
             return;
          end if;
       end;
 
       --  Filename is NUL-terminated (open_v2 takes no length argument).
-      Bridge.Open (Path => Path & ASCII.NUL, Db => Handle, Rc => Rc);
+      Bridge.Open (Path => Path & ASCII.NUL, Db => DB.Handle, Rc => Rc);
 
-      if Rc /= SQLITE_OK then
-         --  open may hand back a handle even on failure; close it.
-         if Handle /= System.Null_Address then
-            Bridge.Close_V2 (Handle);
-         end if;
+      --  Two failures in one branch: a genuine error code, and a success code
+      --  with a null handle (which SQLite does not do, but which the Post
+      --  (Is_Open = (Result = Ok)) has to rule out to be a theorem). Either way
+      --  open_v2 may have left a connection behind -- it does so on some
+      --  failures -- so Close unconditionally; it tolerates a null handle, and
+      --  it is what discharges DB's ownership obligation on this path.
+      if Rc /= SQLITE_OK or else not Is_Open (DB) then
+         Bridge.Close (DB.Handle);
          Result := Error;
          return;
       end if;
-
-      --  A success code with a null handle cannot happen with SQLite, but
-      --  guarding it keeps the Post (Is_Open = (Result = Ok)) a theorem.
-      if Handle = System.Null_Address then
-         Result := Error;
-         return;
-      end if;
-
-      DB.Handle := Handle;
 
       --  Per-connection setup, mirroring store.py's _conn: enforce foreign
       --  keys, enable WAL (a no-op on :memory:, which returns "memory", not an
@@ -133,17 +130,14 @@ is
          Setup_Rc : Interfaces.C.int;
       begin
          Bridge.Exec
-           (Handle,
+           (DB.Handle,
             "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;" & ASCII.NUL,
             Setup_Rc);
          if Setup_Rc /= SQLITE_OK then
-            Bridge.Close_V2 (Handle);
-            DB.Handle := System.Null_Address;
+            Bridge.Close (DB.Handle);
             Result := Error;
             return;
          end if;
-         --  Fully open: take ownership. The token now shadows Handle's life.
-         DB.Token := new Boolean'(True);
          Result := Ok;
       end;
    end Open;
@@ -152,15 +146,12 @@ is
    -- Close --
    -----------
 
+   --  One call: releasing the connection and leaving DB reclaimed are the same
+   --  step now, and Bridge.Close's Post is what says so. Idempotent, because
+   --  the shim tolerates an already-null pointer.
    procedure Close (DB : in out Database) is
    begin
-      if DB.Handle /= System.Null_Address then
-         Bridge.Close_V2 (DB.Handle);
-      end if;
-      DB.Handle := System.Null_Address;
-      --  Release the ownership token: this is the reclamation step. Idempotent
-      --  -- Free_Token on a null token is a no-op -- so Close stays idempotent.
-      Free_Token (DB.Token);
+      Bridge.Close (DB.Handle);
    end Close;
 
    -------------
@@ -206,26 +197,24 @@ is
       Stmt   : out Statement;
       Result : out Status)
    is
-      Handle : System.Address;
-      Rc     : Interfaces.C.int;
+      Rc : Interfaces.C.int;
    begin
-      Stmt.Handle := System.Null_Address;
-      Stmt.Token  := null;
       Bridge.Prepare
         (Db    => DB.Handle,
          SQL   => SQL,
          Nbyte => Interfaces.C.int (SQL'Length),
-         Stmt  => Handle,
+         Stmt  => Stmt.Handle,
          Rc    => Rc);
 
-      if Rc = SQLITE_OK and then Handle /= System.Null_Address then
-         Stmt.Handle := Handle;
-         --  Compiled: take ownership. The token now shadows Handle's life.
-         Stmt.Token  := new Boolean'(True);
-         Result      := Ok;
+      if Rc = SQLITE_OK and then Is_Valid (Stmt) then
+         Result := Ok;
       else
-         --  A non-error code with a null handle (e.g. whitespace-only SQL)
-         --  still means "no usable statement": report Error, not Ok.
+         --  No usable statement, either because prepare_v2 failed or because it
+         --  succeeded with a null handle (whitespace-only SQL). prepare_v2 nulls
+         --  its out handle on error, but nothing here relies on that: Finalize
+         --  unconditionally, which tolerates a null handle and is what
+         --  discharges Stmt's ownership obligation on this path.
+         Bridge.Finalize (Stmt.Handle);
          Result := To_Status (Rc);
          if Result = Ok then
             Result := Error;
@@ -327,14 +316,10 @@ is
    -- Finalize --
    --------------
 
+   --  As with Close: one call, and Bridge.Finalize's Post is the reclamation.
    procedure Finalize (S : in out Statement) is
    begin
-      if S.Handle /= System.Null_Address then
-         Bridge.Finalize (S.Handle);
-      end if;
-      S.Handle := System.Null_Address;
-      --  Release the ownership token: the reclamation step. Idempotent.
-      Free_Token (S.Token);
+      Bridge.Finalize (S.Handle);
    end Finalize;
 
    ------------------
