@@ -61,7 +61,19 @@
 --
 --    * Everything else takes a handle as `in` -- an observe, in SPARK's terms,
 --      which neither transfers nor releases ownership -- and its ABI is the
---      plain pointer the C functions expect.
+--      plain pointer the C functions expect. Each of those carries
+--      Pre => <handle> /= <the reclaimed value>: using a connection or a
+--      statement requires having one. C does not check this and in most of these
+--      cases cannot survive it -- sqlite3_step, sqlite3_changes and the column
+--      readers dereference the pointer, so a null handle is undefined behaviour
+--      rather than an error code -- which is precisely why the obligation
+--      belongs here, in Ada. GNATprove discharges it at every call site from the
+--      wrappers' own Is_Open / Is_Valid preconditions, so it costs nothing to
+--      carry, and -gnata builds check it at run time.
+--
+--      Close and Finalize deliberately have NO such precondition: tolerating an
+--      already-reclaimed handle is what makes them idempotent and what lets the
+--      failure paths in Open and Prepare release unconditionally.
 --
 --  Private, because nothing outside Sqlite_Vec_Spark may reach the raw C seam.
 
@@ -111,6 +123,7 @@ is
       SQL : String;
       Rc  : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_exec",
+          Pre    => Db /= Handles.Null_Db_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Run NUL-terminated SQL with no result rows (memcp_sqlite_exec shim over
    --  sqlite3_exec; the always-NULL callback/arg/errmsg arguments are folded
@@ -122,6 +135,7 @@ is
    function Last_Insert_Rowid
      (Db : Handles.Db_Handle) return Interfaces.Integer_64
      with Import, Convention => C, External_Name => "sqlite3_last_insert_rowid",
+          Pre => Db /= Handles.Null_Db_Handle,
           Volatile_Function, Global => (Input => DBMS);
    --  Rowid of the most recent INSERT on Db (sqlite3_last_insert_rowid).
    --  @param Db The open connection.
@@ -129,6 +143,7 @@ is
 
    function Changes (Db : Handles.Db_Handle) return Interfaces.C.int
      with Import, Convention => C, External_Name => "sqlite3_changes",
+          Pre => Db /= Handles.Null_Db_Handle,
           Volatile_Function, Global => (Input => DBMS);
    --  Rows changed by the most recent INSERT/UPDATE/DELETE (sqlite3_changes).
    --  @param Db The open connection.
@@ -141,6 +156,7 @@ is
       Stmt  : out Handles.Stmt_Handle;
       Rc    : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_prepare",
+          Pre    => Db /= Handles.Null_Db_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Compile one SQL statement (memcp_sqlite_prepare shim). No postcondition
    --  on Stmt, for the reason given on Open: the caller owns whatever comes
@@ -158,6 +174,7 @@ is
       Len  : Interfaces.C.int;
       Rc   : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_bind_text",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Bind text to a 1-based parameter (SQLITE_TRANSIENT, so SQLite copies).
    --  @param Stmt The valid statement.
@@ -172,6 +189,7 @@ is
       Val  : Interfaces.Integer_64;
       Rc   : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_bind_int64",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Bind a 64-bit integer to a 1-based parameter (sqlite3_bind_int64).
    --  @param Stmt The valid statement.
@@ -186,6 +204,7 @@ is
       Len  : Interfaces.C.int;
       Rc   : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_bind_blob",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Bind a blob to a 1-based parameter (SQLITE_TRANSIENT, so SQLite copies).
    --  @param Stmt The valid statement.
@@ -199,6 +218,7 @@ is
       Idx  : Interfaces.C.int;
       Rc   : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_bind_null",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Bind SQL NULL to a 1-based parameter (sqlite3_bind_null).
    --  @param Stmt The valid statement.
@@ -208,6 +228,7 @@ is
    procedure Step
      (Stmt : Handles.Stmt_Handle; Rc : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_step",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Advance a statement (sqlite3_step): SQLITE_ROW / SQLITE_DONE / error.
    --  @param Stmt The valid statement.
@@ -216,6 +237,7 @@ is
    procedure Reset
      (Stmt : Handles.Stmt_Handle; Rc : out Interfaces.C.int)
      with Import, Convention => C, External_Name => "memcp_sqlite_reset",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (In_Out => DBMS), Always_Terminates => True;
    --  Reset a stepped statement so it can be re-stepped (sqlite3_reset).
    --  @param Stmt The valid statement.
@@ -236,6 +258,7 @@ is
      (Stmt : Handles.Stmt_Handle; Col : Interfaces.C.int)
       return Interfaces.Integer_64
      with Import, Convention => C, External_Name => "sqlite3_column_int64",
+          Pre => Stmt /= Handles.Null_Stmt_Handle,
           Volatile_Function, Global => (Input => DBMS);
    --  Read a 0-based column of the current row as a 64-bit integer.
    --  @param Stmt The statement positioned on a result row.
@@ -246,6 +269,7 @@ is
      (Stmt : Handles.Stmt_Handle; Col : Interfaces.C.int)
       return Interfaces.IEEE_Float_64
      with Import, Convention => C, External_Name => "sqlite3_column_double",
+          Pre => Stmt /= Handles.Null_Stmt_Handle,
           Volatile_Function, Global => (Input => DBMS);
    --  Read a 0-based column of the current row as a double.
    --  @param Stmt The statement positioned on a result row.
@@ -256,6 +280,7 @@ is
      (Stmt : Handles.Stmt_Handle; Col : Interfaces.C.int)
       return Interfaces.C.int
      with Import, Convention => C, External_Name => "sqlite3_column_type",
+          Pre => Stmt /= Handles.Null_Stmt_Handle,
           Volatile_Function, Global => (Input => DBMS);
    --  The SQLite datatype code of a 0-based column (used to detect SQL NULL).
    --  @param Stmt The statement positioned on a result row.
@@ -267,6 +292,7 @@ is
       return Interfaces.C.size_t
      with Import, Convention => C,
           External_Name => "memcp_sqlite_column_text_len",
+          Pre => Stmt /= Handles.Null_Stmt_Handle,
           Volatile_Function, Global => (Input => DBMS);
    --  Byte length of a 0-based text column, so the caller can allocate an
    --  exact-size buffer before the copy.
@@ -281,6 +307,7 @@ is
       Len  : Interfaces.C.size_t)
      with Import, Convention => C,
           External_Name => "memcp_sqlite_column_text_copy",
+          Pre    => Stmt /= Handles.Null_Stmt_Handle,
           Global => (Input => DBMS), Always_Terminates => True;
    --  Copy a 0-based text column into a caller-owned buffer of exactly Len bytes
    --  (see the parent's Column_Text).
