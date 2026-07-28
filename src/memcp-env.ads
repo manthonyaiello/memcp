@@ -30,9 +30,13 @@ is
    function Exists (Name : String) return Boolean
      with Global => (Input => Environment);
    --  True when environment variable Name is set.
+   --  @param Name The environment variable to look up.
+   --  @return True iff Name is present in the environment.
 
    function Value (Name : String) return String
      with Global => (Input => Environment);
    --  The value of environment variable Name (Name must Exist).
+   --  @param Name The environment variable to read.
+   --  @return The variable's value.
 
 end Memcp.Env;

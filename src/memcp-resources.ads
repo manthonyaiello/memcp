@@ -366,12 +366,22 @@ private
 
    function Is_Open (R : Resources) return Boolean is
      (MS.Is_Open (R.The_Store));
+   --  Completion of the openness predicate: read straight off the owned store.
+   --  @param R The resources to test.
+   --  @return True iff R holds an open store.
 
    function Is_Reclaimed (R : Resources) return Boolean is
      (MS.Is_Reclaimed (R.The_Store)
       and then Candle_Spark.Is_Reclaimed (R.The_Embedder));
+   --  Completion of the reclamation predicate: both owned constituents must be
+   --  reclaimed before a Resources object may be dropped.
+   --  @param R The resources to test.
+   --  @return True iff neither the store nor the embedder owns anything.
 
    function Embedder_Loaded (R : Resources) return Boolean is
      (Candle_Spark.Is_Loaded (R.The_Embedder));
+   --  Completion of the embedder-loaded predicate.
+   --  @param R The resources to test.
+   --  @return True iff R holds a loaded embedding model.
 
 end Memcp.Resources;

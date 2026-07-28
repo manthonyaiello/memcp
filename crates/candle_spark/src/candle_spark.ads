@@ -223,22 +223,28 @@ private
              Post => Is_Null'Result = (H = Null_Engine_Handle);
       --  Ghost spelling of "reclaimed", for the Default_Initial_Condition
       --  above. Executable code uses the comparison directly.
+      --  @param H The handle to test.
+      --  @return True iff H is the reclaimed value.
 
    private
       pragma SPARK_Mode (Off);
 
-      --  Full view: a plain C pointer, and nothing else. The designated type is
-      --  a placeholder that is never allocated or dereferenced on the Ada side
-      --  -- every value comes from candle_ffi and goes back to it -- so all this
-      --  representation has to provide is a pointer that is null by default and
-      --  comparable to null.
       type Embed_Model is limited null record;
+      --  Placeholder designated type for the boxed Rust EmbedModel. Never
+      --  allocated or dereferenced on the Ada side -- every value comes from
+      --  candle_ffi and goes back to it -- so the representation only has to
+      --  give us a pointer that is null by default and comparable to null.
 
       type Engine_Handle is access all Embed_Model;
+      --  Full view: a plain C pointer, and nothing else.
 
       Null_Engine_Handle : constant Engine_Handle := null;
+      --  Full view of the reclaimed value: the null pointer.
 
       function Is_Null (H : Engine_Handle) return Boolean is (H = null);
+      --  Completion of the ghost predicate.
+      --  @param H The handle to test.
+      --  @return True iff H is the null pointer.
    end Handles;
 
    use type Handles.Engine_Handle;
@@ -267,5 +273,7 @@ private
      (E.Handle = Handles.Null_Engine_Handle);
    --  Completion of the reclamation predicate: reclaimed exactly when the
    --  handle is the reclaimed value (equivalently, not Is_Loaded (E)).
+   --  @param E The embedder to test.
+   --  @return True iff E owns no engine.
 
 end Candle_Spark;

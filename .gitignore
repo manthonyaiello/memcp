@@ -5,8 +5,10 @@ bin/
 alire/
 config/
 #  Only the *generated* GNATdoc output (docs/api) is an artifact; hand-written
-#  prose under docs/ (e.g. docs/design/) is tracked.
+#  prose under docs/ (e.g. docs/design/) is tracked. gnatdoc-run.txt is the
+#  teed report scripts/check-docs.sh reads to set its exit status.
 docs/api/
+gnatdoc-run.txt
 *.o
 *.ali
 

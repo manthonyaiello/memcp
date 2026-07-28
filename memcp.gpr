@@ -28,20 +28,26 @@ project Memcp is
       for Artifacts (".") use ("share");
    end Install;
 
-   --  GNATdoc configuration. Documentation targets the five crates we own,
-   --  written in the "gnat" (trailing) comment style. Run with:
+   --  GNATdoc (issue #22). This is the root of the doc site, so its HTML lands
+   --  in docs/api/ rather than under obj/, where the default would put it and
+   --  `alr clean` would take it away. docs/api/ is itself gitignored -- CI
+   --  uploads it as a build artifact rather than committing generated HTML.
    --
-   --    gnatdoc --style=gnat --generate=private --warnings -P memcp.gpr
+   --  Everything else about the run lives in scripts/check-docs.sh, which is
+   --  both the durable record of those choices and the gate that enforces them
+   --  (`make docs` to report, `make docs-check` to fail on a finding). It has to
+   --  be a script rather than attributes here, for two reasons:
    --
-   --  gnatdoc walks the whole dependency graph, so the report also carries
-   --  third-party noise that is NOT ours to document and cannot be excluded
-   --  portably (Excluded_Project_Files needs absolute paths, and these live in
-   --  machine-specific locations):
-   --    * sparklib  -- SPARKlib, in the build-hash Alire cache
-   --    * json      -- developed in ../../json-spark (its own session)
-   --    * */config/*_config.ads -- Alire-generated, git-ignored boilerplate
-   --  Filter those out when reading warnings, e.g.:
-   --    ... | grep 'warning:' | grep -vE '^(spark[-.]|json[-.])|_config\.ads'
+   --    * No `Documentation` attribute governs the comment STYLE, and this
+   --      project is --style=gnat: the doc block sits BELOW the declaration,
+   --      with @param/@return/@enum/@formal mandatory. A block left above its
+   --      declaration is silently ignored and the entity reported undocumented.
+   --    * gnatdoc walks the whole dependency graph, so the report also carries
+   --      ~5,100 warnings of third-party noise (SPARKlib, json-spark, the
+   --      Alire-generated *_config.ads) that is NOT ours to document and cannot
+   --      be excluded portably -- Excluded_Project_Files needs paths to project
+   --      files that live in machine-specific Alire cache locations, so the
+   --      scope filter has to be by unit name, in the script.
    package Documentation is
       for Output_Dir ("html") use "docs/api";
    end Documentation;

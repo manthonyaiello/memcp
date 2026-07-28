@@ -21,11 +21,13 @@ package Memcp.Log with SPARK_Mode => On is
      with Global            => (In_Out => Ada.Text_IO.File_System),
           Always_Terminates => True;
    --  Record an irrecoverable failure on the diagnostic channel.
+   --  @param Message The text to record.
 
    procedure Warning (Message : String)
      with Global            => (In_Out => Ada.Text_IO.File_System),
           Always_Terminates => True;
    --  Record a recoverable anomaly (e.g. a replay-corpus miss) on the
    --  diagnostic channel.
+   --  @param Message The text to record.
 
 end Memcp.Log;
