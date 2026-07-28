@@ -242,6 +242,29 @@ from **SPARKlib's floating-point lemmas**
 need the COLIBRI solver, which the default prover set does not ship. Expected,
 and outside our code.
 
+### API documentation
+
+```sh
+alr -n install gnatdoc_bin=26.0.0      # once; puts gnatdoc in ~/.alire/bin
+export PATH="$HOME/.alire/bin:$PATH"
+
+make docs          # generate docs/api/ + report undocumented entities
+make docs-check    # the same run as a gate: any finding exits 1
+```
+
+`gnatdoc` is not part of the FSF toolchain and is not an `alire.toml`
+dependency — it is a tool memcp never links against, so making it one would have
+every build fetch a crate it never uses. The version is pinned because the set of
+warnings *is* the gate.
+
+Documentation style is `--style=gnat`: the doc block sits **below** the
+declaration it describes, with `@param` / `@return` / `@enum` / `@formal`
+mandatory. A block left *above* its declaration is silently ignored — the entity
+is then reported as undocumented and nothing ever points at the orphaned comment.
+`scripts/check-docs.sh` records those choices, drives all six project roots, and
+CI runs `make docs-check` as the gate that both the build/test matrix and the
+prover wait on.
+
 ## Security
 
 memcp stores conversation transcripts, so the security posture matters. The

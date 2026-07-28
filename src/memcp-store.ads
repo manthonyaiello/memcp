@@ -707,5 +707,7 @@ private
    --  Completion of the reclamation predicate: reclaimed exactly when the owned
    --  connection is reclaimed and the remembered path has been released. Both
    --  owning components must be reclaimed before a Store is dropped.
+   --  @param S The store to test.
+   --  @return True iff S owns neither a connection nor a path allocation.
 
 end Memcp.Store;

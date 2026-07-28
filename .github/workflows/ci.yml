@@ -4,6 +4,26 @@ name: CI
 # Proof runs as its own job, in parallel with build/test: it depends on
 # compilation but not on a successful test run (see issue #3).
 # Doc-only changes are skipped.
+#
+# The `docs` job (issue #22) is the third signal, and it is a gate — the other
+# two both `needs: docs`:
+#
+#     docs --> build-test (both platforms)
+#          --> prove
+#
+# `build-test` and `prove` still have NO edge between them, deliberately (issue
+# #3): proof needs the sources to compile — which it arranges for itself, in its
+# own provision step — not the tests to pass, so when something is broken we want
+# both signals in the same run instead of one hiding the other. That argument
+# does not extend to `docs`: it is by far the cheapest of the three (no cargo, no
+# prover, ~1 min), and an undocumented entity means the tree is not worth
+# spending two platforms' build minutes or the prover on.
+#
+# What the edge actually buys, honestly: the docs job cannot check anything until
+# it has PROVISIONED (config/*_config.gpr and the crate lib/ dirs are generated
+# and gitignored), so it runs `make prove-deps` first and compiles the Ada
+# closure either way. What gating saves is the Rust staticlib builds, the two
+# platforms' test runs, and the prover.
 on:
   push:
     branches: [main]
@@ -31,10 +51,65 @@ permissions:
   contents: read
 
 jobs:
+  # API documentation + the doc gate (issue #22). It needs nothing itself, so it
+  # starts immediately; `build-test` and `prove` wait on it. See the graph in the
+  # header comment for what that edge saves.
+  docs:
+    name: GNATdoc (gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
+
+      # gnatdoc is a tool, not something memcp links against, so it is not a
+      # crate dependency — exactly the reasoning prove.yml records for
+      # gnatprove. Putting it in alire.toml would make every job and every fresh
+      # local checkout fetch a binary crate it never uses, because alr
+      # materializes the whole dependency solution before building. Pinned to an
+      # exact version for the same reason the prover is: the set of warnings IS
+      # the gate, so a silent bump must not be able to change what CI accepts.
+      #
+      # 26.0.0 is the generation that pairs with FSF gnat_native 16.1.0. The
+      # gnatdoc *source* crate does not build against it (libadalang/libgpr2/vss
+      # skew) — the binary crate is what restores `make docs` after the GNAT 16
+      # upgrade dropped it.
+      - name: Install GNATdoc
+        run: |
+          alr -n install gnatdoc_bin=26.0.0
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      # THE gate: scripts/check-docs.sh drives every project root and exits
+      # non-zero on any undocumented entity in our own sources, which fails this
+      # job and so skips both platforms' build-test and the prover. The
+      # per-unit inventory lands in the job summary, so a failure is readable
+      # without opening the log.
+      #
+      # docs-check's own prerequisite (make prove-deps) does the provisioning:
+      # config GPRs, synced deps, and a compile-only gprbuild that creates the
+      # crates' obj/ and lib/ dirs. No cargo — the doc gate never links the
+      # executable, so this job skips the Rust toolchain entirely.
+      - name: Check documentation
+        run: make docs-check
+
+      # `always()`: the step above fails the job, and the HTML is generated
+      # before the gate reads the report — it is most worth looking at exactly
+      # when the gate has just rejected something.
+      - name: Upload API docs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-docs
+          path: docs/api
+
   # Build + test across both platforms. This no longer runs proof — proof is a
-  # sibling job below with no `needs:` edge, so the two run concurrently.
+  # sibling job below with no `needs:` edge, so the two run concurrently. Both
+  # sit behind the `docs` gate (issue #22).
   build-test:
     name: Build + test (${{ matrix.os }})
+    needs: docs
     strategy:
       # Don't let one platform's failure cancel the other — we want both signals.
       fail-fast: false
@@ -67,8 +142,12 @@ jobs:
   # is the warm variant (restore the cache; save only on main, so PRs can read
   # it but never write it). Still a sibling of build-test with no `needs:` edge,
   # so the two run concurrently — proof depends on compilation, not on a passing
-  # test run (issue #3).
+  # test run (issue #3) — but behind the same `docs` gate (issue #22).
+  #
+  # `needs:` is job-level here, not a `with:` input: it applies to the call, and a
+  # reusable-workflow call takes the same job keywords a normal job does.
   prove:
+    needs: docs
     uses: ./.github/workflows/prove.yml
     with:
       restore: true

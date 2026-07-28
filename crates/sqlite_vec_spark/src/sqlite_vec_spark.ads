@@ -173,16 +173,19 @@ is
    --  @param S The statement handle to test.
    --  @return True iff S is valid.
 
-   --  Reclamation predicates for the Needs_Reclamation annotations above. A
-   --  closed connection / finalized statement holds no C resource, so that is
-   --  the reclaimed state GNATprove requires before the object is dropped.
-   --  Ghost: they exist only for proof, never at run time.
    function Is_Reclaimed (DB : Database) return Boolean
      with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
+   --  Reclamation predicate for the Needs_Reclamation annotation on Database. A
+   --  closed connection holds no C resource, so that is the reclaimed state
+   --  GNATprove requires before the object is dropped. Ghost: it exists only for
+   --  proof, never at run time.
    --  @param DB The connection handle to test.
    --  @return True iff DB owns no connection (equivalently, not Is_Open (DB)).
+
    function Is_Reclaimed (S : Statement) return Boolean
      with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
+   --  Reclamation predicate for the Needs_Reclamation annotation on Statement:
+   --  a finalized statement holds no C resource. Ghost, as above.
    --  @param S The statement handle to test.
    --  @return True iff S owns no statement (equivalently, not Is_Valid (S)).
 
@@ -486,6 +489,8 @@ private
         with Ghost, Global => null, Post => Is_Null'Result = (H = Null_Db_Handle);
       --  Ghost spelling of "reclaimed", for the Default_Initial_Condition
       --  above. Executable code uses the comparison directly.
+      --  @param H The handle to test.
+      --  @return True iff H is the reclaimed value.
 
       type Stmt_Handle is private
         with Default_Initial_Condition => Is_Null (Stmt_Handle),
@@ -502,26 +507,42 @@ private
         with Ghost, Global => null,
              Post => Is_Null'Result = (H = Null_Stmt_Handle);
       --  Ghost spelling of "reclaimed" for Stmt_Handle (see above).
+      --  @param H The handle to test.
+      --  @return True iff H is the reclaimed value.
 
    private
       pragma SPARK_Mode (Off);
 
-      --  Full views: plain C pointers, and nothing else. The designated types
-      --  are distinct placeholders that are never allocated or dereferenced on
-      --  the Ada side -- every value comes from SQLite and goes back to it --
-      --  so all this representation has to provide is a pointer that is null
-      --  by default and comparable to null.
       type Sqlite3      is limited null record;
+      --  Placeholder designated type for the C sqlite3. Never allocated or
+      --  dereferenced on the Ada side -- every value comes from SQLite and goes
+      --  back to it -- so the representation only has to give us a pointer that
+      --  is null by default and comparable to null.
+
       type Sqlite3_Stmt is limited null record;
+      --  Placeholder designated type for the C sqlite3_stmt (see Sqlite3).
 
       type Db_Handle   is access all Sqlite3;
+      --  Full view of Db_Handle: a plain C pointer, and nothing else.
+
       type Stmt_Handle is access all Sqlite3_Stmt;
+      --  Full view of Stmt_Handle: a plain C pointer, and nothing else.
 
       Null_Db_Handle   : constant Db_Handle   := null;
+      --  Full view of the reclaimed Db_Handle value: the null pointer.
+
       Null_Stmt_Handle : constant Stmt_Handle := null;
+      --  Full view of the reclaimed Stmt_Handle value: the null pointer.
 
       function Is_Null (H : Db_Handle) return Boolean is (H = null);
+      --  Completion of the Db_Handle ghost predicate.
+      --  @param H The handle to test.
+      --  @return True iff H is the null pointer.
+
       function Is_Null (H : Stmt_Handle) return Boolean is (H = null);
+      --  Completion of the Stmt_Handle ghost predicate.
+      --  @param H The handle to test.
+      --  @return True iff H is the null pointer.
    end Handles;
 
    use type Handles.Db_Handle;
@@ -562,10 +583,14 @@ private
      (DB.Handle = Handles.Null_Db_Handle);
    --  Completion of the Database reclamation predicate: reclaimed exactly when
    --  the handle is the reclaimed value (equivalently, not Is_Open (DB)).
+   --  @param DB The connection handle to test.
+   --  @return True iff DB owns no connection.
 
    function Is_Reclaimed (S : Statement) return Boolean is
      (S.Handle = Handles.Null_Stmt_Handle);
    --  Completion of the Statement reclamation predicate: reclaimed exactly when
    --  the handle is the reclaimed value (equivalently, not Is_Valid (S)).
+   --  @param S The statement handle to test.
+   --  @return True iff S owns no statement.
 
 end Sqlite_Vec_Spark;

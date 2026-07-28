@@ -1,4 +1,5 @@
-# memcp — build / test / proof automation. A thin wrapper over Alire.
+# memcp — build / test / proof / documentation automation. A thin wrapper over
+# Alire.
 #
 # `alr build` already runs each crate's Alire pre-build action: the cargo
 # builds for the tiny_http and candle staticlibs, and the fetch-deps.sh that
@@ -12,7 +13,8 @@ ALR      ?= alr
 GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
 
-.PHONY: all build run model test prove prove-deps prove-check docs clean help
+.PHONY: all build run model test prove prove-deps prove-check docs docs-check \
+        clean help
 
 all: build
 
@@ -60,13 +62,35 @@ prove-deps: ## Provision proof inputs (Ada libs + C sources), no cargo, no exe l
 prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 	ALR="$(ALR)" ./scripts/check-proof.sh
 
-docs: ## Generate GNATdoc API docs into docs/api
-	$(ALR) exec -- gnatdoc --style=gnat --generate=private --warnings -P memcp.gpr
+# GNATdoc (issue #22). The same report/gate split as prove/prove-check, and for
+# the same underlying reason: `gnatdoc --warnings` lists every undocumented
+# entity and then exits 0 regardless, so a bare gnatdoc run cannot fail a build.
+# scripts/check-docs.sh reads the report and sets the exit status; it also drives
+# every project root (the proof harness and the four test drivers are not in
+# memcp.gpr's closure) and is the durable record of the --style=gnat choice,
+# which no GPR attribute can express.
+#
+# Both depend on prove-deps rather than on `build`: gnatdoc needs the same
+# provisioned tree the prover does -- the Alire config GPRs, the synced
+# dependency sources, and the crates' obj/ and lib/ directories, whose absence
+# gnatdoc reports as a project warning the gate deliberately does not filter --
+# but it never links the executable, so it needs no Rust staticlib either. A
+# fresh checkout can therefore run `make docs` with no cargo toolchain.
+#
+# Needs gnatdoc on PATH: `alr -n install gnatdoc_bin=26.0.0`. The script says so
+# and stops if it is missing; it installs nothing itself.
+docs: prove-deps ## Generate the API docs into docs/api + report undocumented entities
+	./scripts/check-docs.sh --no-gate
+
+docs-check: prove-deps ## `docs` as a pass/fail gate (undocumented entity => exit 1)
+	./scripts/check-docs.sh
 
 clean: ## Remove build artifacts
 	$(ALR) clean
-	$(RM) -r obj tests/obj tests/bin
+	$(RM) -r obj tests/obj tests/bin docs/api gnatdoc-run.txt
 
+# `[a-z-]`, not `[a-z]`: the hyphenated targets (prove-check, prove-deps and now
+# docs-check) were silently absent from this listing.
 help: ## List targets
-	@grep -hE '^[a-z]+:.*?##' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
 	  | sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[1m%-12s\033[0m %s\n",$$1,$$2}'

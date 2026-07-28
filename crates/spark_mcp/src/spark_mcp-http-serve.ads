@@ -6,6 +6,16 @@ generic
    --  @param Request The raw request body.
    --  @param Response The allocated response handed back to Serve (null or an
    --    empty allocation denotes a JSON-RPC notification, answered 204).
+   --
+   --  GNATdoc 26.0.0 credits none of this: a generic *subprogram*'s formal
+   --  cannot be documented in any spelling the tool accepts -- the tag meant for
+   --  the job is rejected outright in this unit's own comment block, and parsed
+   --  then dropped in a leading one -- unlike a generic PACKAGE's, where the
+   --  same tag works (Spark_Mcp.Server documents all nine of its formals that
+   --  way and reports clean). So the doc gate carries one exact-match exception
+   --  for this line; see TOOL_LIMITS in scripts/check-docs.sh. Nothing to fix
+   --  here: this block is the form a human should read. Note the tag cannot even
+   --  be NAMED in a comment -- gnatdoc parses it wherever it appears.
 procedure Spark_Mcp.Http.Serve (Port : Port_Number)
   with SPARK_Mode        => On,
        Exceptional_Cases => (Transport_Error => True);

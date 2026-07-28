@@ -11,6 +11,7 @@ make model      # one-time: fetch embedding weights into ~/.memcp/models
 make run        # serves POST /mcp on 127.0.0.1:8786 (blocking)
 make test       # unit drivers + smoke tests
 make prove      # gnatprove to Silver (--level=2)
+make docs-check # gnatdoc gate: fails on any undocumented entity (see README)
 make help       # list all targets
 ```
 
