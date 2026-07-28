@@ -25,10 +25,10 @@
 --
 --    * Two limited handles. Database AND Statement are `limited private`: both
 --      own a raw C pointer, so a copy followed by a second Close/Finalize would
---      double-free. `limited` forbids the copy structurally. (This is stricter
---      than Candle_Spark's copyable Embedder, which gets away with it
---      because exactly one is ever loaded; statements are created and finalized
---      in loops, so the copy hazard is live.)
+--      double-free. `limited` forbids the copy structurally. (Candle_Spark's
+--      Embedder is limited for the same reason, over the same ownership-type
+--      device; statements make the hazard sharper still, being created and
+--      finalized in loops.)
 --
 --    * Column text is a caller-owned copy, not a borrow. SQLite owns the buffer
 --      sqlite3_column_text returns and it is valid only until the next
