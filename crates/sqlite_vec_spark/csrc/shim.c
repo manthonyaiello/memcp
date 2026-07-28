@@ -66,6 +66,27 @@ void memcp_sqlite_open(const char *path, sqlite3 **out_db, int *out_rc) {
                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
 }
 
+/* Close the connection and null the caller's handle.
+ *
+ * Takes sqlite3** rather than sqlite3*, and nulls it, for the Ada ownership
+ * model: the Ada handle type is a SPARK ownership type, so its release
+ * operation has to be an `in out` parameter whose postcondition says the
+ * handle is left in the reclaimed (null) state. Passing the handle by
+ * reference is what makes that postcondition *executable* -- the test builds
+ * run with -gnata, so every Close checks at run time that the pointer really
+ * was released, rather than the Ada side merely asserting it. It also makes
+ * Close idempotent and use-after-close impossible through this handle: a
+ * second call sees NULL, and sqlite3_close_v2 (NULL) is a documented no-op.
+ *
+ * close_v2 (not close) because it tolerates statements that have not been
+ * finalized yet: it defers the actual close until the last one is. The result
+ * code is deliberately dropped -- there is nothing a caller can do about a
+ * failed close, and the handle is gone either way. */
+void memcp_sqlite_close(sqlite3 **db) {
+  sqlite3_close_v2(*db);
+  *db = NULL;
+}
+
 /* Compile one statement (first `nbyte` bytes of `sql`, no NUL needed). Same
  * two-out-pointer split as memcp_sqlite_open, for the same SPARK reason. */
 void memcp_sqlite_prepare(sqlite3 *db, const char *sql, int nbyte,
@@ -113,6 +134,17 @@ void memcp_sqlite_step(sqlite3_stmt *stmt, int *out_rc) {
 /* Reset a stepped statement so it can be re-stepped (bindings preserved). */
 void memcp_sqlite_reset(sqlite3_stmt *stmt, int *out_rc) {
   *out_rc = sqlite3_reset(stmt);
+}
+
+/* Destroy the statement and null the caller's handle. Takes sqlite3_stmt**,
+ * and nulls it, for exactly the reasons memcp_sqlite_close does (see there):
+ * it is the release operation of an Ada ownership type, so the reclaimed state
+ * must be observable in the handle itself. Idempotent -- sqlite3_finalize
+ * (NULL) is a documented no-op. The result code is dropped: finalize reports
+ * the *last step's* deferred error, which Step/Reset already surfaced. */
+void memcp_sqlite_finalize(sqlite3_stmt **stmt) {
+  sqlite3_finalize(*stmt);
+  *stmt = NULL;
 }
 
 /* UTF-8 byte length of column `col` (0-based) of the current row. Calls
