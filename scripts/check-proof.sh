@@ -2,23 +2,19 @@
 #
 # check-proof.sh — run GNATprove and gate the result against an allowlist.
 #
-# The whole memcp crate proves to SPARK Silver (AoRTE, --level=2). The only
-# checks GNATprove cannot discharge live inside SPARKlib itself — floating-point
-# range lemmas in SPARK.Lemmas.*_Float_Arithmetic (they need the COLIBRI solver,
-# which the default prover set does not ship). None are in memcp code.
+# The whole memcp crate proves to SPARK Silver (AoRTE, --level=2) with nothing
+# unproved anywhere in the closure, SPARKlib included. The allowlist
+# (scripts/proof-xfail.txt) is therefore empty and the gate demands a fully
+# clean proof: any unproved check at all is a regression.
 #
-# Crucially, the *exact set* of those unproved lemmas is platform-dependent: the
-# provers clear some on a fast arm64 dev machine that they cannot on the x86_64
-# CI runner. So the baseline is not a fixed list of identities — it is an
-# ALLOWLIST of substring patterns (scripts/proof-xfail.txt). The gate is:
+# The allowlist holds substring patterns rather than exact check identities,
+# because an upstream gap need not present identically on every platform — the
+# provers can clear on a fast arm64 dev machine what they miss on the x86_64 CI
+# runner. So if a gap does resurface, one vetted pattern covers it everywhere.
+# The gate is:
 #
-#   * an unproved check is ACCEPTED if its identity matches any allowlist pattern
-#     (i.e. it is one of the known upstream SPARKlib lemma gaps);
-#   * FAIL if any unproved check matches NO pattern — that is a regression in our
-#     code (or a new, un-vetted gap somewhere else) and must be looked at.
-#
-# This is portable across platforms and still catches every regression that
-# lands in a memcp/spark_mcp/etc. unit.
+#   * an unproved check is ACCEPTED if its identity matches any allowlist pattern;
+#   * FAIL if any unproved check matches NO pattern.
 #
 # Usage:
 #   scripts/check-proof.sh          # prove, then gate  (exit 1 on regression)
@@ -126,5 +122,9 @@ if [ -n "$regressions" ]; then
 fi
 
 echo ""
-echo ">> PROOF OK — ${allowed_n} unproved check(s), all upstream SPARKlib gaps."
+if [ "$allowed_n" -eq 0 ]; then
+  echo ">> PROOF OK — no unproved checks."
+else
+  echo ">> PROOF OK — ${allowed_n} unproved check(s), all allowed by $XFAIL."
+fi
 exit 0

@@ -242,12 +242,7 @@ make prove         # gnatprove -P memcp.gpr -j0 --level=2
 ```
 
 The whole `memcp` crate is `SPARK_Mode => On` and proves to **Silver** (Absence
-of Runtime Errors) at `--level=2`: **0 unproved, 0 justified in memcp's own
-code** (5211 checks). The two residual `medium` messages you will see both come
-from **SPARKlib's floating-point lemmas**
-(`spark-lemmas-floating_point_arithmetic.ads`), not from this project — they
-need the COLIBRI solver, which the default prover set does not ship. Expected,
-and outside our code.
+of Runtime Errors) at `--level=2`, with no unproved and no justified checks.
 
 ### API documentation
 
