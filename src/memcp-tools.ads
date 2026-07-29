@@ -9,17 +9,27 @@ with Memcp.Resources;
 package Memcp.Tools with SPARK_Mode => On is
 
    type Tool_Id is
-     (Recent,          --  The N most recent diary Headers.
-      List_Projects,   --  Every project memcp has seen, newest activity first.
-      Save,            --  Save a (diary line, structured summary) pair.
-      Forget,          --  Delete a summary, diary line, and embedding by id.
-      Search,          --  Semantic search over Summaries.
-      Fetch_Summary,   --  Fetch a full Summary by id.
-      Upload_Session,  --  Persist a session transcript plus embeddable chunks.
-      Fetch_Chunks,    --  Semantic search over session chunks (the Details).
-      Fetch_Turns);    --  Fetch verbatim conversation turns by position.
+     (Recent,
+      List_Projects,
+      Save,
+      Forget,
+      Search,
+      Fetch_Summary,
+      Upload_Session,
+      Fetch_Chunks,
+      Fetch_Turns);
    --  memcp's tool set. The enumeration literals are the identifiers; the
    --  lowercase wire names come from Name below.
+   --  @enum Recent The N most recent diary Headers.
+   --  @enum List_Projects Every project memcp has seen, newest activity first.
+   --  @enum Save Save a (diary line, structured summary) pair.
+   --  @enum Forget Delete a summary, diary line, and embedding by id.
+   --  @enum Search Semantic search over Summaries.
+   --  @enum Fetch_Summary Fetch a full Summary by id.
+   --  @enum Upload_Session Persist a session transcript plus embeddable
+   --    chunks.
+   --  @enum Fetch_Chunks Semantic search over session chunks (the Details).
+   --  @enum Fetch_Turns Fetch verbatim conversation turns by position.
 
    function Name (Id : Tool_Id) return String is
      (case Id is
