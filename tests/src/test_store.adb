@@ -1,8 +1,7 @@
---  Proof-of-life driver for Memcp.Store against an in-memory SQLite DB.
---  Drives the first Store slice end-to-end: Open (schema + vec0 + meta),
---  Save (fresh insert, content-dedup no-op, session-scoped replace),
---  Fetch_Summary (hit + miss), Forget_Summary (delete + idempotent miss).
---  -gnata turns the Store's and the binding's Pre/Post into live checks.
+--  Driver for Memcp.Store: exercises the write, read, list, search, session and
+--  reindex operations against an in-memory database, then the on-disk
+--  transcript path against a file-backed one. Built with -gnata, so the Store's
+--  and the binding's contracts are checked as it runs.
 
 with Ada.Command_Line;
 with Ada.Text_IO;
@@ -22,8 +21,10 @@ procedure Test_Store is
    use type Memcp.Store.Summary_Ptr;
 
    Failures : Natural := 0;
+   --  Checks that did not hold; nonzero means a failing exit status.
 
    procedure Check (Cond : Boolean; Label : String) is
+      --  Report Cond under Label and count it if it does not hold.
    begin
       if Cond then
          Ada.Text_IO.Put_Line ("ok   - " & Label);
@@ -33,19 +34,21 @@ procedure Test_Store is
       end if;
    end Check;
 
-   --  A deterministic, in-range embedding (0.0 is a valid Embedding_Component).
    Zero_Emb : constant Candle_Spark.Embedding := [others => 0.0];
+   --  The all-zero embedding, for rows whose vector does not matter.
 
-   --  A unit embedding with a single hot dimension -- enough for KNN ordering.
    function Hot (K : Positive) return Candle_Spark.Embedding is
+      --  A unit embedding with dimension K hot -- enough to order a KNN query.
+
       E : Candle_Spark.Embedding := [others => 0.0];
    begin
       E (K) := 1.0;
       return E;
    end Hot;
 
-   --  Read a whole file back as raw bytes (verifies the on-disk transcript).
    function Read_File (Path : String) return String is
+      --  The whole file at Path, as raw bytes.
+
       use Ada.Streams.Stream_IO;
       F : File_Type;
    begin
@@ -61,9 +64,13 @@ procedure Test_Store is
    end Read_File;
 
    TS : constant String := "2026-01-01T12:00:00+00:00";
+   --  created_at for rows whose timestamp is not under test.
 
    S      : Memcp.Store.Store;
+   --  The in-memory store shared by every block below.
+
    Open_S : Memcp.Store.Open_Status;
+   --  Outcome of opening S.
 begin
    Memcp.Store.Open (S, ":memory:", Open_S);
    Check (Open_S = Memcp.Store.Opened, "Open :memory: -> Opened");
@@ -203,7 +210,7 @@ begin
          Has_Created => True, Created_At => "2026-02-03T00:00:00+00:00",
          Result => R3, Status => Stx);
 
-      --  Empty projects -> empty result, Success (store.py `if not projects`).
+      --  No projects -> empty result, still Success.
       Memcp.Store.Recent_Diary (S, Empty, 10, Entries, RD_St);
       Check (RD_St = Memcp.Store.Success
              and then Memcp.Store.Diary_Vectors.Length (Entries) = 0,
@@ -385,8 +392,8 @@ begin
    end;
 
    ------------------------------------------------------------------
-   --  Fetch_Turns: no session rows yet (save_session is a later slice),
-   --  so every filter branch must build valid SQL and return empty+Success.
+   --  Fetch_Turns with no session rows: every filter branch must still build
+   --  valid SQL and return empty + Success.
    ------------------------------------------------------------------
    declare
       use type Memcp.Store.Chunk_Vectors.Capacity_Range;
@@ -394,6 +401,7 @@ begin
       FT_St : Memcp.Store.Op_Status;
 
       procedure Expect_Empty (Label : String) is
+         --  Check that the preceding Fetch_Turns returned Success and no rows.
       begin
          Check (FT_St = Memcp.Store.Success
                 and then Memcp.Store.Chunk_Vectors.Length (Turns) = 0, Label);
@@ -425,12 +433,10 @@ begin
    end;
 
    ------------------------------------------------------------------
-   --  Save_Session on the :memory: store: chunks land (raw_path skipped),
-   --  Fetch_Turns / Search_Chunks now read real rows, idempotent retry.
+   --  Save_Session on the :memory: store: chunks land, raw_path is skipped,
+   --  Fetch_Turns and Search_Chunks read real rows, and a retry is idempotent.
    ------------------------------------------------------------------
    declare
-      --  Both instances' Capacity_Range is the same Count_Type subtype, so one
-      --  use-type clause makes "=" visible for every Length comparison below.
       use type Memcp.Store.Chunk_Vectors.Capacity_Range;
       Sess_TS : constant String := "2026-05-01T00:00:00+00:00";
       CL   : Memcp.Store.Chunk_Input_List;
@@ -453,7 +459,7 @@ begin
       Check (not R.Raw_Path_Set,
              "Save_Session: :memory: writes no transcript file");
 
-      --  Fetch_Turns now returns real rows, ascending ordinal.
+      --  Fetch_Turns returns real rows, ascending ordinal.
       declare
          Turns : Memcp.Store.Chunk_List;
          FT_St : Memcp.Store.Op_Status;
@@ -577,7 +583,7 @@ begin
          end if;
       end;
 
-      --  Second call now finds an existing Header -> short-circuit, no write.
+      --  Second call finds an existing Header -> short-circuit, no write.
       Memcp.Store.Save_Autorecap
         (S, "sessapp", "se-1", "a different recap", Hot (5),
          Has_Created => True, Created_At => TS,
@@ -586,7 +592,7 @@ begin
       Check (St = Memcp.Store.Success and then not Written,
              "Save_Autorecap: existing Header -> not written");
 
-      --  A real save() for a session must also block a later autorecap.
+      --  A real Save for a session must also block a later autorecap.
       declare
          R  : Memcp.Store.Save_Result;
          Sv : Memcp.Store.Op_Status;

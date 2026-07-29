@@ -1,12 +1,7 @@
---  SPARK body: the wrappers are PROVED against the spec's contracts. The
---  trusted base is only (a) the five C import declarations below -- their
---  Global/Side_Effects contracts are the formal statement of what
---  rust/src/lib.rs does -- and (b) Alloc_Uninit's single-statement body, the
---  crate's one SPARK_Mode=>Off escape hatch.
---
---  Data crosses the FFI as Ada arrays: RM B.3 passes an array to a
---  C-convention import as a pointer to its first element, so no 'Address
---  arithmetic appears anywhere.
+--  Proven-SPARK wrappers over the five imports below, whose contracts are the
+--  formal statement of what rust/src/lib.rs does. Request bodies and response
+--  payloads cross the FFI as Ada arrays, so no 'Address arithmetic appears
+--  anywhere.
 
 with Interfaces.C;
 
@@ -16,58 +11,63 @@ is
    use type Interfaces.C.size_t;
    use type System.Address;
 
-   --  Binds a socket: effectful, so a Side_Effects function (callable only
-   --  as an assignment statement). Null on failure.
    function C_Server_New
      (Port : Interfaces.C.unsigned_short) return System.Address
      with Import, Convention => C, External_Name => "mcp_server_new",
           Side_Effects, Global => (In_Out => Network), Always_Terminates;
+   --  Bind 127.0.0.1:Port: `Server *mcp_server_new (unsigned short port)`.
+   --  @param Port The TCP port to listen on.
+   --  @return The Rust-owned listener, or null if the bind failed.
 
-   --  Consumes socket traffic (answers 404/400/413 itself). Null when the
-   --  accept loop is dead. Always_Terminates here means "returns once a
-   --  request arrives or the loop dies" -- it blocks, it does not spin.
    function C_Next (Srv : System.Address) return System.Address
      with Import, Convention => C, External_Name => "mcp_next",
+          --  Always_Terminates: it blocks, returning once a request arrives or
+          --  the accept loop dies. It does not spin.
           Side_Effects, Global => (In_Out => Network), Always_Terminates;
+   --  Pull the next MCP request: `McpRequest *mcp_next (Server *server)`. Rust
+   --  consumes the 404/400/413 traffic itself.
+   --  @param Srv The listener to accept from.
+   --  @return The Rust-owned request, or null once the accept loop is dead.
 
-   --  Pure query: the body of a pulled request is immutable, so its length
-   --  is a function of the handle alone.
    function C_Body_Len (Req : System.Address) return Interfaces.C.size_t
      with Import, Convention => C, External_Name => "mcp_body_len",
           Global => null;
+   --  Byte length of the request body: `size_t mcp_body_len (const McpRequest
+   --  *req)`. The body of a pulled request is immutable, so its length is a
+   --  function of the handle alone.
+   --  @param Req A live request.
+   --  @return The body's exact size in bytes.
 
-   --  Fills Dst (passed as pointer-to-first-element) with the request body;
-   --  Rust writes exactly C_Body_Len bytes, never reads Dst.
    procedure C_Body_Read (Req : System.Address; Dst : out String)
      with Import, Convention => C, External_Name => "mcp_body_read",
           Global => (Input => Network), Always_Terminates;
+   --  Copy the request body out: `void mcp_body_read (const McpRequest *req,
+   --  uint8_t *dst)`. Rust writes exactly C_Body_Len bytes and never reads Dst.
+   --  @param Req A live request.
+   --  @param Dst The buffer the body is written into, sized by C_Body_Len.
 
-   --  Sends the response (Len = 0 answers 204 without touching Data) and
-   --  frees the request.
    procedure C_Respond
      (Req : System.Address; Data : String; Len : Interfaces.C.size_t)
      with Import, Convention => C, External_Name => "mcp_respond",
           Global => (In_Out => Network), Always_Terminates;
+   --  Answer and free the request: `void mcp_respond (McpRequest *req, const
+   --  uint8_t *data, size_t len)`.
+   --  @param Req The live request, freed by the call.
+   --  @param Data The response payload; untouched when Len is 0.
+   --  @param Len Byte length of the payload; 0 answers 204.
 
-   --  THE escape hatch, scoped to one statement: SPARK forbids uninitialized
-   --  allocators (String has no default initialization), but blank-filling a
-   --  buffer C_Body_Read is about to overwrite in full would write every
-   --  request body twice. Global => null is the trusted claim that the
-   --  fresh allocation is wholly owned by Data (otherwise gnatprove
-   --  generates a heap-memory effect from the Off body that an explicit
-   --  Global upstream could not name). Sound because Read_Body passes the
-   --  result to C_Body_Read on the very next statement, before any SPARK
-   --  code can read it.
-   --
-   --  Relaxed_Initialization was evaluated (2026-07-13) and does not help on
-   --  this toolchain: gnatprove 15.1 still rejects uninitialized allocators
-   --  of relaxed types (E0019), and cross-unit use of an
-   --  access-to-Relaxed_Initialization type ICEs gnat2why ("GNAT BUG
-   --  DETECTED") even with initialized allocators. Revisit when the
-   --  toolchain moves.
    procedure Alloc_Uninit (Length : Message_Length; Data : out Message_Ptr)
      with Post => Data /= null and then Data'Length = Length,
           Global => null, Always_Terminates;
+   --  Allocate an uninitialized String of Length characters. The one escape
+   --  hatch, scoped to a single statement: SPARK forbids uninitialized
+   --  allocators, and blank-filling a buffer C_Body_Read overwrites in full
+   --  would write every request body twice. Global => null is the trusted claim
+   --  that the fresh allocation is wholly owned by Data. Sound only because
+   --  Read_Body hands the result to C_Body_Read on the very next statement,
+   --  before any SPARK code can read it.
+   --  @param Length Length of the allocation, in characters.
+   --  @param Data The fresh allocation, owned by the caller.
 
    procedure Alloc_Uninit (Length : Message_Length; Data : out Message_Ptr)
      with SPARK_Mode => Off
@@ -112,10 +112,10 @@ is
             if L <= Interfaces.C.size_t (Max_Message) then
                Request := (Ptr => P, Len => Natural (L));
             else
-               --  Rust caps bodies at Max_Message, so this cannot happen; if
-               --  that invariant is ever broken, drop the request (204) and
-               --  report the transport dead rather than construct a handle
-               --  that violates Message_Length.
+               --  Rust caps bodies at Max_Message, so this is unreachable; if
+               --  that ever breaks, drop the request (204) and report the
+               --  transport dead rather than build a handle that violates
+               --  Message_Length.
                C_Respond (P, "", 0);
             end if;
          end;

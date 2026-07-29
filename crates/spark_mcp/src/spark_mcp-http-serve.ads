@@ -2,48 +2,22 @@ generic
    with procedure On_Request
      (Request  : String;
       Response : out Message_Ptr);
-   --  Handles one decoded MCP request.
+   --  Handle one decoded MCP request.
    --  @param Request The raw request body.
    --  @param Response The allocated response handed back to Serve (null or an
    --    empty allocation denotes a JSON-RPC notification, answered 204).
    --
-   --  GNATdoc 26.0.0 credits none of this: a generic *subprogram*'s formal
-   --  cannot be documented in any spelling the tool accepts -- the tag meant for
-   --  the job is rejected outright in this unit's own comment block, and parsed
-   --  then dropped in a leading one -- unlike a generic PACKAGE's, where the
-   --  same tag works (Spark_Mcp.Server documents all nine of its formals that
-   --  way and reports clean). So the doc gate carries one exact-match exception
-   --  for this line; see TOOL_LIMITS in scripts/check-docs.sh. Nothing to fix
-   --  here: this block is the form a human should read. Note the tag cannot even
-   --  be NAMED in a comment -- gnatdoc parses it wherever it appears.
+   --  For human readers only: gnatdoc cannot document a generic subprogram's
+   --  formal in any spelling it accepts, so the doc gate carries an exact-match
+   --  exception for the warning (TOOL_LIMITS in scripts/check-docs.sh). The tag
+   --  meant for the job cannot even be named here -- gnatdoc parses it wherever
+   --  it appears.
 procedure Spark_Mcp.Http.Serve (Port : Port_Number)
   with SPARK_Mode        => On,
        Exceptional_Cases => (Transport_Error => True);
---  The blocking accept loop, generic over the request handler.
---
---  The seam is a formal PROCEDURE, not a function: dispatching an MCP request
---  mutates application state (save/forget write the store), and SPARK
---  functions must be side-effect free -- GNAT 15 accepts Side_Effects only on
---  plain function declarations, not on generic formals, and even then such a
---  function could not size an unconstrained result. As a procedure, the
---  actual may carry any Global contract; gnatprove re-analyzes Serve at each
---  instantiation, so the handler's effects are visible to flow analysis
---  exactly where the call happens -- in Serve's proven body, not hidden
---  behind a foreign callback.
---
---  On_Request allocates its response at exactly the right size and hands
---  ownership out through Response; Serve sends it and frees it (leak-freedom
---  is proved). null or an empty allocation means "" -- a JSON-RPC
---  notification, answered 204. There is no shared buffer, no size cap on
---  responses, and no length bookkeeping to get wrong: the allocation IS the
---  length.
---
---  Serve blocks forever serving POST /mcp on 127.0.0.1:Port. Its only exits
---  are the declared Transport_Error (port already bound, or the accept loop
---  died) -- see Exceptional_Cases: this is proved, not documented folklore.
---
---  Though a child of Spark_Mcp, this uses NOTHING from its parent -- the
---  handler is an abstract seam, so the transport stays MCP-agnostic. The
---  composition root (memcp) is what ties this to Spark_Mcp.Server.Dispatch.
---
+--  The blocking accept loop: bind 127.0.0.1:Port and serve POST /mcp forever,
+--  handing each request body to On_Request and sending back what it allocates.
+--  The handler seam is a generic formal rather than access-to-subprogram, so its
+--  effects are re-analysed at each instantiation and stay visible to flow
+--  analysis at the call site. Nothing here is MCP-specific.
 --  @param Port The TCP port bound on 127.0.0.1 for POST /mcp.

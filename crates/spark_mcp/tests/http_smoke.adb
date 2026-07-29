@@ -1,13 +1,9 @@
---  Standalone smoke driver for the tiny_http binding, and the crate's PROOF
---  HARNESS: gnatprove analyzes generics per instance, so this SPARK_Mode=>On
---  instantiation is what makes Serve's body (and its Exceptional_Cases)
---  actually get proved. Run: gnatprove -P http_smoke.gpr
+--  Smoke driver for the tiny_http binding, and the crate's proof harness: Serve
+--  is analyzed per instance, so this SPARK_Mode instantiation is what puts its
+--  body and its Exceptional_Cases through `gnatprove -P http_smoke.gpr`.
 --
---  Exercises exactly this crate (no json/sqlite/candle): the pull loop over
---  the Rust FFI and the procedure-seam handler.
---
---    * body starting "notify" -> Last < Response'First -> Rust answers 204
---    * anything else          -> 200 with a small JSON body echoing the length
+--  Covers this crate alone: the pull loop over the Rust FFI and the
+--  procedure-seam handler.
 
 with Spark_Mcp.Http;
 with Spark_Mcp.Http.Serve;
@@ -19,6 +15,8 @@ is
 
    procedure Echo
      (Request : String; Response : out Spark_Mcp.Http.Message_Ptr) is
+      --  Answer a body starting "notify" with a null Response, which Rust turns
+      --  into a 204; anything else with a small JSON body echoing the length.
    begin
       if Request'Length >= 6
         and then Request (Request'First .. Request'First + 5) = "notify"
@@ -32,6 +30,7 @@ is
    end Echo;
 
    procedure Run is new Spark_Mcp.Http.Serve (On_Request => Echo);
+   --  The blocking accept loop, instantiated over Echo.
 
 begin
    Run (Port => 8787);

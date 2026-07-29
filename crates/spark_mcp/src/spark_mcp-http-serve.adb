@@ -1,9 +1,6 @@
---  Proven body: pull each request over the Bridge, call On_Request directly
---  (an ordinary SPARK call -- its effects are analyzed per instantiation),
---  push the response back. Both buffers are exactly-sized ownership
---  allocations -- Read_Body's is freed once the handler has consumed it, the
---  handler's once it has been sent -- and gnatprove discharges every
---  leak/use-after-free obligation, including on the raise paths.
+--  Proven accept loop: pull each request over the Bridge, call On_Request, push
+--  the response back. Both bodies are exactly-sized ownership allocations, freed
+--  on every path including the raises.
 
 with Spark_Mcp.Http.Bridge;
 
@@ -11,6 +8,7 @@ procedure Spark_Mcp.Http.Serve (Port : Port_Number)
   with SPARK_Mode => On
 is
    Server : Bridge.Server_Handle;
+   --  The listening socket, bound for the lifetime of the loop.
 begin
    Bridge.Open (Port, Server);
    if not Bridge.Is_Open (Server) then
@@ -39,6 +37,7 @@ begin
             Free (Response);
          end if;
          pragma Assert (not Bridge.Is_Live (Req));
+         --  Every path answered Req, so no handle outlives the iteration.
       end;
    end loop;
 end Spark_Mcp.Http.Serve;

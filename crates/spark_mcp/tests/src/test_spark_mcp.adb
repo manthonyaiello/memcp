@@ -1,10 +1,7 @@
---  Tests for the json-free spark_mcp core: Spark_Mcp.Writer (escaping) and the
---  pre-parsed Spark_Mcp.Server.Respond routing. Mirrors the shapes exercised in
---  ../../../memcp/tests/test_server.py, at the envelope level.
---
---  A tiny fake tool set stands in for memcp's 9 tools so the generic core can
---  be instantiated and driven directly. Run: `alr exec -- gprbuild -P
---  tests/spark_mcp_tests.gpr && tests/bin/test_spark_mcp`.
+--  Test driver for the json-free spark_mcp core: Spark_Mcp.Writer escaping and
+--  the pre-parsed Spark_Mcp.Server.Respond routing, driven at the envelope
+--  level. Run: `alr exec -- gprbuild -P tests/spark_mcp_tests.gpr &&
+--  tests/bin/test_spark_mcp`.
 
 with Ada.Command_Line;
 with Ada.Strings.Fixed;
@@ -18,8 +15,10 @@ with Spark_Mcp.Server;
 procedure Test_Spark_Mcp is
 
    Failures : Natural := 0;
+   --  Count of failed checks; non-zero sets a failing exit status.
 
    procedure Check (Cond : Boolean; Label : String) is
+      --  Report one assertion and count a failure.
    begin
       if Cond then
          Ada.Text_IO.Put_Line ("ok   - " & Label);
@@ -29,8 +28,9 @@ procedure Test_Spark_Mcp is
       end if;
    end Check;
 
-   --  Assert that Needle appears somewhere in Haystack.
    procedure Check_Has (Haystack, Needle, Label : String) is
+      --  Assert that Needle appears somewhere in Haystack, printing both on
+      --  failure.
       use Ada.Strings.Fixed;
    begin
       Check (Index (Haystack, Needle) > 0, Label);
@@ -41,20 +41,24 @@ procedure Test_Spark_Mcp is
    end Check_Has;
 
    ---------------------------------------------------------------------------
-   --  A fake tool set: Echo succeeds (echoing a fixed payload), Boom fails.
+   --  A fake tool set standing in for an application's tools.
    ---------------------------------------------------------------------------
 
    type Tool_Id is (Echo, Boom);
+   --  The two fake tools: Echo succeeds with a payload, Boom always fails.
 
    function Name (Id : Tool_Id) return String is
      (case Id is when Echo => "echo", when Boom => "boom");
+   --  Wire name of the given tool.
 
    function Description (Id : Tool_Id) return String is
      (case Id is
         when Echo => "Echo the arguments back.",
         when Boom => "Always fails.");
+   --  Human-readable description of the given tool.
 
    function Input_Schema (Id : Tool_Id) return String is
+      --  The same trivial object schema for either tool.
       pragma Unreferenced (Id);
    begin
       return "{""type"":""object""}";
@@ -62,6 +66,8 @@ procedure Test_Spark_Mcp is
 
    procedure Invoke
      (Id : Tool_Id; Arguments : String; Result : out Tools.Result_Ptr) is
+      --  Echo returns the arguments wrapped in a payload; Boom fails with
+      --  Internal_Error.
    begin
       case Id is
          when Echo =>
@@ -74,6 +80,8 @@ procedure Test_Spark_Mcp is
       end case;
    end Invoke;
 
+   --  The core instantiated over the fake tool set, with the default parser:
+   --  Respond is driven directly, so no JSON library is involved.
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
       Server_Version => "0.1.0",
@@ -84,16 +92,14 @@ procedure Test_Spark_Mcp is
       Input_Schema   => Input_Schema,
       Invoke         => Invoke);
 
-   --  Respond is now a procedure handing out an ownership allocation (null for
-   --  a notification). This wrapper keeps the assertion call sites below reading
-   --  as before: drive Respond, copy the body out as a String ("" for null),
-   --  and free the allocation.
    function Respond_Str
      (Method          : String;
       Is_Notification : Boolean;
       Id              : String;
       Tool_Name       : String := "";
       Arguments       : String := "{}") return String
+   --  Drive MCP.Respond and hand back the response text, "" for a
+   --  notification's null result, freeing the allocation.
    is
       P : Spark_Mcp.Response_Ptr;
    begin
@@ -109,9 +115,11 @@ procedure Test_Spark_Mcp is
       end;
    end Respond_Str;
 
-   --  Escaped forms, spelled without embedding raw control bytes in this file.
    Q      : constant Character := '"';
+   --  A double quote, named so expected forms read without doubled literals.
+
    BSlash : constant Character := '\';
+   --  A backslash, likewise.
 
 begin
    -------------------------------------------------------------------------
@@ -205,9 +213,9 @@ begin
                  "tools/call: payload serialized into text block");
    end;
 
-   --  A tool that executes and fails (Tools.Failure) surfaces as an isError
-   --  result, NOT a JSON-RPC error -- the message rides in the text block.
-   --  (Contrast the unknown-tool dispatch fault just below, still -32602.)
+   --  A tool that runs and fails surfaces as an isError result carrying the
+   --  message, not as a JSON-RPC error; the unknown-tool fault below is the
+   --  contrast.
    Check_Has
      (Respond_Str ("tools/call", False, "6", "boom", "{}"),
       """isError"":true",
