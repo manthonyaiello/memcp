@@ -19,8 +19,10 @@ procedure Test_Dispatch is
    Failures : Natural := 0;
    --  Failed checks so far; a non-zero count sets a non-zero exit status.
 
+   procedure Check (Cond : Boolean; Label : String);
+   --  Report Cond against Label as "ok" or "FAIL", counting a failure.
+
    procedure Check (Cond : Boolean; Label : String) is
-      --  Report Cond against Label as "ok" or "FAIL", counting a failure.
    begin
       if Cond then
          Ada.Text_IO.Put_Line ("ok   - " & Label);
@@ -30,8 +32,10 @@ procedure Test_Dispatch is
       end if;
    end Check;
 
+   procedure Check_Has (Haystack, Needle, Label : String);
+   --  Check that Needle occurs in Haystack, printing both on failure.
+
    procedure Check_Has (Haystack, Needle, Label : String) is
-      --  Check that Needle occurs in Haystack, printing both on failure.
       use Ada.Strings.Fixed;
    begin
       Check (Index (Haystack, Needle) > 0, Label);
@@ -73,9 +77,11 @@ procedure Test_Dispatch is
       Invoke          => Invoke_Tool,
       Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
 
+   function Dispatch_Str (Request : String) return String;
+   --  Dispatch one request and return the response text, "" for a
+   --  notification, freeing the allocation Dispatch hands out.
+
    function Dispatch_Str (Request : String) return String is
-      --  Dispatch one request and return the response text, "" for a
-      --  notification, freeing the allocation Dispatch hands out.
       use type Spark_Mcp.Response_Ptr;
       P : Spark_Mcp.Response_Ptr;
    begin

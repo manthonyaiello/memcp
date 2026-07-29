@@ -125,11 +125,15 @@ package body Memcp.Json with SPARK_Mode => On is
 
    function Get_Member
      (Impl : not null access constant Impl_Record; Key : String)
+      return access constant Types.JSON_Value;
+   --  The member for Key, or null when it is absent or the doc is not a
+   --  usable object. Takes the node as an access parameter rather than the
+   --  Doc, so the observer crosses only one level of ownership.
+
+   function Get_Member
+     (Impl : not null access constant Impl_Record; Key : String)
       return access constant Types.JSON_Value
    is
-      --  The member for Key, or null when it is absent or the doc is not a
-      --  usable object. Takes the node as an access parameter rather than the
-      --  Doc, so the observer crosses only one level of ownership.
    begin
       if Impl.Root = null
         or else Types.Kind (Impl.Root) /= Types.Object_Kind
@@ -140,11 +144,14 @@ package body Memcp.Json with SPARK_Mode => On is
    end Get_Member;
 
    function Member
+     (D : Doc; Key : String) return access constant Types.JSON_Value;
+   --  The member for Key of an open, valid D; null otherwise. Every public
+   --  getter reads this observer and returns a plain value, so no json access
+   --  type escapes the package.
+
+   function Member
      (D : Doc; Key : String) return access constant Types.JSON_Value
    is
-      --  The member for Key of an open, valid D; null otherwise. Every public
-      --  getter reads this observer and returns a plain value, so no json access
-      --  type escapes the package.
    begin
       if not D.Is_Valid or else D.Impl = null then
          return null;

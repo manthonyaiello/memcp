@@ -5,7 +5,6 @@
 --  seeded rows. Built with -gnata, so every Pre/Post crossed is live.
 
 with Ada.Strings.Fixed;
-with Ada.Strings.Unbounded;  use Ada.Strings.Unbounded;
 with Ada.Text_IO;
 
 with Spark_Mcp;
@@ -26,8 +25,10 @@ procedure Test_Tools is
    Failures : Natural := 0;
    --  Number of failed checks; reported by the closing banner.
 
+   procedure Check (Cond : Boolean; Label : String);
+   --  Report Cond as one ok/FAIL line labelled Label, counting failures.
+
    procedure Check (Cond : Boolean; Label : String) is
-      --  Report Cond as one ok/FAIL line labelled Label, counting failures.
    begin
       if Cond then
          Ada.Text_IO.Put_Line ("ok   - " & Label);
@@ -48,10 +49,11 @@ procedure Test_Tools is
    Res : Memcp.Resources.Resources;
    --  The throwaway Resources every tool call runs against.
 
-   function Call (Id : Memcp.Tools.Tool_Id; Args : String) return String is
-      --  Drive one tool and return its rendered payload, or a marker for an
-      --  error or null result, freeing the ownership allocation.
+   function Call (Id : Memcp.Tools.Tool_Id; Args : String) return String;
+   --  Drive one tool and return its rendered payload, or a marker for an
+   --  error or null result, freeing the ownership allocation.
 
+   function Call (Id : Memcp.Tools.Tool_Id; Args : String) return String is
       R : Spark_Mcp.Tools.Result_Ptr;
    begin
       Memcp.Tools.Invoke (Res, Id, Args, R);

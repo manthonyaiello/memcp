@@ -49,10 +49,11 @@ procedure Main with SPARK_Mode => On is
       end return;
    end Env;
 
-   function Parse_Port (S : String) return Spark_Mcp.Http.Port_Number is
-      --  S as a port number: digits only, in 1 .. 65_535, else the default
-      --  8786. Hand-rolled rather than 'Value, which raises on junk.
+   function Parse_Port (S : String) return Spark_Mcp.Http.Port_Number;
+   --  S as a port number: digits only, in 1 .. 65_535, else the default
+   --  8786. Hand-rolled rather than 'Value, which raises on junk.
 
+   function Parse_Port (S : String) return Spark_Mcp.Http.Port_Number is
       Acc : Natural := 0;
    begin
       if S'Length = 0 then
@@ -104,8 +105,10 @@ procedure Main with SPARK_Mode => On is
    --  How the Open below ended.
    use type Memcp.Resources.Status;
 
+   procedure Open_Database (Status : out Memcp.Resources.Status);
+   --  Open R against DB_Path and Model_Path, reporting the outcome.
+
    procedure Open_Database (Status : out Memcp.Resources.Status) is
-      --  Open R against DB_Path and Model_Path, reporting the outcome.
    begin
       Memcp.Resources.Open (R, DB_Path, Model_Path, Status);
    end Open_Database;
@@ -114,15 +117,17 @@ procedure Main with SPARK_Mode => On is
      with Pre => DB_Path'Length <= Max_Env
                  and then Default_Model_Path'Length <= Max_Env + 31
                  and then Model_Path'Length
-                            <= Natural'Max (Max_Env, Default_Model_Path'Length)
-     --  Pre: proved in its own context, so the bounds Env's Post already puts
-     --  on DB_Path and Model_Path -- facts about constants with variable input
-     --  -- do not reach here on their own, and the log line below needs them to
-     --  be provably bounded.
-   is
-      --  Serve on Port until the transport gives up. The core and the transport
-      --  are instantiated here, where R is open, so the tool seam can close
-      --  over it.
+                            <= Natural'Max (Max_Env, Default_Model_Path'Length);
+   --  Serve on Port until the transport gives up. The core and the transport
+   --  are instantiated here, where R is open, so the tool seam can close
+   --  over it.
+   --
+   --  Pre: proved in its own context, so the bounds Env's Post already puts
+   --  on DB_Path and Model_Path -- facts about constants with variable input
+   --  -- do not reach here on their own, and the log line below needs them to
+   --  be provably bounded.
+
+   procedure Connect_To_Server (Port : Spark_Mcp.Http.Port_Number) is
 
       procedure Invoke_Tool
         (Id        : Memcp.Tools.Tool_Id;
@@ -189,7 +194,7 @@ procedure Main with SPARK_Mode => On is
          & (if Memcp.Resources.Embedder_Loaded (R)
             then "loaded"
             else "off [" & Model_Path & "]") & ")");
-            
+
       Run (Port);
    exception
       when others =>

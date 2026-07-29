@@ -8,7 +8,7 @@ project Memcp is
    for Main use ("main.adb");
 
    package Compiler is
-      for Default_Switches ("Ada") use Memcp_Config.Ada_Compiler_Switches & ("-gnatyM99");
+      for Default_Switches ("Ada") use Memcp_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys");
       --  Needed to instantiate the json generics here; see gnat.adc.
       for Local_Configuration_Pragmas use "gnat.adc";
    end Compiler;

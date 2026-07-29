@@ -78,11 +78,11 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
 
    function Tools_List_Result return String
    with Post =>
-     Tools_List_Result'Result'Length <= 12 + Items_Len_Bound (Tool_Id'First)
-   is
-      --  The `result` object for `tools/list`: {name, description, inputSchema}
-      --  for every tool in Tool_Id, the schema text embedded verbatim.
+     Tools_List_Result'Result'Length <= 12 + Items_Len_Bound (Tool_Id'First);
+   --  The `result` object for `tools/list`: {name, description, inputSchema}
+   --  for every tool in Tool_Id, the schema text embedded verbatim.
 
+   function Tools_List_Result return String is
       function Item (T : Tool_Id) return String is
         ("{""name"":" & Writer.Quoted (Name (T))
          & ",""description"":" & Writer.Quoted (Description (T))

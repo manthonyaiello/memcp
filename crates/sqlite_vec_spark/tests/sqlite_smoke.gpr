@@ -13,7 +13,7 @@ project Sqlite_Smoke is
    for Create_Missing_Dirs use "True";
 
    package Compiler is
-      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99");
+      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99", "-gnatys");
    end Compiler;
 
    package Binder is

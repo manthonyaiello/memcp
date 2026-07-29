@@ -14,9 +14,12 @@ procedure Http_Smoke
 is
 
    procedure Echo
+     (Request : String; Response : out Spark_Mcp.Http.Message_Ptr);
+   --  Answer a body starting "notify" with a null Response, which Rust turns
+   --  into a 204; anything else with a small JSON body echoing the length.
+
+   procedure Echo
      (Request : String; Response : out Spark_Mcp.Http.Message_Ptr) is
-      --  Answer a body starting "notify" with a null Response, which Rust turns
-      --  into a 204; anything else with a small JSON body echoing the length.
    begin
       if Request'Length >= 6
         and then Request (Request'First .. Request'First + 5) = "notify"

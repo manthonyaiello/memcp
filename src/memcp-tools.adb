@@ -59,10 +59,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    -- Result builders  --
    ----------------------
 
+   function OK (Content : String) return Result_Ptr;
+   --  A success result carrying Content, degrading to an Internal_Error when
+   --  Content exceeds Max_Field rather than tripping the Invocation_Result
+   --  predicate.
+
    function OK (Content : String) return Result_Ptr is
-      --  A success result carrying Content, degrading to an Internal_Error when
-      --  Content exceeds Max_Field rather than tripping the Invocation_Result
-      --  predicate.
    begin
       if Content'Length > Spark_Mcp.Max_Field then
          return new Spark_Mcp.Tools.Invocation_Result'
@@ -72,10 +74,12 @@ package body Memcp.Tools with SPARK_Mode => On is
         (Spark_Mcp.Tools.Success (Content));
    end OK;
 
+   function OK (Buf : Memcp.Text.Builder) return Result_Ptr;
+   --  A success result carrying Buf's text, or an Internal_Error when Buf
+   --  overflowed. Overflowed is the only reliable signal: a builder truncates
+   --  at the cap, so its Value is malformed and still within Max_Field.
+
    function OK (Buf : Memcp.Text.Builder) return Result_Ptr is
-      --  A success result carrying Buf's text, or an Internal_Error when Buf
-      --  overflowed. Overflowed is the only reliable signal: a builder truncates
-      --  at the cap, so its Value is malformed and still within Max_Field.
    begin
       if Memcp.Text.Overflowed (Buf) then
          return new Spark_Mcp.Tools.Invocation_Result'
@@ -113,12 +117,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    --  True when S is empty or entirely whitespace, so that save rejects a
    --  tab-or-newline-only diary or summary that Trim would let through.
 
-   function Valid_Timestamp (S : String) return Boolean is
-      --  A pragmatic ISO-8601 check: a YYYY-MM-DD date, optionally followed by
-      --  a 'T' or ' ' separator and an HH:MM[...] time. A malformed
-      --  since/until is rejected as invalid-params rather than silently
-      --  mis-filtering the store's lexical created_at comparison.
+   function Valid_Timestamp (S : String) return Boolean;
+   --  A pragmatic ISO-8601 check: a YYYY-MM-DD date, optionally followed by
+   --  a 'T' or ' ' separator and an HH:MM[...] time. A malformed
+   --  since/until is rejected as invalid-params rather than silently
+   --  mis-filtering the store's lexical created_at comparison.
 
+   function Valid_Timestamp (S : String) return Boolean is
       Len : constant Natural := S'Length;
 
       function At_Pos (P : Positive) return Character is
@@ -340,12 +345,12 @@ package body Memcp.Tools with SPARK_Mode => On is
 
          procedure Skip_Blanks (P : in out Natural; Adv : out Boolean)
            with Pre  => P in S'Range,
-                Post => (if Adv then P in S'Range)
-         is
-            --  Advance P over whitespace to the next non-blank character. Adv
-            --  is False, and the caller bails, when the run reaches the end
-            --  of S.
+                Post => (if Adv then P in S'Range);
+         --  Advance P over whitespace to the next non-blank character. Adv
+         --  is False, and the caller bails, when the run reaches the end
+         --  of S.
 
+         procedure Skip_Blanks (P : in out Natural; Adv : out Boolean) is
             Q : constant Natural := Skip_Ws (S, P);
          begin
             Adv := Q /= 0;
@@ -356,12 +361,13 @@ package body Memcp.Tools with SPARK_Mode => On is
 
          procedure Expect (P : in out Natural; C : Character; Adv : out Boolean)
            with Pre  => P in S'Range,
-                Post => (if Adv then P in S'Range)
-         is
-            --  Skip whitespace, require the single character C, and advance P
-            --  past it. Adv is False, and the caller bails, when the run ends,
-            --  the character differs, or nothing follows C.
+                Post => (if Adv then P in S'Range);
+         --  Skip whitespace, require the single character C, and advance P
+         --  past it. Adv is False, and the caller bails, when the run ends,
+         --  the character differs, or nothing follows C.
 
+         procedure Expect (P : in out Natural; C : Character; Adv : out Boolean)
+         is
             Q : constant Natural := Skip_Ws (S, P);
          begin
             if Q = 0 or else S (Q) /= C then
@@ -511,10 +517,11 @@ package body Memcp.Tools with SPARK_Mode => On is
       end loop;
    end Find_Leak_Boundary;
 
-   function Strip (S : String) return String is
-      --  S with leading and trailing ASCII whitespace removed, or "" when it is
-      --  entirely whitespace.
+   function Strip (S : String) return String;
+   --  S with leading and trailing ASCII whitespace removed, or "" when it is
+   --  entirely whitespace.
 
+   function Strip (S : String) return String is
       F : Natural := 0;
       --  Index of the first non-whitespace character, 0 when there is none.
    begin
@@ -540,11 +547,12 @@ package body Memcp.Tools with SPARK_Mode => On is
       end;
    end Strip;
 
-   function Clean (Raw : String) return String is
-      --  A salvaged half tidied up: one trailing </parameter|summary|diary>
-      --  close tag dropped, with whitespace tolerated around it, and the result
-      --  stripped.
+   function Clean (Raw : String) return String;
+   --  A salvaged half tidied up: one trailing </parameter|summary|diary>
+   --  close tag dropped, with whitespace tolerated around it, and the result
+   --  stripped.
 
+   function Clean (Raw : String) return String is
       S  : constant String := Strip (Raw);
       LT : Natural := 0;
       --  Index of the last '<' in S, 0 when there is none.
@@ -592,19 +600,27 @@ package body Memcp.Tools with SPARK_Mode => On is
       Summary     : String;
       Out_Diary   : out Memcp.Text.Builder;
       Out_Summary : out Memcp.Text.Builder;
+      Did         : out Boolean);
+   --  Split a leaked value back into its two halves. A leak's signature is
+   --  that the swallowed sibling arrives missing, so the split happens only
+   --  when the boundary's named sibling slot is empty; with both fields
+   --  supplied a boundary-looking sequence is legitimate content and the
+   --  value is left intact rather than truncated. On a split Did is True and
+   --  the halves come back through the builders, each a slice of the input
+   --  and so within the Max_Field budget; otherwise Did is False, the
+   --  builders are only Reset, and the caller reuses the original strings.
+
+   procedure Salvage
+     (Diary       : String;
+      Summary     : String;
+      Out_Diary   : out Memcp.Text.Builder;
+      Out_Summary : out Memcp.Text.Builder;
       Did         : out Boolean)
    is
-      --  Split a leaked value back into its two halves. A leak's signature is
-      --  that the swallowed sibling arrives missing, so the split happens only
-      --  when the boundary's named sibling slot is empty; with both fields
-      --  supplied a boundary-looking sequence is legitimate content and the
-      --  value is left intact rather than truncated. On a split Did is True and
-      --  the halves come back through the builders, each a slice of the input
-      --  and so within the Max_Field budget; otherwise Did is False, the
-      --  builders are only Reset, and the caller reuses the original strings.
+      procedure Emit (B : out Memcp.Text.Builder; Text : String);
+      --  Reset B and fill it with Text.
 
       procedure Emit (B : out Memcp.Text.Builder; Text : String) is
-         --  Reset B and fill it with Text.
       begin
          Memcp.Text.Reset (B);
          Memcp.Text.Add (B, Text);
@@ -664,9 +680,11 @@ package body Memcp.Tools with SPARK_Mode => On is
    --  Each builds its JSON array into the caller's bounded Memcp.Text builder;
    --  OK (Buf) then emits it only if the field budget held.
 
+   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp.Text.Builder);
+   --  Render the diary Headers V into Buf as a JSON array.
+
    procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp.Text.Builder)
    is
-      --  Render the diary Headers V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -701,9 +719,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Diary;
 
    procedure Ser_Projects
+     (V : MS.Project_Info_List; Buf : out Memcp.Text.Builder);
+   --  Render the project rows V into Buf as a JSON array.
+
+   procedure Ser_Projects
      (V : MS.Project_Info_List; Buf : out Memcp.Text.Builder)
    is
-      --  Render the project rows V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -730,9 +751,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Projects;
 
    procedure Ser_Summary_Hits
+     (V : MS.Summary_Hit_List; Buf : out Memcp.Text.Builder);
+   --  Render the summary search hits V into Buf as a JSON array.
+
+   procedure Ser_Summary_Hits
      (V : MS.Summary_Hit_List; Buf : out Memcp.Text.Builder)
    is
-      --  Render the summary search hits V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -768,9 +792,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Summary_Hits;
 
    procedure Ser_Chunk_Hits
+     (V : MS.Chunk_Hit_List; Buf : out Memcp.Text.Builder);
+   --  Render the chunk search hits V into Buf as a JSON array.
+
+   procedure Ser_Chunk_Hits
      (V : MS.Chunk_Hit_List; Buf : out Memcp.Text.Builder)
    is
-      --  Render the chunk search hits V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -806,10 +833,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Chunk_Hits;
 
    procedure Ser_Turns
+     (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp.Text.Builder);
+   --  Render the turns V into Buf as a JSON array. Session_Id comes from the
+   --  request, the Chunk record having no session field of its own.
+
+   procedure Ser_Turns
      (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp.Text.Builder)
    is
-      --  Render the turns V into Buf as a JSON array. Session_Id comes from the
-      --  request, the Chunk record having no session field of its own.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -848,12 +878,14 @@ package body Memcp.Tools with SPARK_Mode => On is
    --  embedding gate consults this.
 
    procedure Embed_One
+     (R : MR.Resources; Text : String; Emb : out Candle_Spark.Embedding);
+   --  Embed Text: under replay the recorded vector is injected by text
+   --  lookup, otherwise the engine runs. A procedure, because logging a
+   --  replay miss is a side effect.
+
+   procedure Embed_One
      (R : MR.Resources; Text : String; Emb : out Candle_Spark.Embedding)
    is
-      --  Embed Text: under replay the recorded vector is injected by text
-      --  lookup, otherwise the engine runs. A procedure, because logging a
-      --  replay miss is a side effect.
-
       Found : Boolean;
       --  Whether the replay corpus held a vector for Text.
    begin
@@ -876,10 +908,16 @@ package body Memcp.Tools with SPARK_Mode => On is
      (R    : MR.Resources;
       Text : String;
       Emb  : out Candle_Spark.Embedding;
+      Ok   : out Boolean);
+   --  Embed Text, or hand back Ok => False and the zero vector when Text is
+   --  empty or no embedder is available; the tool then reports the error.
+
+   procedure Embed_Query
+     (R    : MR.Resources;
+      Text : String;
+      Emb  : out Candle_Spark.Embedding;
       Ok   : out Boolean)
    is
-      --  Embed Text, or hand back Ok => False and the zero vector when Text is
-      --  empty or no embedder is available; the tool then reports the error.
    begin
       if Text'Length = 0 or else not Embedder_Available (R) then
          Emb := [others => 0.0];
@@ -895,10 +933,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    -----------
 
    procedure Do_Recent
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  recent: the N most recent diary Headers across the named projects.
+
+   procedure Do_Recent
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  recent: the N most recent diary Headers across the named projects.
-
       D       : MJ.Doc;
       Entries : MS.Diary_Entry_List;
       St      : MS.Op_Status;
@@ -924,10 +964,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_Recent;
 
    procedure Do_List_Projects
+     (R : MR.Resources; Result : out Result_Ptr);
+   --  list_projects: every project the store has seen. Takes no arguments.
+
+   procedure Do_List_Projects
      (R : MR.Resources; Result : out Result_Ptr)
    is
-      --  list_projects: every project the store has seen. Takes no arguments.
-
       Projs : MS.Project_Info_List;
       St    : MS.Op_Status;
       Buf   : Memcp.Text.Builder;
@@ -942,11 +984,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_List_Projects;
 
    procedure Do_Save
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  save: a (diary line, structured summary) pair, plus the summary's
+   --  embedding.
+
+   procedure Do_Save
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  save: a (diary line, structured summary) pair, plus the summary's
-      --  embedding.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1038,10 +1082,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_Save;
 
    procedure Do_Forget
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  forget: delete a summary, its diary line and its embedding by id.
+
+   procedure Do_Forget
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  forget: delete a summary, its diary line and its embedding by id.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1065,10 +1111,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_Forget;
 
    procedure Do_Search
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  search: semantic search over Summaries, within optional date bounds.
+
+   procedure Do_Search
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  search: semantic search over Summaries, within optional date bounds.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1124,10 +1172,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_Search;
 
    procedure Do_Fetch_Summary
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  fetch_summary: one full Summary by id.
+
+   procedure Do_Fetch_Summary
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  fetch_summary: one full Summary by id.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1181,11 +1231,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_Fetch_Summary;
 
    procedure Do_Fetch_Chunks
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  fetch_chunks: semantic search over session chunks, within optional
+   --  project, session and date bounds.
+
+   procedure Do_Fetch_Chunks
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  fetch_chunks: semantic search over session chunks, within optional
-      --  project, session and date bounds.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1242,10 +1294,12 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Do_Fetch_Chunks;
 
    procedure Do_Fetch_Turns
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  fetch_turns: verbatim conversation turns, by ordinal range or tail.
+
+   procedure Do_Fetch_Turns
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  fetch_turns: verbatim conversation turns, by ordinal range or tail.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1320,12 +1374,18 @@ package body Memcp.Tools with SPARK_Mode => On is
       Session_Id : String;
       Transcript : String;
       Result     : out Result_Ptr)
-     with Pre => Transcript'First = 1 and then Transcript'Last < Natural'Last
-   is
-      --  upload_session once the transcript is decoded: extract turns, embed
-      --  each, save the session, then write the autorecap Header for a fresh
-      --  session that carries a recap line.
+     with Pre => Transcript'First = 1 and then Transcript'Last < Natural'Last;
+   --  upload_session once the transcript is decoded: extract turns, embed
+   --  each, save the session, then write the autorecap Header for a fresh
+   --  session that carries a recap line.
 
+   procedure Upload_Decoded
+     (R          : MR.Resources;
+      Project    : String;
+      Session_Id : String;
+      Transcript : String;
+      Result     : out Result_Ptr)
+   is
       Turns  : constant ME.Turn_List := ME.Extract_Turns (Transcript);
       --  The text-bearing turns of the transcript, in order.
 
@@ -1451,11 +1511,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Upload_Decoded;
 
    procedure Do_Upload_Session
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  upload_session: decode the base64 transcript, then hand it to
+   --  Upload_Decoded, so the Doc is Closed and the transcript Freed once.
+
+   procedure Do_Upload_Session
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
-      --  upload_session: decode the base64 transcript, then hand it to
-      --  Upload_Decoded, so the Doc is Closed and the transcript Freed once.
-
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);

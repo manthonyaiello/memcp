@@ -15,7 +15,7 @@ project Candle_Spark is
    for Library_Kind use Library_Type;
 
    package Compiler is
-      for Default_Switches ("Ada") use Candle_Spark_Config.Ada_Compiler_Switches & ("-gnatyM99");
+      for Default_Switches ("Ada") use Candle_Spark_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys");
    end Compiler;
 
    package Binder is

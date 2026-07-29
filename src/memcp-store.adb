@@ -150,11 +150,13 @@ package body Memcp.Store with SPARK_Mode => On is
    --  Raw session-file location and write
    ----------------------------------------------
 
+   function Parent_Dir (Path : String) return String;
+   --  Directory portion of Path, everything before the last '/':
+   --  "/a/b/x" gives "/a/b", "/x" gives "/", and a Path with no separator
+   --  (including ":memory:") gives ".". Always a slice of Path, never a
+   --  concatenation, so it cannot overflow.
+
    function Parent_Dir (Path : String) return String is
-      --  Directory portion of Path, everything before the last '/':
-      --  "/a/b/x" gives "/a/b", "/x" gives "/", and a Path with no separator
-      --  (including ":memory:") gives ".". Always a slice of Path, never a
-      --  concatenation, so it cannot overflow.
    begin
       for I in reverse Path'Range loop
          if Path (I) = '/' then
@@ -226,10 +228,12 @@ package body Memcp.Store with SPARK_Mode => On is
      with Pre  => S'Last < Integer'Last,
           Post => (First > Last) or else
                     (First in S'Range and then Last in S'Range),
-          Always_Terminates
+          Always_Terminates;
+   --  The [First, Last] slice bounds of S with leading and trailing
+   --  whitespace removed; First > Last signals an all-blank S.
+
+   procedure Strip_Bounds (S : String; First : out Integer; Last : out Integer)
    is
-      --  The [First, Last] slice bounds of S with leading and trailing
-      --  whitespace removed; First > Last signals an all-blank S.
    begin
       First := S'First;
       Last  := S'Last;
@@ -250,9 +254,10 @@ package body Memcp.Store with SPARK_Mode => On is
      with Pre  => S'Last < Integer'Last,
           --  On True a caller may slice Prefix off S without a further length
           --  check of its own.
-          Post => (if Starts_With_Prefix'Result then S'Length >= Prefix'Length)
-   is
-      --  Whether S begins with Prefix, compared case-insensitively.
+          Post => (if Starts_With_Prefix'Result then S'Length >= Prefix'Length);
+   --  Whether S begins with Prefix, compared case-insensitively.
+
+   function Starts_With_Prefix (S : String) return Boolean is
    begin
       if S'Length < Prefix'Length then
          return False;
@@ -266,11 +271,11 @@ package body Memcp.Store with SPARK_Mode => On is
    end Starts_With_Prefix;
 
    function Parse_Headline (Body_Text : String) return String
-     with Pre => Body_Text'Last < Integer'Last
-   is
-      --  Headline of a summary body: the remainder of a first line that starts
-      --  with Prefix, else the whole stripped body flattened to one line.
+     with Pre => Body_Text'Last < Integer'Last;
+   --  Headline of a summary body: the remainder of a first line that starts
+   --  with Prefix, else the whole stripped body flattened to one line.
 
+   function Parse_Headline (Body_Text : String) return String is
       First : Integer;
       Last  : Integer;
    begin
@@ -328,11 +333,11 @@ package body Memcp.Store with SPARK_Mode => On is
    end Parse_Headline;
 
    function Recap_Headline (Text : String) return String
-     with Pre => Text'Last < Integer'Last
-   is
-      --  Headline of an autorecap: Parse_Headline's fallback branch alone, with
-      --  no Prefix parsing.
+     with Pre => Text'Last < Integer'Last;
+   --  Headline of an autorecap: Parse_Headline's fallback branch alone, with
+   --  no Prefix parsing.
 
+   function Recap_Headline (Text : String) return String is
       First : Integer;
       Last  : Integer;
    begin
@@ -393,12 +398,20 @@ package body Memcp.Store with SPARK_Mode => On is
       TS          : String;
       Chunks      : Chunk_Input_List;
       Ok          : out Boolean)
-     with Pre => Is_Open (S)
+     with Pre => Is_Open (S);
+   --  Insert every element of Chunks, body and embedding, against one
+   --  session row: shared by Save_Session and Reindex_Session. Ordinal is
+   --  the 0-based position within Chunks. Runs inside the caller's
+   --  transaction, and Ok is False from the first SQLite failure on.
+
+   procedure Insert_Chunks
+     (S           : Store;
+      Session_Row : Row_Id;
+      Proj_Id     : Row_Id;
+      TS          : String;
+      Chunks      : Chunk_Input_List;
+      Ok          : out Boolean)
    is
-      --  Insert every element of Chunks, body and embedding, against one
-      --  session row: shared by Save_Session and Reindex_Session. Ordinal is
-      --  the 0-based position within Chunks. Runs inside the caller's
-      --  transaction, and Ok is False from the first SQLite failure on.
    begin
       Ok := True;
       for I in Chunk_Input_Vectors.First_Index (Chunks)
@@ -472,11 +485,11 @@ package body Memcp.Store with SPARK_Mode => On is
    procedure Exec (S : Store; Text : String; Ok : out Boolean)
      with Pre => Is_Open (S)
                  and then Text'Length > 0
-                 and then Text'Last < Natural'Last
-   is
-      --  Run a resultless statement -- BEGIN, COMMIT, ROLLBACK, simple DML --
-      --  as a whole. Ok when SQLite accepted it.
+                 and then Text'Last < Natural'Last;
+   --  Run a resultless statement -- BEGIN, COMMIT, ROLLBACK, simple DML --
+   --  as a whole. Ok when SQLite accepted it.
 
+   procedure Exec (S : Store; Text : String; Ok : out Boolean) is
       St : Sql.Status;
    begin
       Sql.Execute (S.DB, Text, St);
@@ -484,12 +497,12 @@ package body Memcp.Store with SPARK_Mode => On is
    end Exec;
 
    procedure Rollback (S : Store)
-     with Pre => Is_Open (S)
-   is
-      --  Abandon the current transaction. A ROLLBACK that itself fails can
-      --  leave the database mid-transaction, so it is logged rather than
-      --  discarded: callers reach here with nothing left to try.
+     with Pre => Is_Open (S);
+   --  Abandon the current transaction. A ROLLBACK that itself fails can
+   --  leave the database mid-transaction, so it is logged rather than
+   --  discarded: callers reach here with nothing left to try.
 
+   procedure Rollback (S : Store) is
       Ok : Boolean;
    begin
       Exec (S, "ROLLBACK", Ok);
@@ -503,11 +516,11 @@ package body Memcp.Store with SPARK_Mode => On is
    function Placeholders (K : Positive) return String
      with Pre  => K <= Max_Filter_Terms,
           Post => Placeholders'Result'First = 1
-                  and then Placeholders'Result'Length = 2 * K - 1
-   is
-      --  "?,?,...,?": the parameter list for an IN clause of K bound values,
-      --  K '?' separated by K - 1 ','.
+                  and then Placeholders'Result'Length = 2 * K - 1;
+   --  "?,?,...,?": the parameter list for an IN clause of K bound values,
+   --  K '?' separated by K - 1 ','.
 
+   function Placeholders (K : Positive) return String is
       Buf : String (1 .. 2 * K - 1) := [others => '?'];
    begin
       --  Overwrite the even positions with commas; odd positions stay '?'.
@@ -517,10 +530,11 @@ package body Memcp.Store with SPARK_Mode => On is
       return Buf;
    end Placeholders;
 
-   function Contains (L : Name_List; Value : String) return Boolean is
-      --  Whether Value is one of the names in L, the Ada-side membership test
-      --  for the search metadata filters. A full scan; filter lists are tiny.
+   function Contains (L : Name_List; Value : String) return Boolean;
+   --  Whether Value is one of the names in L, the Ada-side membership test
+   --  for the search metadata filters. A full scan; filter lists are tiny.
 
+   function Contains (L : Name_List; Value : String) return Boolean is
       Found : Boolean := False;
    begin
       for I in Name_Vectors.First_Index (L) .. Name_Vectors.Last_Index (L) loop
@@ -537,11 +551,13 @@ package body Memcp.Store with SPARK_Mode => On is
 
    procedure Project_Id
      (S : Store; Name : String; Id : out Row_Id; Status : out Op_Status)
-     with Pre => Is_Open (S)
-   is
-      --  The id of the project named Name, inserting the projects row when it
-      --  does not exist yet.
+     with Pre => Is_Open (S);
+   --  The id of the project named Name, inserting the projects row when it
+   --  does not exist yet.
 
+   procedure Project_Id
+     (S : Store; Name : String; Id : out Row_Id; Status : out Op_Status)
+   is
       Stmt : Sql.Statement;
       St   : Sql.Status;
    begin
@@ -593,10 +609,11 @@ package body Memcp.Store with SPARK_Mode => On is
       St : Sql.Status;
       Ok : Boolean;
 
-      procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status) is
-         --  Assert one meta (key, value) pair: insert it when absent, and
-         --  report Meta_Mismatch when the stored value differs.
+      procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status);
+      --  Assert one meta (key, value) pair: insert it when absent, and
+      --  report Meta_Mismatch when the stored value differs.
 
+      procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status) is
          Stmt : Sql.Statement;
          MSt  : Sql.Status;
       begin
@@ -1000,15 +1017,19 @@ package body Memcp.Store with SPARK_Mode => On is
         (GNATprove, Off, "unused assignment",
          Reason => "the final Idx advance in a bind helper is never read");
 
+      procedure Bind_Str (Value : String);
+      --  Bind Value as text at the running parameter position, then advance.
+
       procedure Bind_Str (Value : String) is
-         --  Bind Value as text at the running parameter position, then advance.
       begin
          Sql.Bind_Text (Stmt, Idx, Value, St);
          Idx := Idx + 1;
       end Bind_Str;
 
+      procedure Bind_Num (Value : Row_Id);
+      --  Bind Value as an integer at the running position, then advance.
+
       procedure Bind_Num (Value : Row_Id) is
-         --  Bind Value as an integer at the running position, then advance.
       begin
          Sql.Bind_Int64 (Stmt, Idx, Value, St);
          Idx := Idx + 1;
@@ -1493,11 +1514,12 @@ package body Memcp.Store with SPARK_Mode => On is
       DH      : constant String := Dedup_Hash (Project, Diary_Body, Summary_Body);
       Blob    : constant Packed_Blob := To_Blob (Embedding);
 
-      procedure Put_Vec (Row : Row_Id; Ok : out Boolean) is
-         --  Attach this call's embedding to summaries row Row.
-         --  Delete-then-insert, so it serves both a fresh insert and an
-         --  in-place replace.
+      procedure Put_Vec (Row : Row_Id; Ok : out Boolean);
+      --  Attach this call's embedding to summaries row Row.
+      --  Delete-then-insert, so it serves both a fresh insert and an
+      --  in-place replace.
 
+      procedure Put_Vec (Row : Row_Id; Ok : out Boolean) is
          Vs : Sql.Statement;
          St : Sql.Status;
       begin

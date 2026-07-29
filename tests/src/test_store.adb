@@ -23,8 +23,10 @@ procedure Test_Store is
    Failures : Natural := 0;
    --  Checks that did not hold; nonzero means a failing exit status.
 
+   procedure Check (Cond : Boolean; Label : String);
+   --  Report Cond under Label and count it if it does not hold.
+
    procedure Check (Cond : Boolean; Label : String) is
-      --  Report Cond under Label and count it if it does not hold.
    begin
       if Cond then
          Ada.Text_IO.Put_Line ("ok   - " & Label);
@@ -37,18 +39,20 @@ procedure Test_Store is
    Zero_Emb : constant Candle_Spark.Embedding := [others => 0.0];
    --  The all-zero embedding, for rows whose vector does not matter.
 
-   function Hot (K : Positive) return Candle_Spark.Embedding is
-      --  A unit embedding with dimension K hot -- enough to order a KNN query.
+   function Hot (K : Positive) return Candle_Spark.Embedding;
+   --  A unit embedding with dimension K hot -- enough to order a KNN query.
 
+   function Hot (K : Positive) return Candle_Spark.Embedding is
       E : Candle_Spark.Embedding := [others => 0.0];
    begin
       E (K) := 1.0;
       return E;
    end Hot;
 
-   function Read_File (Path : String) return String is
-      --  The whole file at Path, as raw bytes.
+   function Read_File (Path : String) return String;
+   --  The whole file at Path, as raw bytes.
 
+   function Read_File (Path : String) return String is
       use Ada.Streams.Stream_IO;
       F : File_Type;
    begin
@@ -400,8 +404,10 @@ begin
       Turns : Memcp.Store.Chunk_List;
       FT_St : Memcp.Store.Op_Status;
 
+      procedure Expect_Empty (Label : String);
+      --  Check that the preceding Fetch_Turns returned Success and no rows.
+
       procedure Expect_Empty (Label : String) is
-         --  Check that the preceding Fetch_Turns returned Success and no rows.
       begin
          Check (FT_St = Memcp.Store.Success
                 and then Memcp.Store.Chunk_Vectors.Length (Turns) = 0, Label);

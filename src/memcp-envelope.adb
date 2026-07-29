@@ -59,12 +59,14 @@ package body Memcp.Envelope with SPARK_Mode => On is
    ------------------
 
    function To_Json_Text
+     (Value : not null access constant Types.JSON_Value) return String;
+   --  Re-serialise a parsed value to its JSON text. A value whose text would
+   --  overflow the buffer -- impossible for a transport-capped request --
+   --  degrades to "".
+
+   function To_Json_Text
      (Value : not null access constant Types.JSON_Value) return String
    is
-      --  Re-serialise a parsed value to its JSON text. A value whose text would
-      --  overflow the buffer -- impossible for a transport-capped request --
-      --  degrades to "".
-
       Buf : JSON.Streams.String_Buffer;
       --  Scratch buffer for the text; Destroy reclaims it on both the normal
       --  and the overflow path.
@@ -88,12 +90,16 @@ package body Memcp.Envelope with SPARK_Mode => On is
 
    function Obj_Member
      (Obj : access constant Types.JSON_Value; Key : String)
+      return access constant Types.JSON_Value;
+   --  The member Key of Obj, or null when Obj is null, is not an object, or
+   --  has no such member. Statement form rather than an expression function:
+   --  the observer is rooted at Obj, and a conditional expression may not
+   --  observe. Null-safe, so nested members can be fetched unconditionally.
+
+   function Obj_Member
+     (Obj : access constant Types.JSON_Value; Key : String)
       return access constant Types.JSON_Value
    is
-      --  The member Key of Obj, or null when Obj is null, is not an object, or
-      --  has no such member. Statement form rather than an expression function:
-      --  the observer is rooted at Obj, and a conditional expression may not
-      --  observe. Null-safe, so nested members can be fetched unconditionally.
    begin
       if Obj = null or else Types.Kind (Obj) /= Types.Object_Kind then
          return null;
@@ -106,12 +112,15 @@ package body Memcp.Envelope with SPARK_Mode => On is
    ------------
 
    function Decode
+     (Doc : not null access constant Types.JSON_Value) return Req.Envelope;
+   --  Validate an already-parsed document and extract its fields. Doc is
+   --  non-null by Parsers.Parse's postcondition. Any field that would exceed
+   --  Max_Field -- never, for a transport-capped request -- degrades the
+   --  whole request to Bad_Request.
+
+   function Decode
      (Doc : not null access constant Types.JSON_Value) return Req.Envelope
    is
-      --  Validate an already-parsed document and extract its fields. Doc is
-      --  non-null by Parsers.Parse's postcondition. Any field that would exceed
-      --  Max_Field -- never, for a transport-capped request -- degrades the
-      --  whole request to Bad_Request.
    begin
       if Types.Kind (Doc) /= Types.Object_Kind then
          return Bad_Req;

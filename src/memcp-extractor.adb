@@ -62,8 +62,10 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Sextet --
    ------------
 
+   function Sextet (C : Character) return Integer;
+   --  The base64 sextet for C, or -1 when C is not in the standard alphabet.
+
    function Sextet (C : Character) return Integer is
-      --  The base64 sextet for C, or -1 when C is not in the standard alphabet.
    begin
       case C is
          when 'A' .. 'Z' => return Character'Pos (C) - Character'Pos ('A');
@@ -79,11 +81,12 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Valid_Utf8 --
    ----------------
 
-   function Valid_Utf8 (S : String) return Boolean is
-      --  True when S, taken as one octet per Character, is well-formed UTF-8
-      --  per RFC 3629: overlong forms, surrogates U+D800 .. DFFF and code
-      --  points above U+10FFFF are all rejected.
+   function Valid_Utf8 (S : String) return Boolean;
+   --  True when S, taken as one octet per Character, is well-formed UTF-8
+   --  per RFC 3629: overlong forms, surrogates U+D800 .. DFFF and code
+   --  points above U+10FFFF are all rejected.
 
+   function Valid_Utf8 (S : String) return Boolean is
       I : Integer := S'First;
       --  Index of the octet that starts the sequence under examination.
 
@@ -260,10 +263,13 @@ package body Memcp.Extractor with SPARK_Mode => On is
    ----------------
 
    function Str_Member
+     (Obj : access constant Types.JSON_Value; Key : String) return String;
+   --  The string value of member Key of Obj, or "" when Obj is null, is not
+   --  an object, or has no such string member.
+
+   function Str_Member
      (Obj : access constant Types.JSON_Value; Key : String) return String
    is
-      --  The string value of member Key of Obj, or "" when Obj is null, is not
-      --  an object, or has no such string member.
    begin
       if Obj = null or else Types.Kind (Obj) /= Types.Object_Kind then
          return "";
@@ -284,10 +290,14 @@ package body Memcp.Extractor with SPARK_Mode => On is
 
    function Obj_Get
      (Obj : access constant Types.JSON_Value; Key : String)
+      return access constant Types.JSON_Value;
+   --  The member Key of Obj, or null when Obj is null, is not an object, or
+   --  has no such member.
+
+   function Obj_Get
+     (Obj : access constant Types.JSON_Value; Key : String)
       return access constant Types.JSON_Value
    is
-      --  The member Key of Obj, or null when Obj is null, is not an object, or
-      --  has no such member.
    begin
       if Obj = null or else Types.Kind (Obj) /= Types.Object_Kind then
          return null;
@@ -303,12 +313,16 @@ package body Memcp.Extractor with SPARK_Mode => On is
      (Line : String;
       Doc  : out Types.JSON_Value_Access;
       Ok   : out Boolean)
-     with Post => (if not Ok then Doc = null)
-   is
-      --  Parse one transcript line. Doc is null, with nothing leaked, when the
-      --  line is blank or is not a JSON object; otherwise the caller owns the
-      --  tree and must Free it.
+     with Post => (if not Ok then Doc = null);
+   --  Parse one transcript line. Doc is null, with nothing leaked, when the
+   --  line is blank or is not a JSON object; otherwise the caller owns the
+   --  tree and must Free it.
 
+   procedure Parse_Line
+     (Line : String;
+      Doc  : out Types.JSON_Value_Access;
+      Ok   : out Boolean)
+   is
       P     : Parsers.Parser;
       --  The line's parser, destroyed on every path below.
 
@@ -346,20 +360,24 @@ package body Memcp.Extractor with SPARK_Mode => On is
 
    procedure Append_Text_Parts
      (B       : in out Memcp.Text.Builder;
+      Content : access constant Types.JSON_Value);
+   --  Append the text of a message's content field to B, joining the pieces
+   --  with a blank line. Content is either a bare string or a list of typed
+   --  parts of which only "text" is kept; nothing is appended when nothing
+   --  survives.
+
+   procedure Append_Text_Parts
+     (B       : in out Memcp.Text.Builder;
       Content : access constant Types.JSON_Value)
    is
-      --  Append the text of a message's content field to B, joining the pieces
-      --  with a blank line. Content is either a bare string or a list of typed
-      --  parts of which only "text" is kept; nothing is appended when nothing
-      --  survives.
-
       Count : Natural := 0;
       --  Pieces appended so far; nonzero is what earns a separator.
 
-      procedure Add_Piece (Text : String) is
-         --  Append Text stripped, preceded by a blank line unless it is first.
-         --  A piece that strips to nothing is dropped.
+      procedure Add_Piece (Text : String);
+      --  Append Text stripped, preceded by a blank line unless it is first.
+      --  A piece that strips to nothing is dropped.
 
+      procedure Add_Piece (Text : String) is
          S : constant String := Strip (Text);
       begin
          if S'Length = 0 then
@@ -410,10 +428,11 @@ package body Memcp.Extractor with SPARK_Mode => On is
       Start : Natural := Transcript'First;
       --  First index of the line the scan below is inside.
 
-      procedure Process_Line (Line : String) is
-         --  Append the turn for one line to Turns, or nothing when the line is
-         --  not a user/assistant message with surviving text.
+      procedure Process_Line (Line : String);
+      --  Append the turn for one line to Turns, or nothing when the line is
+      --  not a user/assistant message with surviving text.
 
+      procedure Process_Line (Line : String) is
          Doc : Types.JSON_Value_Access;
          Ok  : Boolean;
       begin
@@ -500,10 +519,11 @@ package body Memcp.Extractor with SPARK_Mode => On is
       Start : Natural := Transcript'First;
       --  First index of the line the scan below is inside.
 
-      procedure Process_Line (Line : String) is
-         --  Replace Last with this line's recap, when it is a non-empty
-         --  away_summary.
+      procedure Process_Line (Line : String);
+      --  Replace Last with this line's recap, when it is a non-empty
+      --  away_summary.
 
+      procedure Process_Line (Line : String) is
          Doc : Types.JSON_Value_Access;
          Ok  : Boolean;
       begin

@@ -17,8 +17,10 @@ procedure Test_Spark_Mcp is
    Failures : Natural := 0;
    --  Count of failed checks; non-zero sets a failing exit status.
 
+   procedure Check (Cond : Boolean; Label : String);
+   --  Report one assertion and count a failure.
+
    procedure Check (Cond : Boolean; Label : String) is
-      --  Report one assertion and count a failure.
    begin
       if Cond then
          Ada.Text_IO.Put_Line ("ok   - " & Label);
@@ -28,9 +30,11 @@ procedure Test_Spark_Mcp is
       end if;
    end Check;
 
+   procedure Check_Has (Haystack, Needle, Label : String);
+   --  Assert that Needle appears somewhere in Haystack, printing both on
+   --  failure.
+
    procedure Check_Has (Haystack, Needle, Label : String) is
-      --  Assert that Needle appears somewhere in Haystack, printing both on
-      --  failure.
       use Ada.Strings.Fixed;
    begin
       Check (Index (Haystack, Needle) > 0, Label);
@@ -57,17 +61,22 @@ procedure Test_Spark_Mcp is
         when Boom => "Always fails.");
    --  Human-readable description of the given tool.
 
+   function Input_Schema (Id : Tool_Id) return String;
+   --  The same trivial object schema for either tool.
+
    function Input_Schema (Id : Tool_Id) return String is
-      --  The same trivial object schema for either tool.
       pragma Unreferenced (Id);
    begin
       return "{""type"":""object""}";
    end Input_Schema;
 
    procedure Invoke
+     (Id : Tool_Id; Arguments : String; Result : out Tools.Result_Ptr);
+   --  Echo returns the arguments wrapped in a payload; Boom fails with
+   --  Internal_Error.
+
+   procedure Invoke
      (Id : Tool_Id; Arguments : String; Result : out Tools.Result_Ptr) is
-      --  Echo returns the arguments wrapped in a payload; Boom fails with
-      --  Internal_Error.
    begin
       case Id is
          when Echo =>
@@ -97,9 +106,16 @@ procedure Test_Spark_Mcp is
       Is_Notification : Boolean;
       Id              : String;
       Tool_Name       : String := "";
-      Arguments       : String := "{}") return String
+      Arguments       : String := "{}") return String;
    --  Drive MCP.Respond and hand back the response text, "" for a
    --  notification's null result, freeing the allocation.
+
+   function Respond_Str
+     (Method          : String;
+      Is_Notification : Boolean;
+      Id              : String;
+      Tool_Name       : String := "";
+      Arguments       : String := "{}") return String
    is
       P : Spark_Mcp.Response_Ptr;
    begin
