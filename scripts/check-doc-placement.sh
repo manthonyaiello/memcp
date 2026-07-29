@@ -14,6 +14,16 @@
 #
 # Specs and bodies alike: hover works in both.
 #
+# The tree is clean, so this gates: `make docs-check` runs it after check-docs.sh
+# and CI fails on a regression. It needs no toolchain -- awk over `git ls-files`
+# -- so it runs on a bare checkout, before anything is built.
+#
+# One gotcha if you edit the rules below: opens() fires on any line ENDING in
+# `is`, `declare`, `private` or `record`, and it does not know a comment from
+# code. A doc block whose prose happens to end a line with one of those words
+# makes the NEXT comment line look block-initial, which reports a finding
+# against whatever declaration follows. The fix is to reword the prose.
+#
 # Usage:
 #   scripts/check-doc-placement.sh            report and FAIL on any finding
 #   scripts/check-doc-placement.sh --no-gate  report only (never fails)

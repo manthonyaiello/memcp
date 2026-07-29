@@ -54,6 +54,11 @@ comment is not merely dropped, it is shown against the wrong name.
   constants, `pragma`s, and local declarations inside bodies. Bodies included:
   hover works there too, and a body reader deserves documentation even though
   gnatdoc does not publish it.
+- **A subprogram body has a declaration to document.** `-gnatys` is on, so every
+  local subprogram has one: put the block below the declaration and leave the
+  body bare. An aspect clause moves to the declaration too — Ada allows
+  `Pre`/`Post` on a body only when no declaration exists. An expression function
+  is already a declaration and needs nothing.
 - **One block per declaration.** Never share a leading block across a run of
   constants — separate them with blank lines and give each its own block below.
 - **Never let a comment be the first thing inside a package.** It silently
@@ -64,7 +69,19 @@ comment is not merely dropped, it is shown against the wrong name.
   ("`Length`, clamped from size_t to Natural...").
 - `@param`/`@return`/`@enum` complete, and always a one-sentence lead line even
   where it repeats a tag. Never delete a tag: `make docs-check` gates on them.
-- `scripts/check-doc-placement.sh` gates specs.
+- A note that belongs to an aspect goes *inside* the aspect clause, as a comment
+  between `with` and the aspect name — not in the doc block below.
+- `make docs-check` gates placement too, via `scripts/check-doc-placement.sh`
+  (`make docs-placement` to report without failing). The tree is at zero.
+
+### Where the prose goes instead
+
+Design rationale — why a seam, bound or schema has the shape it does, what a
+trust boundary assumes, what breaks if it changes — belongs in `docs/design/` as
+a numbered ADR, not in a comment. History belongs in the commit message. See
+`docs/design/0005`–`0013`; 0012 is the one to read first, since it records the
+parity obligations that no longer have a reference implementation to check
+against.
 
 ## Development
 

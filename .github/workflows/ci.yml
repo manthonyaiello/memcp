@@ -81,11 +81,13 @@ jobs:
           alr -n install gnatdoc_bin=26.0.0
           echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
 
-      # THE gate: scripts/check-docs.sh drives every project root and exits
-      # non-zero on any undocumented entity in our own sources, which fails this
-      # job and so skips both platforms' build-test and the prover. The
-      # per-unit inventory lands in the job summary, so a failure is readable
-      # without opening the log.
+      # THE gate, in two halves. scripts/check-docs.sh drives every project root
+      # and exits non-zero on any undocumented entity in our own sources; then
+      # scripts/check-doc-placement.sh exits non-zero on any doc block attributed
+      # to the wrong declaration, which the gnatdoc run cannot see (--warnings is
+      # per entity, not per declaration). Either failure fails this job and so
+      # skips both platforms' build-test and the prover. Both inventories land in
+      # the job summary, so a failure is readable without opening the log.
       #
       # docs-check's own prerequisite (make prove-deps) does the provisioning:
       # config GPRs, synced deps, and a compile-only gprbuild that creates the
