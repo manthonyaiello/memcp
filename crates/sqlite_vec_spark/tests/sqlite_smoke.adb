@@ -16,10 +16,12 @@ procedure Sqlite_Smoke is
    use type Interfaces.IEEE_Float_64;
    use type Ada.Streams.Stream_Element_Offset;
 
-   --  A 384-float embedding and its byte-identical 1536-byte blob view: the
-   --  packed layout vec0 expects.
    type F32_Array is array (1 .. 384) of Interfaces.IEEE_Float_32;
+   --  A 384-float embedding, the packed layout vec0 expects.
+
    subtype Blob is Ada.Streams.Stream_Element_Array (1 .. 384 * 4);
+   --  The byte-identical 1536-byte view of an F32_Array.
+
    function To_Blob is new Ada.Unchecked_Conversion (F32_Array, Blob);
 
    DB : Database;

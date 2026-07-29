@@ -1,14 +1,4 @@
---  Proven-SPARK wrappers over the SQLite / sqlite-vec C ABI. Every ABI crossing
---  goes through the child Sqlite_Vec_Spark.Bridge; there is no Import here.
---  This body proves each Bridge call's Pre and maps result codes onto Status.
---
---  open_v2 and exec take no length argument, so those wrappers append
---  ASCII.NUL; everywhere else an explicit length is passed and no NUL, so an
---  embedded NUL does not truncate the value. Database and Statement are
---  limited: handle
---  fields are mutated component-wise (DB.Handle := ...), never by whole-record
---  aggregate. Open and Prepare pass the handle component itself as the Bridge
---  `out` parameter; a copy out of a local would be a move.
+--  Proven-SPARK wrappers over the SQLite / sqlite-vec C ABI.
 
 with Interfaces.C;
 with Sqlite_Vec_Spark.Bridge;
@@ -20,20 +10,33 @@ is
    use type Interfaces.C.int;
    use type Interfaces.C.size_t;
 
-   --  SQLite result / type codes we care about (sqlite3.h).
    SQLITE_OK         : constant := 0;
+   --  sqlite3 value signaling the operation succeeded.
+
    SQLITE_BUSY       : constant := 5;
+   --  sqlite3 value signaling the database is locked by another connection.
+
    SQLITE_CONSTRAINT : constant := 19;
+   --  sqlite3 value indicating that a constraint was violated (e.g. UNIQUE,
+   --  NOT NULL).
+
    SQLITE_MISUSE     : constant := 21;
+   --  sqlite3 value indicating that the SQLite API was used incorrectly.
+
    SQLITE_ROW        : constant := 100;
+   --  sqlite3 value indicating that a step produced a result row to read with
+   --  the Column_* functions.
+
    SQLITE_DONE       : constant := 101;
-   SQLITE_NULL_TYPE  : constant := 5;   --  sqlite3_column_type value for NULL
+   --  sqlite3 value indicating that a step reached the end of the result set.
+
+   SQLITE_NULL_TYPE  : constant := 5;
+   --  sqlite3_column_type value for NULL
 
    ----------------------
    -- Local helpers --
    ----------------------
 
-   --  Map a raw SQLite result code onto Status; unrecognized codes are Error.
    function To_Status (Rc : Interfaces.C.int) return Status is
      (case Rc is
          when SQLITE_OK         => Ok,
@@ -43,14 +46,19 @@ is
          when SQLITE_CONSTRAINT => Constraint,
          when SQLITE_MISUSE     => Misuse,
          when others            => Error);
+   --  Map a raw SQLite result code onto Status; unrecognized codes are Error.
 
-   --  Allocate without blank-filling, avoiding a second write of every column
-   --  body: Bridge.Column_Text_Copy overwrites the buffer in full. Sound because
-   --  Column_Text either leaves it empty (Length = 0) or fills it before any
-   --  SPARK code reads it; Global => null claims the allocation is owned by Data.
    procedure Alloc_Uninit (Length : Natural; Data : out Text_Ptr)
      with Post => Data /= null and then Data'Length = Length,
           Global => null, Always_Terminates => True;
+   --  Allocate without blank-filling, avoiding a second write of every column
+   --  body: Bridge.Column_Text_Copy overwrites the buffer in full. Sound
+   --  because Column_Text either leaves it empty (Length = 0) or fills it
+   --  before any SPARK code reads it; Global => null claims the allocation is
+   --  owned by Data.
+   --  @param Length Character count to allocate; may be zero.
+   --  @param Data The fresh allocation, exactly Length characters, whose
+   --    contents are undefined until the caller writes them.
 
    procedure Alloc_Uninit (Length : Natural; Data : out Text_Ptr)
      with SPARK_Mode => Off
@@ -118,8 +126,6 @@ is
    -- Close --
    -----------
 
-   --  Idempotent: the shim tolerates an already-null pointer, and Bridge.Close's
-   --  Post is what leaves DB reclaimed.
    procedure Close (DB : in out Database) is
    begin
       Bridge.Close (DB.Handle);
@@ -286,7 +292,6 @@ is
    -- Finalize --
    --------------
 
-   --  Idempotent, like Close; Bridge.Finalize's Post is the reclamation.
    procedure Finalize (S : in out Statement) is
    begin
       Bridge.Finalize (S.Handle);
@@ -313,10 +318,10 @@ is
    --------------------
 
    function Column_Is_Null (S : Statement; Col : Natural) return Boolean is
-      --  The volatile read is captured into a local; Bridge.Column_Type cannot
-      --  appear as an operand of "=".
       Kind : constant Interfaces.C.int :=
         Bridge.Column_Type (S.Handle, Interfaces.C.int (Col));
+      --  Kind, the volatile read captured into a local: Bridge.Column_Type
+      --  cannot appear as an operand of "=".
    begin
       return Kind = SQLITE_NULL_TYPE;
    end Column_Is_Null;
@@ -328,12 +333,14 @@ is
    function Column_Text (S : Statement; Col : Natural) return Text_Ptr is
       Raw    : constant Interfaces.C.size_t :=
         Bridge.Column_Text_Len (S.Handle, Interfaces.C.int (Col));
-      --  Clamp the size_t to Natural for the allocation: an AoRTE guard for a
-      --  text column larger than Natural'Last (~2 GiB).
+
       Length : constant Natural :=
         (if Raw > Interfaces.C.size_t (Natural'Last)
          then Natural'Last
          else Natural (Raw));
+      --  Length, clamped from size_t to Natural for the allocation: an AoRTE
+      --  guard for a text column larger than Natural'Last (~2 GiB).
+
       Data   : Text_Ptr;
    begin
       Alloc_Uninit (Length, Data);

@@ -6,12 +6,6 @@
 --  work. No schema, record types or application SQL live here. Both C libraries
 --  compile straight into this Ada library; there is no system libsqlite3
 --  dependency.
---
---  Database and Statement are limited and carry Needs_Reclamation: each owns a
---  raw C pointer, so a copy followed by a second Close/Finalize would
---  double-free, and GNATprove requires the handle be released before it is
---  dropped. Index bases follow the C API verbatim -- bind parameter indexes are
---  1-based (sqlite3_bind_*), column indexes 0-based (sqlite3_column_*).
 
 with Ada.Streams;
 with Ada.Unchecked_Deallocation;
@@ -23,40 +17,22 @@ package Sqlite_Vec_Spark
                                                  Async_Readers    => True,
                                                  Effective_Writes => True,
                                                  Effective_Reads  => False)),
+       --  model the SQLite subsystem's state on the far side of the C
+       --  boundary.
        Initializes    => DBMS
 is
 
-   --  DBMS models the SQLite subsystem's state on the far side of the C
-   --  boundary. It is External because a database file has genuine asynchronous
-   --  peers: other processes and connections may read or write it, especially
-   --  under WAL. It refines to null in the body, so the C imports carrying the
-   --  effect live in the child Sqlite_Vec_Spark.Bridge instead.
-   --
-   --  Every mutating operation carries Global => (In_Out => DBMS): one shared
-   --  effect, deliberately, so two statements over the same Database count as
-   --  potentially interfering -- which is what happens when they touch the same
-   --  rows. Is_Open/Is_Valid read only the Ada-side handle and stay pure. The
-   --  value readers (Last_Insert_Rowid, Changes, Column_*) read C-side state
-   --  that moves as the connection or statement is mutated, hence volatile
-   --  functions over DBMS; callers must capture such a call into a local rather
-   --  than nest it in a larger expression. The row-positioning discipline the
-   --  cursor readers rely on is beyond what SPARK can police across the C
-   --  boundary: documented, not proved.
-
-   --  Opaque connection handle over the C `sqlite3*`. The Needs_Reclamation
-   --  obligation rests on the connection pointer itself, so "reclaimed" means
-   --  that pointer was released.
    type Database is limited private
      with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
           Default_Initial_Condition =>
             not Is_Open (Database) and then Is_Reclaimed (Database);
+   --  Opaque database connection handle.
 
-   --  Opaque prepared-statement handle over the C `sqlite3_stmt*`; a valid
-   --  Statement must be Finalize'd before it goes out of scope.
    type Statement is limited private
      with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
           Default_Initial_Condition =>
             not Is_Valid (Statement) and then Is_Reclaimed (Statement);
+   --  Opaque prepared-statement handle.
 
    type Status is (Ok, Error, Row, Done, Busy, Constraint, Misuse);
    --  The subset of SQLite result codes this layer distinguishes; any other
@@ -306,34 +282,12 @@ is
 
 private
 
-   --  An Ownership type requires its private part to be either SPARK_Mode (Off)
-   --  or hidden; hiding it is what keeps the wrapper bodies in SPARK. Clients
-   --  see Database and Statement through Is_Open/Is_Valid and the operation
-   --  contracts.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
+   --  Required for GNATprove Ownership
 
-   --  The two raw SQLite pointers, each an ownership type: this is where the
-   --  crate's resource discipline is anchored. It rests on Bridge.Close's and
-   --  Bridge.Finalize's postconditions, which are checked at run time in the
-   --  -gnata test builds because those shims take the handle by reference and
-   --  null it.
-   --
-   --  Two distinct types, so the C seam in Bridge cannot pass a connection to a
-   --  statement's release operation. Neither is limited: the release operations
-   --  reset a handle by assigning Null_Db_Handle / Null_Stmt_Handle. Ada-level
-   --  copying is blocked one level up, on Database and Statement.
-   --
-   --  Two details of the declaration pattern are load-bearing:
-   --
-   --    * Predefined_Equality "Only_Null" / "Null_Value" licenses exactly the
-   --      comparison this crate makes -- against the reclaimed value -- and
-   --      rejects any other.
-   --
-   --    * The Default_Initial_Condition goes through the ghost Is_Null rather
-   --      than naming Null_Db_Handle directly: a DIC mentioning a deferred
-   --      constant freezes it before the full constant declaration below, which
-   --      is illegal once assertions are enabled. Routing through a function
-   --      whose postcondition names the constant defers the freeze.
+   --  The two raw SQLite pointers, each an ownership type and distinct types,
+   --  so the Bridge cannot pass a connection to a statement's release
+   --  operation or vice versa.
    package Handles is
 
       type Db_Handle is private
@@ -410,22 +364,18 @@ private
 
    use type Handles.Db_Handle;
    use type Handles.Stmt_Handle;
-   --  For the null comparisons in the predicates below.
 
    type Database is limited record
       Handle : Handles.Db_Handle;
       --  The owned sqlite3*; Null_Db_Handle (the default) when not open.
    end record;
-   --  Opaque connection handle over the C sqlite3*, holding the owning handle
-   --  and nothing beside it. A record because only a record can be explicitly
-   --  limited; the Needs_Reclamation obligation is discharged through the
-   --  component, whose own type carries it.
+   --  Opaque database connection handle.
 
    type Statement is limited record
       Handle : Handles.Stmt_Handle;
       --  The owned sqlite3_stmt*; Null_Stmt_Handle (the default) when invalid.
    end record;
-   --  Opaque prepared-statement handle over the C sqlite3_stmt* (see Database).
+   --  Opaque prepared-statement handle.
 
    function Is_Open (DB : Database) return Boolean is
      (DB.Handle /= Handles.Null_Db_Handle);
