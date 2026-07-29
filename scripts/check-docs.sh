@@ -22,9 +22,15 @@
 # STYLE: --style=gnat, i.e. doc comments sit BELOW the declaration they
 # describe, and @param/@return/@enum are mandatory (that is what --warnings
 # checks). There is no GPR attribute for the style, so this script is the
-# durable record of it. A doc block left above its declaration is silently
-# ignored: the entity is reported as undocumented and nothing ever points at
-# the orphaned comment.
+# durable record of it.
+#
+# This gate cannot check PLACEMENT, and must not be read as doing so. A block on
+# the wrong side of a declaration is attributed to the declaration above it, so
+# the entity below reads as undocumented while the entity above silently acquires
+# someone else's description -- and --warnings is per entity, not per
+# declaration, so a misplaced block that happens to satisfy its new owner is
+# invisible here. That is how issue #22's orphaned block survived a clean gate.
+# scripts/check-doc-placement.sh is the source-level lint that does check it.
 #
 # SCOPE: --generate=private, so private-part representations -- which in SPARK
 # carry real design content (full views of the ownership handles, the
@@ -193,15 +199,54 @@ done
 
 # One entity reported by several roots is one piece of work, so dedupe before
 # counting: every auxiliary root re-reports memcp.gpr's whole closure.
-ours="$(grep -E ':[0-9]+:[0-9]+: (warning|error):' "$LOG" \
+#
+# `internal error` belongs in this pattern. gnatdoc writes it, with a traceback,
+# when it gives up on a declaration -- and that is the one severity meaning an
+# entity was neither documented NOR reported, so a pattern matching only
+# warning|error scores a skipped declaration as a clean one. Only the single
+# `internal error:` line per site matches; the `raised ...`, `Load address:` and
+# traceback lines that follow carry no severity word.
+ours="$(grep -E ':[0-9]+:[0-9]+: (warning|error|internal error):' "$LOG" \
         | grep -vE "$NOT_OURS" | sort -u || true)"
+crashes="$(printf '%s\n' "$ours" | grep -E ': internal error:' | sed '/^$/d' || true)"
+ours="$(printf '%s\n' "$ours" | grep -vE ': internal error:' | sed '/^$/d' || true)"
 findings="$(printf '%s\n' "$ours" | grep -vE "$TOOL_LIMITS" | sed '/^$/d' || true)"
 limits="$(printf '%s\n' "$ours" | grep -E "$TOOL_LIMITS" || true)"
+
+# Output that is neither a diagnostic nor framing, so that a tool inventing a new
+# output shape cannot hide behind a pattern written for the old one. 26.0.0
+# prints a bare AST node for a package renaming declaration -- our own
+# `package MS renames Memcp.Store;` among them -- with no file:line prefix, no
+# severity, and no "not documented". The renamed package is never reported
+# either way, so no pattern over diagnostics can reach it; only noticing the
+# unexplained line can.
+unaccounted="$(grep -vE '^(==|[A-Za-z0-9_.-]+:[0-9]+:[0-9]+:|Note:|Success:|error:|warning:)' "$LOG" \
+               | sed '/^$/d' | sort -u || true)"
 
 if [ -n "$limits" ]; then
   echo
   echo "GNATdoc: known tool limitations, not gated (see TOOL_LIMITS in $0):"
   printf '%s\n' "$limits"
+fi
+
+# Not gated: a gnatdoc crash is not fixable from here. Stated every run, because
+# each line is a declaration that silently did NOT reach docs/api/.
+if [ -n "$crashes" ]; then
+  n="$(printf '%s\n' "$crashes" | wc -l | tr -d ' ')"
+  echo
+  echo "GNATdoc: $n declaration(s) CRASHED the tool and were skipped entirely --"
+  echo "not documented, not reported, absent from docs/api/:"
+  printf '%s\n' "$crashes"
+fi
+
+# Not gated either, for the same reason, and equally deliberate: these carry no
+# severity at all, so the findings pattern above is blind to them by construction.
+if [ -n "$unaccounted" ]; then
+  n="$(printf '%s\n' "$unaccounted" | wc -l | tr -d ' ')"
+  echo
+  echo "GNATdoc: $n line(s) of output matching no known diagnostic shape."
+  echo "Each is a declaration the tool neither documented nor reported:"
+  printf '%s\n' "$unaccounted"
 fi
 
 if [ -z "$findings" ]; then
