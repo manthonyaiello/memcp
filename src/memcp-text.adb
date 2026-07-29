@@ -1,3 +1,7 @@
+--  Memcp.Text body: every append tests the cap one character at a time, so a
+--  truncated Add still leaves the builder at exactly Max_Len; Value copies the
+--  vector out into a fresh String.
+
 package body Memcp.Text with SPARK_Mode => On is
 
    -----------
@@ -55,6 +59,7 @@ package body Memcp.Text with SPARK_Mode => On is
 
    function Value (B : Builder) return String is
       Len : constant Natural := Natural (Char_Vectors.Length (B.Chars));
+      --  Length of the result, fixed before the copy loop.
    begin
       return R : String (1 .. Len) do
          for I in 1 .. Len loop

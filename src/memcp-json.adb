@@ -1,3 +1,7 @@
+--  Memcp.Json body: the json crate is instantiated here and nowhere else, and
+--  every value it yields is read through an observer that never leaves this
+--  body.
+
 with Ada.Containers;         use type Ada.Containers.Count_Type;
 with Ada.Strings.Fixed;
 with Ada.Unchecked_Deallocation;
@@ -9,12 +13,6 @@ with Spark_Mcp.Writer;
 
 package body Memcp.Json with SPARK_Mode => On is
 
-   --  Ownership-reclamation discards. Types.Free / Parsers.Destroy release
-   --  owned memory and null their argument; a Parse whose tree is discarded
-   --  keeps only its Status. In each case the reclaimed handle is genuinely not
-   --  read afterwards, so the "set but not used" / "no effect" reports are the
-   --  expected shape of end-of-scope cleanup (mirrors json-spark's own
-   --  suppressions in json-parsers.adb).
    pragma Warnings
      (GNATprove, Off, "statement has no effect",
       Reason => "reclaiming owned memory has no SPARK-modelled effect");
@@ -27,32 +25,34 @@ package body Memcp.Json with SPARK_Mode => On is
    pragma Warnings
      (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
       Reason => "the parser is destroyed after Parse; its post-state is unread");
+   --  The four suppressions above are the shape of end-of-scope reclamation: the
+   --  handle each call nulls is genuinely not read afterwards.
 
-   --  Same value model as Memcp.Envelope: the numeric bounds only limit what the
-   --  tokenizer accepts; tool arguments read strings/ints and re-serialised
-   --  subtrees, so the exact numeric range is immaterial. 64-bit integers cover
-   --  every id/ordinal a tool passes to the Store.
-   --  Standard.JSON, not the bare "JSON": Memcp.Json's own simple name (Json)
-   --  shadows the withed library unit JSON here (Ada's usual rule for a name
-   --  that is both a library unit and, case-insensitively, the current
-   --  package's own identifier), so the reference must be fully qualified.
    package Types is new Standard.JSON.Types
      (Integer_Type => Long_Long_Integer, Float_Type => Long_Float);
+   --  The json value model. Its numeric bounds only limit what the tokenizer
+   --  accepts, and 64-bit integers cover every id and ordinal that reaches the
+   --  Store. Standard.JSON, because this package's own simple name shadows the
+   --  withed library unit JSON.
+
    package Parsers is new Standard.JSON.Parsers
      (Types => Types, Default_Maximum_Depth => 512);
+   --  The parser over that value model, with a nesting cap.
 
    use type Types.Value_Kind;
    use type Types.JSON_Value_Access;
 
-   --  Completion of the Taft-amendment type: the owned value tree. The parser
-   --  is NOT kept -- Parse returns a document independent of the parser (json's
-   --  contract), so Open destroys the parser at once and Impl owns only Root.
    type Impl_Record is record
       Root : Types.JSON_Value_Access;
+      --  The owned value tree.
    end record;
+   --  Completion of the spec's incomplete type. It holds the tree and nothing
+   --  else: Parse returns a document independent of the parser, so Open destroys
+   --  the parser at once.
 
    procedure Free_Impl is
      new Ada.Unchecked_Deallocation (Impl_Record, Impl_Access);
+   --  Reclaim the node itself, once its tree has been freed.
 
    ----------
    -- Open --
@@ -69,19 +69,20 @@ package body Memcp.Json with SPARK_Mode => On is
       end if;
 
       declare
-         --  Parsers.Destroy reclaims P on every path, and json now annotates
-         --  Parser ownership (Post => not Has_Storage) + Always_Terminates, so
-         --  the structural leak analysis discharges cleanly -- no justification.
          P : Parsers.Parser;
+         --  The parser, reclaimed by Parsers.Destroy on every path.
+
          R : aliased Types.JSON_Value_Access;
+         --  The parsed tree: moved into D.Impl when it is an object, freed
+         --  otherwise.
       begin
          Parsers.Create (P, Text);
 
          begin
             Parsers.Parse (P, R);
          exception
-            --  Malformed JSON (Parse_Error): leave the tree null and Valid
-            --  False; the parser is still released.
+            --  Malformed JSON: leave the tree null and Valid False, still
+            --  releasing the parser.
             when Parsers.Parse_Error =>
                Parsers.Destroy (P);
                Types.Free (R);  --  null on the error path (Parse leaves it so)
@@ -122,15 +123,13 @@ package body Memcp.Json with SPARK_Mode => On is
    -- Member --
    ------------
 
-   --  The member for Key, or null when absent / the doc is not a usable object.
-   --  The observer is rooted at the access parameter Impl (json's own idiom),
-   --  so no observe crosses two levels of ownership (SPARK RM 3.10). Every
-   --  public getter reads the returned observer and hands back a plain value,
-   --  so no JSON access type escapes this package.
    function Get_Member
      (Impl : not null access constant Impl_Record; Key : String)
       return access constant Types.JSON_Value
    is
+      --  The member for Key, or null when it is absent or the doc is not a
+      --  usable object. Takes the node as an access parameter rather than the
+      --  Doc, so the observer crosses only one level of ownership.
    begin
       if Impl.Root = null
         or else Types.Kind (Impl.Root) /= Types.Object_Kind
@@ -143,6 +142,9 @@ package body Memcp.Json with SPARK_Mode => On is
    function Member
      (D : Doc; Key : String) return access constant Types.JSON_Value
    is
+      --  The member for Key of an open, valid D; null otherwise. Every public
+      --  getter reads this observer and returns a plain value, so no json access
+      --  type escapes the package.
    begin
       if not D.Is_Valid or else D.Impl = null then
          return null;

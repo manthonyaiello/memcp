@@ -1,3 +1,7 @@
+--  Memcp.Store body: the schema DDL, the prepare/bind/step sequence behind
+--  each operation, and the few helpers that sit outside SPARK (SHA-256 dedup
+--  hash, wall-clock timestamp, raw transcript write).
+
 with Ada.Streams;             use Ada.Streams;
 with Ada.Streams.Stream_IO;
 with Ada.Unchecked_Conversion;
@@ -17,29 +21,35 @@ package body Memcp.Store with SPARK_Mode => On is
    package Sql renames Sqlite_Vec_Spark;
    use type Sql.Status;
 
-   --  Make the arithmetic/relational operators on the vectors' Capacity_Range
-   --  (a subtype of Count_Type) directly visible -- Length/Last_Count compares.
+   --  Operators on the vectors' Capacity_Range, for the Length and Last_Count
+   --  comparisons below.
    use type SPARK.Containers.Types.Count_Type;
 
-   --  Reclaim a remembered DB path (Store.DB_Path) / a transcript-path copy.
    procedure Free_Path is
      new Ada.Unchecked_Deallocation (String, Path_Access);
+   --  Reclaim a remembered database path or transcript-path copy.
 
-   --  Trusted helpers: the spec is SPARK-visible (so their String results may
-   --  flow into proved code) while the body carries SPARK_Mode => Off (SHA-256
-   --  / wall-clock are outside SPARK). Global => null mirrors how the FFI
-   --  imports declare themselves effect-free at the boundary.
    function Dedup_Hash
      (Project, Diary_Body, Summary_Body : String) return String
      with Global => null;
+   --  SHA-256 hex over Project, Diary_Body and Summary_Body, NUL-delimited so
+   --  field boundaries cannot collide ("ab" + "c" against "a" + "bc"). The
+   --  digest is stored, and the conformance corpus holds hashes built this way,
+   --  so the construction is frozen. The body is outside SPARK; Global => null
+   --  is the boundary claim, as on the FFI imports.
 
    function Now_Iso return String with Global => null;
+   --  Wall-clock timestamp as ISO-8601 with the local UTC offset, e.g.
+   --  "2026-07-13T14:12:13-04:00". Sub-second precision is dropped; a caller
+   --  that needs an exact stamp supplies Created_At instead. Body outside
+   --  SPARK, as for Dedup_Hash.
 
-   ------------------------------------------------------------------
-   -- Schema (store.py _SCHEMA + _VEC_SCHEMAS). Applied once by Open --
-   ------------------------------------------------------------------
+   -------------------------------------------
+   --  Schema, applied to every store by Open
+   -------------------------------------------
 
    LF : constant Character := ASCII.LF;
+   --  Statement separator within the DDL below.
 
    Schema_SQL : constant String :=
      "CREATE TABLE IF NOT EXISTS meta ("                              & LF &
@@ -82,21 +92,24 @@ package body Memcp.Store with SPARK_Mode => On is
      "  created_at TEXT NOT NULL);"                                   & LF &
      "CREATE INDEX IF NOT EXISTS idx_chunks_session"                  & LF &
      "  ON chunks(session_row_id);";
+   --  The relational schema: meta, projects, summaries, diary, sessions and
+   --  chunks, with their indexes. Every statement is IF NOT EXISTS, so applying
+   --  it to an existing database is a no-op.
 
    Vec_Summary_SQL : constant String :=
      "CREATE VIRTUAL TABLE IF NOT EXISTS summary_vec"
      & " USING vec0(embedding float[384])";
+   --  The vec0 table holding one embedding per summaries row, keyed by rowid.
+
    Vec_Chunk_SQL   : constant String :=
      "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vec"
      & " USING vec0(embedding float[384])";
+   --  The vec0 table holding one embedding per chunks row, keyed by rowid.
 
    -------------------------------------------------------------
    --  Trusted, non-SPARK helpers (isolated behind SPARK_Mode Off)
    -------------------------------------------------------------
 
-   --  Content hash short-circuiting save() retries. NUL-delimited so field
-   --  boundaries can't collide ("ab"+"c" vs "a"+"bc"); SHA-256 hex so it
-   --  matches store.py byte-for-byte (the conformance seed DBs store these).
    function Dedup_Hash
      (Project, Diary_Body, Summary_Body : String) return String
      with SPARK_Mode => Off
@@ -112,10 +125,6 @@ package body Memcp.Store with SPARK_Mode => On is
       return GNAT.SHA256.Digest (Ctx);
    end Dedup_Hash;
 
-   --  Wall-clock timestamp in ISO-8601 with the local UTC offset, store.py
-   --  _utcnow_iso's shape (e.g. "2026-07-13T14:12:13-04:00"). Sub-second
-   --  precision is dropped -- exactness only matters on the replay path, which
-   --  injects Created_At instead of calling this.
    function Now_Iso return String with SPARK_Mode => Off is
       use Ada.Calendar;
       use Ada.Calendar.Time_Zones;
@@ -131,22 +140,21 @@ package body Memcp.Store with SPARK_Mode => On is
       function D2 (N : Natural) return String is
         [1 => Character'Val (Character'Pos ('0') + N / 10),
          2 => Character'Val (Character'Pos ('0') + N mod 10)];
+      --  N as exactly two decimal digits.
    begin
       Iso (Iso'First + 10) := 'T';
       return Iso & Sign & D2 (HH) & ":" & D2 (MM);
    end Now_Iso;
 
-   ----------------------------------------------------------------
-   --  Raw session-file location + write (store.py _session_path /
-   --  _write_session_file). The write is disk I/O -- SPARK_Mode => Off,
-   --  Global => null at the boundary, exactly like Now_Iso above.
-   ----------------------------------------------------------------
+   ----------------------------------------------
+   --  Raw session-file location and write
+   ----------------------------------------------
 
-   --  Directory portion of Path (everything before the last '/'). Mirrors
-   --  pathlib's `.parent`: "/a/b/x" -> "/a/b", "/x" -> "/", "x" and ":memory:"
-   --  -> "." (no separator). Pure SPARK -- returns a slice, never a
-   --  concatenation, so it cannot overflow.
    function Parent_Dir (Path : String) return String is
+      --  Directory portion of Path, everything before the last '/':
+      --  "/a/b/x" gives "/a/b", "/x" gives "/", and a Path with no separator
+      --  (including ":memory:") gives ".". Always a slice of Path, never a
+      --  concatenation, so it cannot overflow.
    begin
       for I in reverse Path'Range loop
          if Path (I) = '/' then
@@ -160,18 +168,15 @@ package body Memcp.Store with SPARK_Mode => On is
       return ".";
    end Parent_Dir;
 
-   --  Write Content to <Parent>/sessions/<Project>/<Session_Id>.jsonl, creating
-   --  the parent directories first (store.py _session_path +
-   --  _write_session_file). Best-effort: on success Path_Out is an owning copy
-   --  of the path written (the caller stores it in sessions.raw_path, then
-   --  Frees it); any I/O failure leaves Path_Out null and the chunks still
-   --  land. The path is built here, off-SPARK, so its (unbounded) construction
-   --  raises no proof obligation in the caller; Stream_IO writes the exact
-   --  bytes (Character = 1 byte), matching write_text's UTF-8 passthrough.
    procedure Write_Session_File
      (Parent, Project, Session_Id, Content : String;
       Path_Out : out Path_Access)
      with Global => null;
+   --  Write Content to <Parent>/sessions/<Project>/<Session_Id>.jsonl, creating
+   --  the parent directories first. Best-effort: on success Path_Out is an
+   --  owning copy of the path written, for the caller to store and then Free;
+   --  any I/O failure leaves it null. Stream_IO writes the exact bytes, one per
+   --  Character, so UTF-8 content passes through unaltered. Body outside SPARK.
 
    procedure Write_Session_File
      (Parent, Project, Session_Id, Content : String;
@@ -197,29 +202,34 @@ package body Memcp.Store with SPARK_Mode => On is
          Path_Out := null;
    end Write_Session_File;
 
-   -----------------------------------------------------------
-   --  Headline extraction (store.py _parse_headline), pure SPARK
-   -----------------------------------------------------------
+   ------------------------
+   --  Headline extraction
+   ------------------------
 
    function Is_Space (C : Character) return Boolean is
      (C = ' ' or else C = ASCII.HT or else C = ASCII.LF
       or else C = ASCII.CR or else C = ASCII.FF or else C = ASCII.VT);
+   --  Whether C is one of the six ASCII whitespace characters.
 
    Headline_Cap : constant := 100;
+   --  Longest headline derived from a body, in characters.
+
    Prefix       : constant String := "HEADLINE:";
+   --  The marker a body may use to name its own headline.
 
    function To_Upper (C : Character) return Character is
      (if C in 'a' .. 'z'
       then Character'Val (Character'Pos (C) - 32) else C);
+   --  C folded to upper case, ASCII only.
 
-   --  Return the [First, Last] slice bounds of S with leading/trailing
-   --  whitespace removed; First > Last signals an all-blank string.
    procedure Strip_Bounds (S : String; First : out Integer; Last : out Integer)
      with Pre  => S'Last < Integer'Last,
           Post => (First > Last) or else
                     (First in S'Range and then Last in S'Range),
           Always_Terminates
    is
+      --  The [First, Last] slice bounds of S with leading and trailing
+      --  whitespace removed; First > Last signals an all-blank S.
    begin
       First := S'First;
       Last  := S'Last;
@@ -236,13 +246,13 @@ package body Memcp.Store with SPARK_Mode => On is
       end loop;
    end Strip_Bounds;
 
-   --  first_line.upper().startswith("HEADLINE:"). The Post lets a caller that
-   --  gets True conclude S is at least Prefix'Length long (so slicing off the
-   --  prefix cannot overflow or run past the end).
    function Starts_With_Prefix (S : String) return Boolean
      with Pre  => S'Last < Integer'Last,
+          --  On True a caller may slice Prefix off S without a further length
+          --  check of its own.
           Post => (if Starts_With_Prefix'Result then S'Length >= Prefix'Length)
    is
+      --  Whether S begins with Prefix, compared case-insensitively.
    begin
       if S'Length < Prefix'Length then
          return False;
@@ -258,6 +268,9 @@ package body Memcp.Store with SPARK_Mode => On is
    function Parse_Headline (Body_Text : String) return String
      with Pre => Body_Text'Last < Integer'Last
    is
+      --  Headline of a summary body: the remainder of a first line that starts
+      --  with Prefix, else the whole stripped body flattened to one line.
+
       First : Integer;
       Last  : Integer;
    begin
@@ -266,9 +279,9 @@ package body Memcp.Store with SPARK_Mode => On is
          return "";
       end if;
 
-      --  first_line = Body_Text (First .. Line_Last): the stripped body up to
-      --  the first LF (leading whitespace, incl. LF, is already gone, so the
-      --  first line is non-empty: Line_Last >= First).
+      --  The first line is Body_Text (First .. Line_Last), the stripped body up
+      --  to the first LF. Leading whitespace, LF included, is already gone, so
+      --  that line is non-empty.
       declare
          Line_Last : Integer := Last;
       begin
@@ -283,7 +296,7 @@ package body Memcp.Store with SPARK_Mode => On is
          if Line_Last >= First
            and then Starts_With_Prefix (Body_Text (First .. Line_Last))
          then
-            --  Remainder of the first line after "HEADLINE:", stripped.
+            --  Remainder of the first line after Prefix, stripped.
             declare
                RF, RL : Integer;
                Rest   : constant String :=
@@ -298,7 +311,8 @@ package body Memcp.Store with SPARK_Mode => On is
          end if;
       end;
 
-      --  Fallback: whole stripped body, newlines -> spaces, capped at 100.
+      --  Fallback: whole stripped body, newlines to spaces, capped at
+      --  Headline_Cap.
       declare
          Full : String := Body_Text (First .. Last);
          Take : constant Natural :=
@@ -313,12 +327,12 @@ package body Memcp.Store with SPARK_Mode => On is
       end;
    end Parse_Headline;
 
-   --  Autorecap headline: store.py recap_text.strip().replace("\n"," ")[:100]
-   --  -- no HEADLINE: parsing, just the stripped body with newlines flattened
-   --  to spaces, capped at 100 (the fallback branch of Parse_Headline).
    function Recap_Headline (Text : String) return String
      with Pre => Text'Last < Integer'Last
    is
+      --  Headline of an autorecap: Parse_Headline's fallback branch alone, with
+      --  no Prefix parsing.
+
       First : Integer;
       Last  : Integer;
    begin
@@ -339,46 +353,39 @@ package body Memcp.Store with SPARK_Mode => On is
       end;
    end Recap_Headline;
 
-   -----------------------------------------------------------
-   --  Embedding -> packed float32 blob (store.py _pack_embedding)
-   -----------------------------------------------------------
+   --------------------------------------
+   --  Embedding to packed float32 blob
+   --------------------------------------
 
    Blob_Bytes : constant := Embedding_Dim * 4;
-   subtype Packed_Blob is Stream_Element_Array (1 .. Blob_Bytes);
+   --  Size of a packed embedding: four bytes per float32 component.
 
-   --  The Store and the embedder must agree on the dimension, else the copy
-   --  loop below would index past the embedding.
+   subtype Packed_Blob is Stream_Element_Array (1 .. Blob_Bytes);
+   --  One embedding as the bytes sqlite-vec stores in a vec0 column.
+
+   --  The Store and the embedder must agree on the dimension, else the
+   --  conversion below would not be size-exact.
    pragma Compile_Time_Error
      (Embedding_Dim /= Candle_Spark.Dimension,
       "Store embedding dimension disagrees with the embedder");
 
-   --  Zero-copy reinterpretation of the embedding as the packed little-endian
-   --  float32 blob sqlite-vec stores and compares against (the same bytes
-   --  struct.pack('384f', ...) produces on this machine).
-   --
-   --  TODO(embed-blob): the local-subtype dance below is a gnatprove quirk
-   --  workaround, not an idiom -- revisit with the team; there may be a
-   --  cleaner spelling (or it may be worth a gnatprove report).
-   --
-   --  Note the local subtype. gnatprove confirms an unchecked conversion is
-   --  size-exact and suitable only when the type's representation is anchored
-   --  in the current unit; an instance taken *directly* on the withed
-   --  Candle_Spark.Embedding is flagged "size not confirmed / unsuitable
-   --  source", but the identical instance on a locally declared subtype of it
-   --  proves clean. So we anchor it with Store_Embedding. (This holds
-   --  regardless of -u / -U analysis scope.)
    subtype Store_Embedding is Candle_Spark.Embedding;
+   --  Local anchor for To_Blob: gnatprove confirms an unchecked conversion
+   --  size-exact and suitable only when the representation is anchored in the
+   --  current unit, and flags an instance taken directly on
+   --  Candle_Spark.Embedding as "size not confirmed / unsuitable source".
+   --  TODO(embed-blob): a workaround rather than an idiom -- there may be a
+   --  cleaner spelling, or grounds for a gnatprove report.
+
    function To_Blob is new Ada.Unchecked_Conversion
      (Store_Embedding, Packed_Blob);
+   --  Zero-copy reinterpretation of an embedding as the packed little-endian
+   --  float32 blob sqlite-vec stores and compares against.
 
    -------------------
    -- Insert_Chunks --
    -------------------
 
-   --  Insert every Chunk (body + embedding) for one session row -- shared by
-   --  save_session (fresh) and reindex_session (replace). Ordinal is the
-   --  0-based position within Chunks. Runs inside the caller's transaction; Ok
-   --  is False on the first SQLite failure.
    procedure Insert_Chunks
      (S           : Store;
       Session_Row : Row_Id;
@@ -388,6 +395,10 @@ package body Memcp.Store with SPARK_Mode => On is
       Ok          : out Boolean)
      with Pre => Is_Open (S)
    is
+      --  Insert every element of Chunks, body and embedding, against one
+      --  session row: shared by Save_Session and Reindex_Session. Ordinal is
+      --  the 0-based position within Chunks. Runs inside the caller's
+      --  transaction, and Ok is False from the first SQLite failure on.
    begin
       Ok := True;
       for I in Chunk_Input_Vectors.First_Index (Chunks)
@@ -458,28 +469,27 @@ package body Memcp.Store with SPARK_Mode => On is
    -- Small statement helpers --
    ----------------------------
 
-   --  Run a resultless statement (BEGIN/COMMIT/ROLLBACK/simple DML) as a
-   --  whole. Ok when SQLite accepted it.
    procedure Exec (S : Store; Text : String; Ok : out Boolean)
      with Pre => Is_Open (S)
                  and then Text'Length > 0
                  and then Text'Last < Natural'Last
    is
+      --  Run a resultless statement -- BEGIN, COMMIT, ROLLBACK, simple DML --
+      --  as a whole. Ok when SQLite accepted it.
+
       St : Sql.Status;
    begin
       Sql.Execute (S.DB, Text, St);
       Ok := St = Sql.Ok;
    end Exec;
 
-   --  Roll a transaction back, recording the (irrecoverable) failure if the
-   --  ROLLBACK itself does not succeed. Callers reach here only on an error
-   --  path where they can do nothing more than abandon the transaction, so the
-   --  status would otherwise be discarded -- but a failed rollback can leave
-   --  the database mid-transaction, which is exactly the kind of silent fault
-   --  worth surfacing on the diagnostic channel.
    procedure Rollback (S : Store)
      with Pre => Is_Open (S)
    is
+      --  Abandon the current transaction. A ROLLBACK that itself fails can
+      --  leave the database mid-transaction, so it is logged rather than
+      --  discarded: callers reach here with nothing left to try.
+
       Ok : Boolean;
    begin
       Exec (S, "ROLLBACK", Ok);
@@ -490,14 +500,14 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
    end Rollback;
 
-   --  "?,?,...,?" -- the parameter list for an IN clause of K bound values
-   --  (K '?' separated by K-1 ','). K is capped at Max_Filter_Terms by every
-   --  caller, so the length 2*K - 1 and the indices below cannot overflow.
    function Placeholders (K : Positive) return String
      with Pre  => K <= Max_Filter_Terms,
           Post => Placeholders'Result'First = 1
                   and then Placeholders'Result'Length = 2 * K - 1
    is
+      --  "?,?,...,?": the parameter list for an IN clause of K bound values,
+      --  K '?' separated by K - 1 ','.
+
       Buf : String (1 .. 2 * K - 1) := [others => '?'];
    begin
       --  Overwrite the even positions with commas; odd positions stay '?'.
@@ -507,11 +517,10 @@ package body Memcp.Store with SPARK_Mode => On is
       return Buf;
    end Placeholders;
 
-   --  Ada-side membership test for the search metadata filters: is Value one
-   --  of the names in L? A full scan (filter lists are tiny). Iterating
-   --  First_Index .. Last_Index makes Element's index precondition trivial and
-   --  needs no index arithmetic, so it discharges cleanly.
    function Contains (L : Name_List; Value : String) return Boolean is
+      --  Whether Value is one of the names in L, the Ada-side membership test
+      --  for the search metadata filters. A full scan; filter lists are tiny.
+
       Found : Boolean := False;
    begin
       for I in Name_Vectors.First_Index (L) .. Name_Vectors.Last_Index (L) loop
@@ -526,11 +535,13 @@ package body Memcp.Store with SPARK_Mode => On is
    -- Project_Id  --
    -----------------
 
-   --  get-or-insert projects(name) -> id. store.py _project_id.
    procedure Project_Id
      (S : Store; Name : String; Id : out Row_Id; Status : out Op_Status)
      with Pre => Is_Open (S)
    is
+      --  The id of the project named Name, inserting the projects row when it
+      --  does not exist yet.
+
       Stmt : Sql.Statement;
       St   : Sql.Status;
    begin
@@ -582,8 +593,10 @@ package body Memcp.Store with SPARK_Mode => On is
       St : Sql.Status;
       Ok : Boolean;
 
-      --  Assert one meta (key,value): insert if absent, refuse on mismatch.
       procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status) is
+         --  Assert one meta (key, value) pair: insert it when absent, and
+         --  report Meta_Mismatch when the stored value differs.
+
          Stmt : Sql.Statement;
          MSt  : Sql.Status;
       begin
@@ -632,9 +645,10 @@ package body Memcp.Store with SPARK_Mode => On is
       end Assert_Meta;
 
       Dim_Image : constant String := "384";
+      --  Embedding_Dim as the text the embedding_dim meta row carries.
    begin
-      --  Initialize the owning field before S is read anywhere (it is set to
-      --  the real path only once the store is fully Opened, below).
+      --  Initialize the owning field before S is read anywhere; the real path
+      --  goes in only once the store is fully Opened, below.
       S.DB_Path := null;
 
       Sql.Open (S.DB, DB_Path, St);
@@ -667,7 +681,8 @@ package body Memcp.Store with SPARK_Mode => On is
       if Result /= Opened then
          Sql.Close (S.DB);
       else
-         --  Remember the path so save_session can anchor its sessions dir.
+         --  Remember the path so Save_Session can anchor its sessions
+         --  directory on it.
          S.DB_Path := new String'(DB_Path);
       end if;
    end Open;
@@ -690,6 +705,8 @@ package body Memcp.Store with SPARK_Mode => On is
      "SELECT s.id, p.name, s.session_id, s.created_at, s.headline,"
      & " s.body, s.kind FROM summaries s"
      & " JOIN projects p ON p.id = s.project_id WHERE s.id = ?";
+   --  One summaries row by id, with its project name. Also driven per candidate
+   --  by Search_Summaries.
 
    procedure Fetch_Summary
      (S      : Store;
@@ -722,10 +739,10 @@ package body Memcp.Store with SPARK_Mode => On is
             Head : Sql.Text_Ptr := Sql.Column_Text (Stmt, 4);
             Bod  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
             Kind : Sql.Text_Ptr := Sql.Column_Text (Stmt, 6);
-            --  Volatile reads captured into locals: DBMS has Async_Writers, so a
-            --  reader may not appear inside `not` or a record aggregate.
             Null_S : constant Boolean := Sql.Column_Is_Null (Stmt, 2);
             Has_S  : constant Boolean := not Null_S;
+            --  A volatile column read may not be an operand of `not`, nor
+            --  appear in an aggregate; hence the two steps here.
             Id_C   : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
          begin
             Result := new Summary'
@@ -775,8 +792,8 @@ package body Memcp.Store with SPARK_Mode => On is
       Result := Diary_Vectors.Empty_Vector;
       Status := Db_Error;
 
-      --  store.py: no projects -> []. Also refuse an over-long filter rather
-      --  than build an unbounded IN clause (both cases: empty, Success).
+      --  No projects, or a filter too long to spell as a bounded IN clause:
+      --  both return an empty list with Success.
       if Len_CT = 0 or else Len_CT > Max_Filter_Terms then
          Status := Success;
          return;
@@ -799,9 +816,8 @@ package body Memcp.Store with SPARK_Mode => On is
             return;
          end if;
 
-         --  Bind the K project names to params 1 .. K (Index_Type'First is 1,
-         --  so the vector index doubles as the 1-based bind position), then N
-         --  to the LIMIT param at K + 1.
+         --  The K project names go to params 1 .. K, the 1-based vector index
+         --  doubling as the bind position, and N to the LIMIT param at K + 1.
          for I in Name_Vectors.First_Index (Projects)
                   .. Name_Vectors.Last_Index (Projects)
          loop
@@ -817,8 +833,8 @@ package body Memcp.Store with SPARK_Mode => On is
             return;
          end if;
 
-         --  One Diary_Entry per row. The Length guard keeps Append's
-         --  capacity precondition trivially discharged on the path to it.
+         --  One Diary_Entry per row; the Length guard discharges Append's
+         --  capacity precondition.
          loop
             Sql.Step (Stmt, St);
             exit when St /= Sql.Row;
@@ -832,10 +848,10 @@ package body Memcp.Store with SPARK_Mode => On is
                Bod   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
                Head  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 6);
                Kind  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 7);
-               --  Volatile read captured into a local (see the get-summary note):
-               --  a reader may not be an operand of `not`.
                Null_S : constant Boolean := Sql.Column_Is_Null (Stmt, 3);
                Has_S  : constant Boolean := not Null_S;
+               --  Two steps, as in Fetch_Summary: a volatile column read may
+               --  not be an operand of `not`.
             begin
                Diary_Vectors.Append
                  (Result,
@@ -906,10 +922,10 @@ package body Memcp.Store with SPARK_Mode => On is
             Cnt   : constant Row_Id := Sql.Column_Int64 (Stmt, 1);
             Nm    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 0);
             Lat   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 2);
-            --  Volatile read captured into a local (see the get-summary note):
-            --  a reader may not be an operand of `not`.
             Null_L : constant Boolean := Sql.Column_Is_Null (Stmt, 2);
             Has_L  : constant Boolean := not Null_L;
+            --  Two steps, as in Fetch_Summary: a volatile column read may not
+            --  be an operand of `not`.
          begin
             Project_Vectors.Append
               (Result,
@@ -949,45 +965,50 @@ package body Memcp.Store with SPARK_Mode => On is
       Result      : out Chunk_List;
       Status      : out Op_Status)
    is
-      --  Inner SELECT: session_id filter, then whichever optional filters are
-      --  present. Columns are aliased so the tail form can re-order them in an
-      --  outer query (SQLite reverses the DESC+LIMIT window back to ascending,
-      --  so no Ada-side reversal is needed).
       Where_SQL : constant String :=
         " WHERE s.session_id = ?"
         & (if Has_Project then " AND p.name = ?" else "")
         & (if Has_Start then " AND c.ordinal >= ?" else "")
         & (if Has_End then " AND c.ordinal < ?" else "");
+      --  The session_id filter, plus whichever optional filters are present.
+
       Sel : constant String :=
         "SELECT c.id AS id, c.session_row_id AS srid, p.name AS project,"
         & " c.ordinal AS ordinal, c.body AS body, c.created_at AS created_at"
         & " FROM chunks c JOIN projects p ON p.id = c.project_id"
         & " JOIN sessions s ON s.id = c.session_row_id"
         & Where_SQL;
+      --  The inner SELECT. Columns are aliased so the tail form below can name
+      --  them again in an outer query.
+
       Query : constant String :=
         (if Has_Tail
          then "SELECT id, srid, project, ordinal, body, created_at FROM ("
               & Sel & " ORDER BY ordinal DESC LIMIT ?) ORDER BY ordinal ASC"
          else Sel & " ORDER BY ordinal ASC");
+      --  Rows in ascending ordinal either way: the tail form takes the last
+      --  Tail rows with DESC + LIMIT and SQLite re-sorts them ascending, so
+      --  nothing is reversed on the Ada side.
+
       Stmt : Sql.Statement;
       St   : Sql.Status;
       Idx  : Positive := 1;
 
-      --  The bind helpers advance Idx after every bind, including the last;
-      --  that final advance is never read back, which is inherent to the
-      --  running-position idiom rather than a real dead store.
+      --  Inherent to the running-position idiom: the last bind advances Idx
+      --  too, and no one reads it back.
       pragma Warnings
         (GNATprove, Off, "unused assignment",
          Reason => "the final Idx advance in a bind helper is never read");
 
-      --  Bind Value at the running parameter position, then advance it.
       procedure Bind_Str (Value : String) is
+         --  Bind Value as text at the running parameter position, then advance.
       begin
          Sql.Bind_Text (Stmt, Idx, Value, St);
          Idx := Idx + 1;
       end Bind_Str;
 
       procedure Bind_Num (Value : Row_Id) is
+         --  Bind Value as an integer at the running position, then advance.
       begin
          Sql.Bind_Int64 (Stmt, Idx, Value, St);
          Idx := Idx + 1;
@@ -1108,9 +1129,8 @@ package body Memcp.Store with SPARK_Mode => On is
          return;
       end if;
 
-      --  One prepared per-row fetch, reused across candidates: the filtered
-      --  over-fetch can be Lim*5, so recompiling Fetch_Summary_SQL per row is a
-      --  needless recompile. Reset + rebind between rows instead.
+      --  One prepared per-row fetch, reset and rebound between candidates: the
+      --  filtered over-fetch runs to Lim * 5 rows.
       declare
          M   : Sql.Statement;
          MSt : Sql.Status;
@@ -1147,10 +1167,10 @@ package body Memcp.Store with SPARK_Mode => On is
                      Head  : Sql.Text_Ptr := Sql.Column_Text (M, 4);
                      Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 5);
                      Kind  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
-                     --  Volatile read captured into a local (see the get-summary
-                     --  note): a reader may not be an operand of `not`.
                      Null_S : constant Boolean := Sql.Column_Is_Null (M, 2);
                      Has_S  : constant Boolean := not Null_S;
+                     --  Two steps, as in Fetch_Summary: a volatile column read
+                     --  may not be an operand of `not`.
                      Passes : constant Boolean :=
                        (Len_P = 0 or else Contains (Projects, Proj.all))
                        and then (not Has_Since or else Crea.all >= Since)
@@ -1196,9 +1216,9 @@ package body Memcp.Store with SPARK_Mode => On is
       end;
 
       Sql.Finalize (K1);
-      --  St = Done means the candidate set was exhausted; St = Row means we
-      --  stopped early with enough hits (Count = Lim) or at capacity. Both are
-      --  success -- only a genuine Step error (any other code) is a failure.
+      --  Done means the candidates were exhausted, Row that the loop stopped
+      --  early with enough hits or at capacity: both are success, and any other
+      --  Step code is a failure.
       if not Failed and then (St = Sql.Done or else St = Sql.Row) then
          Status := Success;
       end if;
@@ -1213,6 +1233,7 @@ package body Memcp.Store with SPARK_Mode => On is
      & " c.created_at, s.session_id FROM chunks c"
      & " JOIN projects p ON p.id = c.project_id"
      & " JOIN sessions s ON s.id = c.session_row_id WHERE c.id = ?";
+   --  One chunks row by id, with its project and session ids.
 
    procedure Search_Chunks
      (S           : Store;
@@ -1268,9 +1289,8 @@ package body Memcp.Store with SPARK_Mode => On is
          return;
       end if;
 
-      --  One prepared per-row fetch, reused across candidates (see
-      --  Search_Summaries): reset + rebind between rows rather than recompiling
-      --  Chunk_By_Id_SQL once per candidate.
+      --  One prepared per-row fetch, reset and rebound between candidates, as
+      --  in Search_Summaries.
       declare
          M   : Sql.Statement;
          MSt : Sql.Status;
@@ -1349,8 +1369,8 @@ package body Memcp.Store with SPARK_Mode => On is
       end;
 
       Sql.Finalize (K1);
-      --  As Search_Summaries: Row (stopped early) and Done (exhausted) are
-      --  both success; any other Step code is a failure.
+      --  As in Search_Summaries: Row (stopped early) and Done (exhausted) are
+      --  both success, and any other Step code is a failure.
       if not Failed and then (St = Sql.Done or else St = Sql.Row) then
          Status := Success;
       end if;
@@ -1473,9 +1493,11 @@ package body Memcp.Store with SPARK_Mode => On is
       DH      : constant String := Dedup_Hash (Project, Diary_Body, Summary_Body);
       Blob    : constant Packed_Blob := To_Blob (Embedding);
 
-      --  Insert the summary_vec row for Row (delete-then-insert form so it
-      --  works for both fresh insert and in-place replace).
       procedure Put_Vec (Row : Row_Id; Ok : out Boolean) is
+         --  Attach this call's embedding to summaries row Row.
+         --  Delete-then-insert, so it serves both a fresh insert and an
+         --  in-place replace.
+
          Vs : Sql.Statement;
          St : Sql.Status;
       begin
@@ -1838,8 +1860,8 @@ package body Memcp.Store with SPARK_Mode => On is
          end if;
 
          if Found then
-            --  Return the existing row's id + current chunk count, insert
-            --  nothing (store.py counts the existing chunk ids).
+            --  Return the existing row's id and its current chunk count,
+            --  inserting nothing.
             declare
                C   : Sql.Statement;
                CSt : Sql.Status;
@@ -1881,9 +1903,9 @@ package body Memcp.Store with SPARK_Mode => On is
          Step_Ok   : Boolean;
          Chunks_Ok : Boolean := False;
       begin
-         --  A ":memory:" store has no on-disk parent; skip it (store.py notes
-         --  no :memory: test writes sessions). Otherwise the write is
-         --  best-effort: Raw_Path stays null on any I/O failure.
+         --  A ":memory:" store has no on-disk parent, so skip the transcript
+         --  entirely. Otherwise the write is best-effort: Raw_Path stays null
+         --  on any I/O failure and the chunks still land.
          if S.DB_Path /= null and then S.DB_Path.all /= ":memory:" then
             Write_Session_File
               (Parent_Dir (S.DB_Path.all), Project, Session_Id, Transcript,
@@ -1978,7 +2000,7 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
       Status := Db_Error;
 
-      --  Short-circuit: any existing Header for (project, session) wins.
+      --  Short-circuit: any existing summary for (project, session) wins.
       declare
          Q     : Sql.Statement;
          St    : Sql.Status;
@@ -2003,8 +2025,8 @@ package body Memcp.Store with SPARK_Mode => On is
             return;
          end if;
          if Found then
-            --  store.py returns None: leave Written False, but this is a
-            --  successful (non-error) outcome.
+            --  Leave Written False: declining to write is a successful outcome,
+            --  not an error.
             Status := Success;
             return;
          end if;
@@ -2178,7 +2200,7 @@ package body Memcp.Store with SPARK_Mode => On is
          if St /= Sql.Row and then St /= Sql.Done then
             null;  --  DB error: Status stays Db_Error
          elsif not Have then
-            Status := Success;   --  no such session (store.py None)
+            Status := Success;   --  no such session
          else
             --  Replace the chunks in one transaction: delete each old chunk's
             --  embedding (vec0 has no FK cascade), bulk-delete the chunk rows,

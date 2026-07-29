@@ -1,10 +1,8 @@
 with Ada.Environment_Variables;
 
---  Trusted body: Ada.Environment_Variables has no SPARK contracts, so this
---  body is out of SPARK_Mode and the Environment abstract state is the model
---  of the process environment it reads. The spec's Input => Environment
---  contract is what callers see; correctness of the two one-line forwarders is
---  by inspection.
+--  Memcp.Env body: two forwarders to Ada.Environment_Variables. Out of
+--  SPARK_Mode because that unit carries no contracts, so the spec's
+--  Input => Environment is trusted here and correct by inspection.
 package body Memcp.Env with SPARK_Mode => Off is
 
    function Exists (Name : String) return Boolean is

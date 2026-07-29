@@ -1,19 +1,7 @@
---  memcp's concrete tool set: the 9 tools, as the enumeration + accessors that
---  instantiate the generic Spark_Mcp.Server. This is the ONLY place the memcp
---  surface is named -- spark_mcp stays a reusable, coupling-free MCP library.
---
---  Wire names and behaviour mirror src/memcp/server.py 1:1.
---
---  Like Memcp.Envelope (the inbound half of the json marshalling), this unit is
---  trusted composition-root glue -- not in SPARK_Mode. It parses each tool's
---  `arguments` and renders each result with Memcp.Json, and runs the request
---  against a Memcp.Resources object; the verified surface is the units it
---  stands on (Memcp.Store Silver, json Silver, Spark_Mcp.Writer Silver). Invoke
---  takes the Resources as its first parameter: the generic seam
---  (Id/Arguments/Result) has nowhere to pass it, so the composition root wraps
---  Invoke in a nested adapter that closes over its Resources object and forwards
---  here (see memcp.adb). That keeps the owned Store/Embedder a tracked local
---  rather than hidden package state.
+--  memcp's concrete tool set: the tool enumeration, the three accessors that
+--  instantiate the generic Spark_Mcp.Server, and the Invoke that runs one tool
+--  against a Memcp.Resources object. Each tool parses its own `arguments` with
+--  Memcp.Json and renders its reply as JSON text.
 
 with Spark_Mcp.Tools;
 with Memcp.Resources;
@@ -30,8 +18,8 @@ package Memcp.Tools with SPARK_Mode => On is
       Upload_Session,  --  Persist a session transcript plus embeddable chunks.
       Fetch_Chunks,    --  Semantic search over session chunks (the Details).
       Fetch_Turns);    --  Fetch verbatim conversation turns by position.
-   --  The 9 tools (server.py). Enumeration literals ARE the identifiers; the
-   --  wire names (lowercase) come from Name below.
+   --  memcp's tool set. The enumeration literals are the identifiers; the
+   --  lowercase wire names come from Name below.
 
    function Name (Id : Tool_Id) return String is
      (case Id is
@@ -44,12 +32,10 @@ package Memcp.Tools with SPARK_Mode => On is
          when Upload_Session => "upload_session",
          when Fetch_Chunks   => "fetch_chunks",
          when Fetch_Turns    => "fetch_turns");
-   --  The wire name (lowercase) of a tool.
-   --  Expression functions IN THE SPEC (not the body): the generic Server's
-   --  tools/list length-bound proof runs at the instantiation in memcp.adb and
-   --  can only see each result's length if these are inlinable there -- which a
-   --  body expression function, invisible cross-unit, is not. Mirrors how
-   --  spark_mcp's own proof harness declares its accessors.
+   --  The wire name (lowercase) of a tool. An expression function in the spec
+   --  rather than the body: the generic Server's tools/list length bound is
+   --  proved at the instantiation, which can only see each result's length if
+   --  these accessors are inlinable there.
    --  @param Id The tool whose wire name is requested.
    --  @return The lowercase wire name of the tool.
 
@@ -86,8 +72,8 @@ package Memcp.Tools with SPARK_Mode => On is
             "Fetch verbatim conversation turns by position -- NOT "
               & "semantic search. last=N for the final N turns; start/end for a "
               & "half-open [start,end) slice; neither for the whole session.");
-   --  The human-readable description of a tool (server.py 1:1), shown in
-   --  the tools/list listing.
+   --  The human-readable description of a tool, shown in the tools/list
+   --  listing.
    --  @param Id The tool whose description is requested.
    --  @return The description text for the tool.
 
@@ -148,7 +134,7 @@ package Memcp.Tools with SPARK_Mode => On is
               & """start"":{""type"":""integer""},"
               & """end"":{""type"":""integer""}},"
               & """required"":[""session_id""]}");
-   --  The JSON Schema for a tool's `arguments` object (server.py 1:1).
+   --  The JSON Schema for a tool's `arguments` object.
    --  @param Id The tool whose input schema is requested.
    --  @return The JSON Schema text describing the tool's arguments.
 
@@ -158,35 +144,25 @@ package Memcp.Tools with SPARK_Mode => On is
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
    with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
-   --  Run tool Id against the Resources R and render its reply. R is observed
-   --  (an `in` parameter); a mutating tool (save/forget/upload_session) mutates
-   --  the SQLite subsystem (DBMS), not R. Not the generic actual itself -- the
-   --  composition root passes a 3-argument adapter that closes over R and calls
-   --  here (see the seam note above).
-   --  `Arguments` is the request's params.arguments as raw JSON text ("{}" if
-   --  none). Each tool parses the fields it needs with memcp's own JSON
-   --  instantiation (Memcp.Json) -- spark_mcp itself stays json-free -- runs the
-   --  request against the Memcp.Resources Store/Embedder, and renders the reply.
-   --
-   --  A procedure handing out an ownership allocation (Spark_Mcp.Tools.
-   --  Result_Ptr): the reshaped seam that lets a real tool mutate the Store
-   --  (save/forget) -- a SPARK function cannot have side effects. The Max_Field
-   --  precondition mirrors the generic formal's contract, so a tool may build a
-   --  result straight from Arguments and still uphold the Len <= Max_Field
-   --  predicate on Invocation_Result.
+   --  Run tool Id against the Resources R and render its reply. `Arguments` is
+   --  the request's params.arguments as raw JSON text ("{}" when the client
+   --  sent none), which each tool parses itself; the Max_Field precondition is
+   --  what lets a tool build a result straight from Arguments and still uphold
+   --  Invocation_Result's Len bound. R is observed -- a mutating tool (save,
+   --  forget, upload_session) mutates the SQLite subsystem, not R.
    --  @param R The resources (open Store, maybe-loaded Embedder) to run against.
    --  @param Id The tool to invoke.
    --  @param Arguments The request's params.arguments as raw JSON text.
    --  @param Result Out; the freshly allocated invocation result to hand back.
 
    Instructions : constant String;
-   --  Surfaced to the client on initialize (server.py INSTRUCTIONS): the
-   --  retrieval ladder (Header -> Summary -> Details) the model follows.
+   --  Surfaced to the client on initialize: the retrieval ladder
+   --  (Header -> Summary -> Details) the model follows.
 
 private
 
    LF : constant Character := Character'Val (10);
-   --  ASCII line feed, used to build the multi-line Instructions text below.
+   --  ASCII line feed, for the multi-line Instructions text below.
 
    Instructions : constant String :=
      "memcp: progressive-disclosure project memory" & LF
@@ -234,8 +210,6 @@ private
      & "Saves are session-scoped: a later save() in the same session replaces the"
      & LF
      & "prior one in place, so it is safe to save early and re-save as more lands.";
-   --  Completion of Instructions: the full initialize-time instruction text
-   --  (server.py INSTRUCTIONS), describing the Header -> Summary -> Details
-   --  retrieval ladder, effective use, and the save() contract.
+   --  Completion of Instructions: the initialize-time instruction text.
 
 end Memcp.Tools;

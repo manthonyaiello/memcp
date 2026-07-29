@@ -1,15 +1,11 @@
---  memcp's concrete tool set: each Invoke branch parses its arguments with
---  Memcp.Json, runs the request against the Memcp.Resources object passed in,
---  and renders the reply as JSON text matching the matching @mcp.tool in
---  server.py.
+--  Memcp.Tools body: one Do_* procedure per tool, each parsing its `arguments`
+--  with Memcp.Json, running the request against the Memcp.Resources object
+--  passed in, and rendering the reply as JSON text.
 --
---  SPARK_Mode On. It is pure marshalling: it holds no state (the Store/Embedder
---  live in the Resources object, reached through its total operations),
---  builds every result through the bounded Memcp.Text builder (so the response
---  layer's Max_Field budget holds by construction), and provably never raises
---  -- so no exception handler is needed and Dispatch's "never raises" contract
---  is a theorem, not folklore. The Doc parsed from `arguments` is the one owning
---  object; it is Closed on every path.
+--  Pure marshalling: it holds no state, builds every result through the bounded
+--  Memcp.Text builder so the Max_Field budget holds by construction, and never
+--  raises. The Doc parsed from `arguments` is the one owning object, Closed on
+--  every path.
 
 with Ada.Containers;         use type Ada.Containers.Count_Type;
 
@@ -27,21 +23,19 @@ with Memcp.Text;
 
 package body Memcp.Tools with SPARK_Mode => On is
 
-   --  Each tool Closes the Doc it parsed from `arguments` on every path; the
-   --  Doc is an ownership handle nulled by Close and never read afterwards, so
-   --  the "set by Close" / "no effect" reports are the expected shape of that
-   --  end-of-scope cleanup.
    pragma Warnings
      (GNATprove, Off, "statement has no effect",
       Reason => "Closing the parsed Doc reclaims owned memory; no SPARK effect");
    pragma Warnings
      (GNATprove, Off, "*is set by ""Close"" but not used after the call",
       Reason => "the Doc is nulled by Close and never read afterwards");
-   --  The upload autorecap path needs only Save_Autorecap's Summary_Id (for the
-   --  recap line); the parallel Diary_Id is a valid output this caller ignores.
+   --  Both reports are the shape of the end-of-scope Doc cleanup: the handle is
+   --  nulled by Close and never read again.
+
    pragma Warnings
      (GNATprove, Off, "*is set by ""Save_Autorecap"" but not used after the call",
       Reason => "this caller uses only Summary_Id, not the parallel Diary_Id");
+   --  The autorecap path needs only Summary_Id, for the recap line.
 
    package MS renames Memcp.Store;
    package MJ renames Memcp.Json;
@@ -50,19 +44,25 @@ package body Memcp.Tools with SPARK_Mode => On is
    use type MS.Summary_Ptr;
 
    function Q (S : String) return String renames MJ.Q;
+   --  A complete JSON string literal for S, escaped and quoted.
+
    function N (V : Interfaces.Integer_64) return String renames MJ.N;
+   --  A JSON integer literal for V, with no leading blank.
+
    function F (V : Interfaces.IEEE_Float_64) return String renames MJ.F;
+   --  A JSON number literal for V, with no leading blank.
 
    subtype Result_Ptr is Spark_Mcp.Tools.Result_Ptr;
+   --  The ownership allocation a tool hands its outcome back through.
 
    ----------------------
    -- Result builders  --
    ----------------------
 
-   --  Success/Failure ownership allocations. OK guards Max_Field so a
-   --  pathologically large payload degrades to an Internal_Error rather than
-   --  tripping the Invocation_Result predicate.
    function OK (Content : String) return Result_Ptr is
+      --  A success result carrying Content, degrading to an Internal_Error when
+      --  Content exceeds Max_Field rather than tripping the Invocation_Result
+      --  predicate.
    begin
       if Content'Length > Spark_Mcp.Max_Field then
          return new Spark_Mcp.Tools.Invocation_Result'
@@ -72,13 +72,10 @@ package body Memcp.Tools with SPARK_Mode => On is
         (Spark_Mcp.Tools.Success (Content));
    end OK;
 
-   --  The builder-fed overload: a serializer that overflowed the field budget
-   --  truncated its JSON at the cap, so its Value is malformed. Consulting
-   --  Overflowed is the ONLY reliable signal -- Value'Length is bounded by
-   --  Max_Field by construction (Memcp.Text.Length's postcondition), so a
-   --  length check can never catch a payload truncated exactly at the cap.
-   --  Emitting truncated JSON as a Success is the bug this overload closes.
    function OK (Buf : Memcp.Text.Builder) return Result_Ptr is
+      --  A success result carrying Buf's text, or an Internal_Error when Buf
+      --  overflowed. Overflowed is the only reliable signal: a builder truncates
+      --  at the cap, so its Value is malformed and still within Max_Field.
    begin
       if Memcp.Text.Overflowed (Buf) then
          return new Spark_Mcp.Tools.Invocation_Result'
@@ -92,57 +89,57 @@ package body Memcp.Tools with SPARK_Mode => On is
      (new Spark_Mcp.Tools.Invocation_Result'
         (Spark_Mcp.Tools.Failure
            (Code, (if Msg'Length > Spark_Mcp.Max_Field then "error" else Msg))));
+   --  A failure result carrying Code and Msg, or a bare "error" message when
+   --  Msg exceeds Max_Field.
 
-   --  A JSON boolean literal.
    function B (V : Boolean) return String is (if V then "true" else "false");
+   --  A JSON boolean literal.
 
-   --  Clamp a JSON integer to a Natural count (negatives -> 0).
    function To_Nat (V : Interfaces.Integer_64) return Natural is
      (if V <= 0 then 0
       elsif V >= Interfaces.Integer_64 (Natural'Last) then Natural'Last
       else Natural (V));
+   --  A JSON integer clamped to a Natural count; negatives become 0.
 
-   --  True once the Resources' Store is open; every tool needs it.
    function Ready (R : MR.Resources) return Boolean is (MR.Is_Open (R));
+   --  True once R's Store is open, which every tool needs.
 
-   --  A character Python's str.strip() treats as whitespace (ASCII subset:
-   --  space plus HT/LF/VT/FF/CR).
    function Is_Space (C : Character) return Boolean is
      (C = ' ' or else C in ASCII.HT .. ASCII.CR);
+   --  True for ASCII whitespace: space plus HT, LF, VT, FF and CR.
 
-   --  True when S is empty or entirely whitespace -- i.e. Python's
-   --  `not (v and v.strip())`. save() uses this so a tab/newline-only diary or
-   --  summary is rejected; Ada.Strings.Fixed.Trim strips only spaces and would
-   --  let it through.
    function Blank (S : String) return Boolean is
      (for all I in S'Range => Is_Space (S (I)));
+   --  True when S is empty or entirely whitespace, so that save rejects a
+   --  tab-or-newline-only diary or summary that Trim would let through.
 
-   --  A pragmatic ISO-8601 check mirroring datetime.fromisoformat for the
-   --  timestamps this server stores: a YYYY-MM-DD date, optionally followed by
-   --  a 'T'/' ' separator and an HH:MM[...] time. A malformed since/until is
-   --  rejected with invalid-params rather than silently mis-filtering the
-   --  store's lexical created_at comparison (server.py raises ValueError here).
    function Valid_Timestamp (S : String) return Boolean is
+      --  A pragmatic ISO-8601 check: a YYYY-MM-DD date, optionally followed by
+      --  a 'T' or ' ' separator and an HH:MM[...] time. A malformed
+      --  since/until is rejected as invalid-params rather than silently
+      --  mis-filtering the store's lexical created_at comparison.
+
       Len : constant Natural := S'Length;
 
-      --  The 1-based Pth character of S, or NUL past the end.
       function At_Pos (P : Positive) return Character is
         (if P <= Len then S (S'First + (P - 1)) else ASCII.NUL);
+      --  The 1-based Pth character of S, or NUL past the end.
 
       function Is_Digit (P : Positive) return Boolean is
         (At_Pos (P) in '0' .. '9');
+      --  True when the 1-based Pth character of S is a decimal digit.
 
-      --  The two-digit field at P, P+1 as a number, or -1 if not two digits.
-      --  Only ever called with small literal positions; the bound keeps the
-      --  P + 1 arithmetic overflow-free.
       function Two (P : Positive) return Integer is
         (if Is_Digit (P) and then Is_Digit (P + 1)
          then (Character'Pos (At_Pos (P)) - Character'Pos ('0')) * 10
               + (Character'Pos (At_Pos (P + 1)) - Character'Pos ('0'))
          else -1)
         with Pre => P < Positive'Last;
+      --  The two-digit field at P and P + 1 as a number, or -1 when either
+      --  position does not hold a digit.
 
       Mon, Day, Hr, Mn : Integer;
+      --  The parsed month, day, hour and minute; -1 when malformed.
    begin
       --  Date: YYYY-MM-DD, at least 10 characters.
       if Len < 10 then
@@ -179,9 +176,9 @@ package body Memcp.Tools with SPARK_Mode => On is
          return False;
       end if;
 
-      --  Anything after HH:MM (seconds, fraction, timezone) must come from the
-      --  ISO time/offset alphabet -- enough to reject garbage without
-      --  re-deriving the full grammar.
+      --  Anything after HH:MM -- seconds, fraction, timezone -- must come from
+      --  the ISO time/offset alphabet: enough to reject garbage without the
+      --  full grammar.
       for P in Positive range 17 .. Len loop
          if At_Pos (P) not in '0' .. '9'
            and then At_Pos (P) /= ':'
@@ -200,48 +197,44 @@ package body Memcp.Tools with SPARK_Mode => On is
    -- save leaked-parameter salvage --
    -------------------------------------
 
-   --  Port of server.py's _salvage_leaked_params. When a model emits a save()
-   --  whose diary or summary value has swallowed its sibling parameter across a
-   --  leaked tag boundary -- ...real</parameter><parameter name="diary">... --
-   --  split it back apart and save, rather than reject the whole call. A save is
-   --  usually the terminal turn of a session, so rejecting a leaked save (as the
-   --  strict path would) can lose the memory with no retry turn left.
-   --
-   --  SPARK has no regex, so this is a narrow literal-boundary scanner matching
-   --  the concrete leak shape, case-insensitively:
+   --  A model sometimes emits a save() whose diary or summary value has
+   --  swallowed its sibling across a leaked tag boundary --
+   --  ...real</parameter><parameter name="diary">... -- and a save is usually a
+   --  session's terminal turn, so splitting the value back apart beats
+   --  rejecting the call and losing the memory with no retry turn left. The
+   --  scanner below matches that one shape, case-insensitively:
    --    </parameter|summary|diary>        (whitespace tolerated before '>')
    --    <parameter name="summary|diary">   (either quote; whitespace tolerated
    --                                        between tags, around name and '=')
-   --  A leading `ns:`-style namespace prefix on either tag name is tolerated,
-   --  matching server.py's _LEAK_BOUNDARY/_TRAILING_CLOSE `(?:[A-Za-z][\w.\-]*:)?`.
+   --  with an optional `ns:`-style namespace prefix on either tag name.
 
-   --  ASCII case-fold, so tag matching ignores case like Python's re.IGNORECASE.
    function Lower (C : Character) return Character is
      (if C in 'A' .. 'Z'
       then Character'Val (Character'Pos (C) + 32) else C);
+   --  C folded to lower case over ASCII, so tag matching ignores case.
 
-   --  True when the already-lowercase literal Lit occurs in S at index I,
-   --  case-folded and wholly in bounds. The length guard makes the per-char
-   --  index arithmetic range- and overflow-safe.
    function Lit_At (S : String; I : Positive; Lit : String) return Boolean is
      (I in S'Range
       and then Lit'Length <= S'Last - I + 1
       and then (for all K in Lit'Range =>
                   Lower (S (I + (K - Lit'First))) = Lit (K)));
+   --  True when the already-lowercase literal Lit occurs in S at index I,
+   --  case-folded and wholly in bounds.
 
-   --  The index just past E, or 0 when E is the last character (an end
-   --  sentinel that keeps every cursor a valid index and never forms S'Last+1).
    function After (S : String; E : Positive) return Natural is
      (if E < S'Last then E + 1 else 0)
      with Pre  => E in S'Range,
           Post => After'Result = 0 or else After'Result in S'Range;
+   --  The index just past E, or 0 when E is the last character: an end sentinel
+   --  that keeps every cursor a valid index and never forms S'Last + 1.
 
-   --  First non-whitespace index at or after From, or 0 if the run reaches the
-   --  end of S.
    function Skip_Ws (S : String; From : Positive) return Natural
      with Pre  => From in S'Range,
           Post => Skip_Ws'Result = 0
                   or else Skip_Ws'Result in From .. S'Last;
+   --  First non-whitespace index at or after From, or 0 when the run reaches
+   --  the end of S.
+
    function Skip_Ws (S : String; From : Positive) return Natural is
    begin
       for J in From .. S'Last loop
@@ -252,15 +245,14 @@ package body Memcp.Tools with SPARK_Mode => On is
       return 0;
    end Skip_Ws;
 
-   --  Skip an optional `ns:`-style namespace prefix at P -- Python's
-   --  `(?:[A-Za-z][\w.\-]*:)?`, i.e. a letter, then name characters, then a
-   --  colon. Returns the index of the first tag-name character (= P when there
-   --  is no prefix), or 0 if such a prefix runs to the end of S with nothing
-   --  after it.
    function Skip_Prefix (S : String; P : Positive) return Natural
      with Pre  => P in S'Range,
           Post => Skip_Prefix'Result = 0
                   or else Skip_Prefix'Result in S'Range;
+   --  Index of the first tag-name character at P, skipping an optional `ns:`
+   --  prefix -- a letter, then name characters, then a colon. P itself when
+   --  there is no prefix; 0 when the prefix runs to the end of S.
+
    function Skip_Prefix (S : String; P : Positive) return Natural is
       R : Positive := P;
    begin
@@ -283,14 +275,14 @@ package body Memcp.Tools with SPARK_Mode => On is
       return P;   --  no terminating colon: not a prefix, name starts at P
    end Skip_Prefix;
 
-   --  At P, skip an optional namespace prefix, then match a close-tag name
-   --  (parameter|summary|diary) case-folded. Returns the index of the name's
-   --  last character, or 0 on no match. Shared by Try_At and Clean so the tag
-   --  vocabulary lives in one place.
    function Match_Tag_Name (S : String; P : Positive) return Natural
      with Pre  => P in S'Range,
           Post => Match_Tag_Name'Result = 0
                   or else Match_Tag_Name'Result in S'Range;
+   --  Index of the last character of the close-tag name at P -- parameter,
+   --  summary or diary, case-folded, after an optional namespace prefix -- or 0
+   --  on no match. The one place the tag vocabulary is spelled out.
+
    function Match_Tag_Name (S : String; P : Positive) return Natural is
       Q : constant Natural := Skip_Prefix (S, P);
    begin
@@ -307,10 +299,6 @@ package body Memcp.Tools with SPARK_Mode => On is
       end if;
    end Match_Tag_Name;
 
-   --  Scan S for the first leak boundary. On Found, S (B_Start .. B_End) is the
-   --  matched boundary and Sib_Is_Diary tells which sibling the open tag named
-   --  (True => "diary", False => "summary"); B_Start/B_End are placeholders
-   --  otherwise.
    procedure Find_Leak_Boundary
      (S            : String;
       Found        : out Boolean;
@@ -318,6 +306,10 @@ package body Memcp.Tools with SPARK_Mode => On is
       B_End        : out Positive;
       Sib_Is_Diary : out Boolean)
    with Post => (if Found then B_Start in S'Range and then B_End in S'Range);
+   --  Scan S for the first leak boundary. On Found, S (B_Start .. B_End) is the
+   --  matched boundary and Sib_Is_Diary says which sibling the open tag named
+   --  (True => "diary", False => "summary"); B_Start and B_End are placeholders
+   --  otherwise.
 
    procedure Find_Leak_Boundary
      (S            : String;
@@ -326,8 +318,6 @@ package body Memcp.Tools with SPARK_Mode => On is
       B_End        : out Positive;
       Sib_Is_Diary : out Boolean)
    is
-      --  Try to match a boundary starting at I. On Ok, E is the index of the
-      --  closing '>' of the open tag and Diar reports the named sibling.
       procedure Try_At
         (I    : Positive;
          Ok   : out Boolean;
@@ -335,6 +325,8 @@ package body Memcp.Tools with SPARK_Mode => On is
          Diar : out Boolean)
       with Pre  => I in S'Range,
            Post => (if Ok then E in S'Range);
+      --  Try to match a boundary starting at I. On Ok, E is the index of the
+      --  closing '>' of the open tag and Diar reports the named sibling.
 
       procedure Try_At
         (I    : Positive;
@@ -346,12 +338,14 @@ package body Memcp.Tools with SPARK_Mode => On is
          Quote : Character;
          Adv   : Boolean;
 
-         --  Advance P over whitespace to the next non-ws char. Adv is False
-         --  (caller bails) when the run reaches the end of S.
          procedure Skip_Blanks (P : in out Natural; Adv : out Boolean)
            with Pre  => P in S'Range,
                 Post => (if Adv then P in S'Range)
          is
+            --  Advance P over whitespace to the next non-blank character. Adv
+            --  is False, and the caller bails, when the run reaches the end
+            --  of S.
+
             Q : constant Natural := Skip_Ws (S, P);
          begin
             Adv := Q /= 0;
@@ -360,13 +354,14 @@ package body Memcp.Tools with SPARK_Mode => On is
             end if;
          end Skip_Blanks;
 
-         --  Skip whitespace, require the single character C, and advance P
-         --  past it. Adv is False (caller bails) when the run ends, the char
-         --  differs, or nothing follows C.
          procedure Expect (P : in out Natural; C : Character; Adv : out Boolean)
            with Pre  => P in S'Range,
                 Post => (if Adv then P in S'Range)
          is
+            --  Skip whitespace, require the single character C, and advance P
+            --  past it. Adv is False, and the caller bails, when the run ends,
+            --  the character differs, or nothing follows C.
+
             Q : constant Natural := Skip_Ws (S, P);
          begin
             if Q = 0 or else S (Q) /= C then
@@ -428,7 +423,7 @@ package body Memcp.Tools with SPARK_Mode => On is
             P := After (S, Q + 8);
          end;
          if P = 0 or else not Is_Space (S (P)) then
-            return;   --  server.py requires at least one space after 'parameter'
+            return;   --  at least one space is required after 'parameter'
          end if;
 
          --  "name" optional-ws "=" optional-ws quote.
@@ -516,10 +511,12 @@ package body Memcp.Tools with SPARK_Mode => On is
       end loop;
    end Find_Leak_Boundary;
 
-   --  Python's str.strip(): the text with leading/trailing ASCII whitespace
-   --  removed (or "" when all-whitespace).
    function Strip (S : String) return String is
+      --  S with leading and trailing ASCII whitespace removed, or "" when it is
+      --  entirely whitespace.
+
       F : Natural := 0;
+      --  Index of the first non-whitespace character, 0 when there is none.
    begin
       for I in S'Range loop
          if not Is_Space (S (I)) then
@@ -543,12 +540,14 @@ package body Memcp.Tools with SPARK_Mode => On is
       end;
    end Strip;
 
-   --  server.py's _TRAILING_CLOSE.sub("", value).strip() applied to a salvaged
-   --  half: drop one trailing </parameter|summary|diary> close tag (whitespace
-   --  tolerated around it) plus surrounding whitespace.
    function Clean (Raw : String) return String is
+      --  A salvaged half tidied up: one trailing </parameter|summary|diary>
+      --  close tag dropped, with whitespace tolerated around it, and the result
+      --  stripped.
+
       S  : constant String := Strip (Raw);
       LT : Natural := 0;
+      --  Index of the last '<' in S, 0 when there is none.
    begin
       if S'Length = 0 or else S (S'Last) /= '>' then
          return S;
@@ -588,22 +587,6 @@ package body Memcp.Tools with SPARK_Mode => On is
       end;
    end Clean;
 
-   --  server.py's _salvage_leaked_params, tightened against a false positive.
-   --  A leak's defining signature is that the swallowed sibling "arrives
-   --  missing", so we only split when the boundary's *named* sibling slot is
-   --  actually empty: diary carrying a `name="summary"` boundary while summary
-   --  is empty, or summary carrying a `name="diary"` boundary while diary is
-   --  empty. When the model supplied both fields, a boundary-looking sequence
-   --  is legitimate content (e.g. a memory that quotes this leak format), so
-   --  the value is left intact rather than truncated. (server.py splits
-   --  regardless and would drop the after-boundary text of such a value; this
-   --  narrowing only changes that both-fields-present case, never a genuine
-   --  leak, and matches the existing test_tools regression.)
-   --
-   --  On a split the two halves are handed back through bounded builders (their
-   --  content is a slice of the input, so within the Max_Field budget) and Did
-   --  is True. With no split Did is False and the builders are only Reset (no
-   --  O(n) copy): the caller reuses the original strings verbatim.
    procedure Salvage
      (Diary       : String;
       Summary     : String;
@@ -611,7 +594,17 @@ package body Memcp.Tools with SPARK_Mode => On is
       Out_Summary : out Memcp.Text.Builder;
       Did         : out Boolean)
    is
+      --  Split a leaked value back into its two halves. A leak's signature is
+      --  that the swallowed sibling arrives missing, so the split happens only
+      --  when the boundary's named sibling slot is empty; with both fields
+      --  supplied a boundary-looking sequence is legitimate content and the
+      --  value is left intact rather than truncated. On a split Did is True and
+      --  the halves come back through the builders, each a slice of the input
+      --  and so within the Max_Field budget; otherwise Did is False, the
+      --  builders are only Reset, and the caller reuses the original strings.
+
       procedure Emit (B : out Memcp.Text.Builder; Text : String) is
+         --  Reset B and fill it with Text.
       begin
          Memcp.Text.Reset (B);
          Memcp.Text.Add (B, Text);
@@ -623,9 +616,8 @@ package body Memcp.Tools with SPARK_Mode => On is
       SibD  : Boolean;
    begin
       --  Diary swallowed the (missing) summary across a `name="summary"`
-      --  boundary. A `name="diary"` boundary inside diary itself names the
-      --  scanned field and so fails the empty-sibling test -- treated as
-      --  legitimate content, not a leak.
+      --  boundary. A `name="diary"` boundary inside diary names the scanned
+      --  field itself, fails the empty-sibling test, and so counts as content.
       Find_Leak_Boundary (Diary, Found, BS, BE, SibD);
       if Found and then not SibD and then Summary'Length = 0 then
          declare
@@ -670,10 +662,11 @@ package body Memcp.Tools with SPARK_Mode => On is
    ----------------------
 
    --  Each builds its JSON array into the caller's bounded Memcp.Text builder;
-   --  OK (Buf) then emits it only if it did not overflow the field budget.
+   --  OK (Buf) then emits it only if the field budget held.
 
    procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp.Text.Builder)
    is
+      --  Render the diary Headers V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -710,6 +703,7 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Ser_Projects
      (V : MS.Project_Info_List; Buf : out Memcp.Text.Builder)
    is
+      --  Render the project rows V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -738,6 +732,7 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Ser_Summary_Hits
      (V : MS.Summary_Hit_List; Buf : out Memcp.Text.Builder)
    is
+      --  Render the summary search hits V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -775,6 +770,7 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Ser_Chunk_Hits
      (V : MS.Chunk_Hit_List; Buf : out Memcp.Text.Builder)
    is
+      --  Render the chunk search hits V into Buf as a JSON array.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -809,11 +805,11 @@ package body Memcp.Tools with SPARK_Mode => On is
       Memcp.Text.Add (Buf, "]");
    end Ser_Chunk_Hits;
 
-   --  fetch_turns: the turn's session_id is the request argument (the Chunk
-   --  record has no session field), matching server.py.
    procedure Ser_Turns
      (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp.Text.Builder)
    is
+      --  Render the turns V into Buf as a JSON array. Session_Id comes from the
+      --  request, the Chunk record having no session field of its own.
    begin
       Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
@@ -846,28 +842,27 @@ package body Memcp.Tools with SPARK_Mode => On is
    -- Embed --
    -----------
 
-   --  An embedder is usable when a model is loaded OR we are replaying recorded
-   --  vectors (conformance). Every embedding-gate consults this.
    function Embedder_Available (R : MR.Resources) return Boolean is
      (MR.Embedder_Loaded (R) or else Memcp.Replay.Enabled);
+   --  True when a model is loaded or recorded vectors are being replayed; every
+   --  embedding gate consults this.
 
-   --  Embed one text. Under replay the recorded vector is injected by text
-   --  lookup (a miss is counted and surfaced by the harness); otherwise the
-   --  candle engine runs. A procedure -- a SPARK function may not have
-   --  the side effect of counting a replay miss.
    procedure Embed_One
      (R : MR.Resources; Text : String; Emb : out Candle_Spark.Embedding)
    is
+      --  Embed Text: under replay the recorded vector is injected by text
+      --  lookup, otherwise the engine runs. A procedure, because logging a
+      --  replay miss is a side effect.
+
       Found : Boolean;
+      --  Whether the replay corpus held a vector for Text.
    begin
       if Memcp.Replay.Enabled then
          Memcp.Replay.Lookup_Embedding (Text, Emb, Found);
          if not Found then
-            --  A replay run expects every embedding to be pre-recorded; a miss
-            --  means the corpus is out of step with the request stream and the
-            --  zero fallback vector will skew similarity. Record it -- the
-            --  Python source stays silent here, but the whole point of replay
-            --  is determinism, so a miss is worth surfacing.
+            --  A miss means the corpus is out of step with the request stream,
+            --  and the zero fallback vector will skew similarity, so it is
+            --  worth surfacing.
             Memcp.Log.Warning
               ("replay: no recorded embedding for query text; "
                & "using zero fallback vector");
@@ -877,14 +872,14 @@ package body Memcp.Tools with SPARK_Mode => On is
       end if;
    end Embed_One;
 
-   --  Embed Text, or Ok => False (zero vector) when no embedder is available or
-   --  Text is empty. The tool then reports the appropriate error.
    procedure Embed_Query
      (R    : MR.Resources;
       Text : String;
       Emb  : out Candle_Spark.Embedding;
       Ok   : out Boolean)
    is
+      --  Embed Text, or hand back Ok => False and the zero vector when Text is
+      --  empty or no embedder is available; the tool then reports the error.
    begin
       if Text'Length = 0 or else not Embedder_Available (R) then
          Emb := [others => 0.0];
@@ -902,6 +897,8 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Recent
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  recent: the N most recent diary Headers across the named projects.
+
       D       : MJ.Doc;
       Entries : MS.Diary_Entry_List;
       St      : MS.Op_Status;
@@ -909,9 +906,8 @@ package body Memcp.Tools with SPARK_Mode => On is
    begin
       MJ.Open (D, Arguments);
       if not MJ.Has (D, "projects") then
-         --  server.py makes `projects` a required argument; an omitted list is
-         --  a client error, not a silent empty result (an explicit empty array
-         --  still legitimately yields []).
+         --  `projects` is required: an omitted list is a client error, not a
+         --  silent empty result. An explicit empty array still yields [].
          Result := Err (Invalid_Params, "recent: 'projects' is required");
       else
          MR.Recent_Diary
@@ -930,6 +926,8 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_List_Projects
      (R : MR.Resources; Result : out Result_Ptr)
    is
+      --  list_projects: every project the store has seen. Takes no arguments.
+
       Projs : MS.Project_Info_List;
       St    : MS.Op_Status;
       Buf   : Memcp.Text.Builder;
@@ -946,6 +944,9 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Save
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  save: a (diary line, structured summary) pair, plus the summary's
+      --  embedding.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -957,9 +958,7 @@ package body Memcp.Tools with SPARK_Mode => On is
          Sm_Buf     : Memcp.Text.Builder;
          Salvaged   : Boolean;
       begin
-         --  Recover a leaked <parameter> boundary before the emptiness gate:
-         --  a save is usually a session's terminal turn, so splitting and
-         --  saving beats rejecting (which loses the memory with no retry).
+         --  Recover a leaked <parameter> boundary before the emptiness gate.
          Salvage (Diary_In, Summary_In, Bd_Buf, Sm_Buf, Salvaged);
          if Salvaged then
             Memcp.Log.Warning
@@ -967,13 +966,16 @@ package body Memcp.Tools with SPARK_Mode => On is
                & "split diary/summary");
          end if;
          declare
-            --  On the common no-leak path Salvage leaves the builders empty;
-            --  reuse the original arguments rather than round-tripping them
-            --  through the builders.
             Diary   : constant String :=
               (if Salvaged then Memcp.Text.Value (Bd_Buf) else Diary_In);
+            --  The diary to save. On the common no-leak path Salvage leaves the
+            --  builders empty, so the original argument is reused rather than
+            --  round-tripped.
+
             Summary : constant String :=
               (if Salvaged then Memcp.Text.Value (Sm_Buf) else Summary_In);
+            --  The summary to save, on the same terms.
+
             Emb     : Candle_Spark.Embedding;
             Emb_Ok  : Boolean;
          begin
@@ -1038,6 +1040,8 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Forget
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  forget: delete a summary, its diary line and its embedding by id.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1063,6 +1067,8 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Search
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  search: semantic search over Summaries, within optional date bounds.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1120,6 +1126,8 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Fetch_Summary
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  fetch_summary: one full Summary by id.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1140,8 +1148,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                --  A miss is a valid negative answer, not a failure.
                Result := OK ("No summary found for id " & N (Id) & ".");
             else
-               --  Built through the bounded builder: the body field can be
-               --  large, so a raw concatenation could not be bounded for AoRTE.
+               --  Through the bounded builder: the body field can be large, so
+               --  a raw concatenation could not be bounded.
                declare
                   Buf : Memcp.Text.Builder;
                begin
@@ -1175,6 +1183,9 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Fetch_Chunks
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  fetch_chunks: semantic search over session chunks, within optional
+      --  project, session and date bounds.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1233,33 +1244,37 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Fetch_Turns
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  fetch_turns: verbatim conversation turns, by ordinal range or tail.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
       declare
          Session  : constant String := MJ.Get_Str (D, "session_id");
          Last_V   : constant Interfaces.Integer_64 := MJ.Get_Int (D, "last", 0);
-         --  `last` present at all (server.py's `tail is not None`), vs. a real
-         --  positive tail. A non-positive `last` is neither absent nor a tail:
-         --  server.py rejects it rather than folding it into "whole session".
          Has_Last : constant Boolean := MJ.Has_Int (D, "last");
+         --  Whether `last` was supplied at all, as against a real positive
+         --  tail: a non-positive `last` is neither absent nor a tail, and is
+         --  rejected rather than folded into "whole session".
+
          Has_Tail : constant Boolean := Has_Last and then Last_V > 0;
+         --  Whether a usable tail length was supplied.
+
          Has_St   : constant Boolean := MJ.Has_Int (D, "start");
          Has_En   : constant Boolean := MJ.Has_Int (D, "end");
-         --  Clamp a positive tail to Positive'Last (Last_V is 64-bit).
          Tail     : constant Positive :=
            (if Has_Tail then
               (if Last_V >= Interfaces.Integer_64 (Positive'Last)
                then Positive'Last else Positive (Last_V))
             else 1);
+         --  The tail length, clamped to Positive'Last since Last_V is 64-bit.
       begin
          if Session'Length = 0 then
             Result :=
               Err (Invalid_Params, "fetch_turns: 'session_id' is required");
          elsif Has_Last and then (Has_St or else Has_En) then
-            --  server.py checks mutual exclusion on `tail is not None`, before
-            --  the positivity check -- so this fires even for a non-positive
-            --  `last` combined with start/end.
+            --  Mutual exclusion is checked before positivity, so this fires
+            --  even for a non-positive `last` combined with start/end.
             Result := Err
               (Invalid_Params,
                "fetch_turns: 'last' cannot be combined with 'start'/'end'");
@@ -1299,10 +1314,6 @@ package body Memcp.Tools with SPARK_Mode => On is
 
    package ME renames Memcp.Extractor;
 
-   --  The body of upload_session once the transcript is decoded: extract turns,
-   --  embed each, save the session, then (for a fresh session with a recap
-   --  line) write the autorecap Header. Split out so Do_Upload_Session keeps a
-   --  single Doc-close and one Free of the decoded transcript.
    procedure Upload_Decoded
      (R          : MR.Resources;
       Project    : String;
@@ -1311,11 +1322,18 @@ package body Memcp.Tools with SPARK_Mode => On is
       Result     : out Result_Ptr)
      with Pre => Transcript'First = 1 and then Transcript'Last < Natural'Last
    is
+      --  upload_session once the transcript is decoded: extract turns, embed
+      --  each, save the session, then write the autorecap Header for a fresh
+      --  session that carries a recap line.
+
       Turns  : constant ME.Turn_List := ME.Extract_Turns (Transcript);
+      --  The text-bearing turns of the transcript, in order.
+
       Chunks : MS.Chunk_Input_List := MS.Chunk_Input_Vectors.Empty_Vector;
+      --  The turns paired with their embeddings, as the chunk rows to save.
    begin
-      --  Every turn is embedded (store.py embed_batch); a model is only
-      --  *required* when there are turns to embed.
+      --  Every turn is embedded, so a model is required only when there are
+      --  turns.
       if not ME.Turn_Vectors.Is_Empty (Turns)
         and then not Embedder_Available (R)
       then
@@ -1346,9 +1364,11 @@ package body Memcp.Tools with SPARK_Mode => On is
       declare
          Res : MS.Session_Save_Result;
          St  : MS.Op_Status;
-         --  First replay clock: the session-row / chunks timestamp.
          Rep : constant Boolean :=
            Memcp.Replay.Enabled and then Memcp.Replay.Has_Clock;
+         --  Whether the first replay clock -- the session-row and chunks
+         --  timestamp -- is available.
+
          TS  : constant String :=
            (if Rep then Memcp.Replay.Peek_Clock else "");
       begin
@@ -1371,9 +1391,8 @@ package body Memcp.Tools with SPARK_Mode => On is
             return;
          end if;
 
-         --  Autorecap fallback: only for a freshly-recorded session with a
-         --  recap line. A real save() is never overwritten (Save_Autorecap
-         --  short-circuits too).
+         --  Autorecap fallback: only for a freshly-recorded session carrying a
+         --  recap line, and never over a real save.
          declare
             Recap_Id : MS.Row_Id := 0;
             Wrote    : Boolean := False;
@@ -1434,6 +1453,9 @@ package body Memcp.Tools with SPARK_Mode => On is
    procedure Do_Upload_Session
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      --  upload_session: decode the base64 transcript, then hand it to
+      --  Upload_Decoded, so the Doc is Closed and the transcript Freed once.
+
       D : MJ.Doc;
    begin
       MJ.Open (D, Arguments);
@@ -1447,9 +1469,9 @@ package body Memcp.Tools with SPARK_Mode => On is
          if Project'Length = 0 then
             Result := Err (Invalid_Params, "upload_session: 'project' is required");
          elsif Blank (Session_Id) then
-            --  server.py makes session_id a required argument; we further reject
-            --  a blank one, since an empty session_id collapses every upload
-            --  onto the (project, "") idempotency key and loses transcripts.
+            --  A blank session_id is rejected as well as a missing one: it
+            --  would collapse every upload onto the (project, "") idempotency
+            --  key and lose transcripts.
             Result := Err
               (Invalid_Params, "upload_session: 'session_id' is required");
          elsif not MJ.Has_Str (D, "transcript_b64") then

@@ -1,15 +1,14 @@
 package body Memcp.Log with SPARK_Mode => On is
 
-   --  A fixed prefix followed by the message, emitted as two writes rather
-   --  than one concatenation: this keeps the line free of any length/overflow
-   --  proof obligation on Message (String'Last), so no precondition is needed.
-
    -----------
    -- Error --
    -----------
 
    procedure Error (Message : String) is
    begin
+      --  Prefix then message, as two writes rather than one concatenation:
+      --  Message carries no length obligation this way, so needs no
+      --  precondition. Warning is the same shape.
       Ada.Text_IO.Put ("memcp [error] ");
       Ada.Text_IO.Put_Line (Message);
    end Error;

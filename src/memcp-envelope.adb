@@ -1,12 +1,12 @@
+--  Memcp.Envelope body: parse the request text with the json crate, then
+--  project the resulting document onto Spark_Mcp.Requests.Envelope.
+
 with JSON.Types;
 with JSON.Parsers;
 with JSON.Streams;
 
 package body Memcp.Envelope with SPARK_Mode => On is
 
-   --  Ownership-reclamation discards (see Memcp.Json for the rationale): Free /
-   --  Destroy null their argument as they reclaim it, and a Parse whose tree is
-   --  discarded keeps only its Status. The reclaimed handles are not read after.
    pragma Warnings
      (GNATprove, Off, "statement has no effect",
       Reason => "reclaiming owned memory has no SPARK-modelled effect");
@@ -20,9 +20,11 @@ package body Memcp.Envelope with SPARK_Mode => On is
      (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
       Reason => "the parser is destroyed after Parse; its post-state is unread");
 
+   --  Shorthand for the neutral request types this unit returns.
    package Req renames Spark_Mcp.Requests;
 
    Max_Field : constant := Spark_Mcp.Max_Field;
+   --  Length cap on each field of an Envelope.
 
    --  A JSON value model wide enough for request ids and arbitrary tool
    --  arguments. The numeric types only bound what the tokenizer accepts; the
@@ -31,7 +33,7 @@ package body Memcp.Envelope with SPARK_Mode => On is
    package Types is new JSON.Types
      (Integer_Type => Long_Long_Integer, Float_Type => Long_Float);
 
-   --  Tool arguments can nest; allow generous depth so a valid request is never
+   --  The parser, with generous nesting depth so a valid request is never
    --  rejected as a parse error for nesting depth alone.
    package Parsers is new JSON.Parsers
      (Types => Types, Default_Maximum_Depth => 512);
@@ -39,33 +41,33 @@ package body Memcp.Envelope with SPARK_Mode => On is
    use type Types.Value_Kind;
    use type Types.JSON_Value_Access;
 
-   --  The all-error envelope: every length zero, so Dispatch frames the error
-   --  from Kind alone. Trivially within the Max_Field predicate. (SPARK forbids
-   --  the box notation "others => <>", so every field is written explicitly.)
    Bad_Json : constant Req.Envelope :=
      (M_Len   => 0, Id_Len  => 0, TN_Len => 0, Arg_Len => 0,
       Kind    => Req.Bad_Json, Is_Notification => False,
       Method  => "", Id => "", Tool_Name => "", Arguments => "");
+   --  The envelope for text that is not valid JSON: every length zero, so the
+   --  error response is framed from Kind alone.
+
    Bad_Req  : constant Req.Envelope :=
      (M_Len   => 0, Id_Len  => 0, TN_Len => 0, Arg_Len => 0,
       Kind    => Req.Bad_Request, Is_Notification => False,
       Method  => "", Id => "", Tool_Name => "", Arguments => "");
+   --  The envelope for valid JSON that is not a JSON-RPC 2.0 request.
 
    ------------------
    -- To_Json_Text --
    ------------------
 
-   --  Re-serialise a parsed value to its JSON text. Used for the "id" (echoed
-   --  verbatim) and for params.arguments (crosses the seam as raw JSON text).
-   --  A pathological value whose text would overflow the buffer (> Positive'Last
-   --  -- impossible for a transport-capped request) degrades to "".
    function To_Json_Text
      (Value : not null access constant Types.JSON_Value) return String
    is
-      --  JSON.Streams.Destroy reclaims Buf on both the normal and overflow
-      --  paths; json now annotates String_Buffer ownership (Post => not
-      --  Has_Storage) + Always_Terminates, so leak-freedom proves cleanly.
+      --  Re-serialise a parsed value to its JSON text. A value whose text would
+      --  overflow the buffer -- impossible for a transport-capped request --
+      --  degrades to "".
+
       Buf : JSON.Streams.String_Buffer;
+      --  Scratch buffer for the text; Destroy reclaims it on both the normal
+      --  and the overflow path.
    begin
       Types.Image (Value, Buf);
       declare
@@ -84,15 +86,14 @@ package body Memcp.Envelope with SPARK_Mode => On is
    -- Obj_Member --
    ----------------
 
-   --  The member Key of Obj, or null when Obj is null / not an object / has no
-   --  such member. The observer is rooted at the access parameter Obj (json's
-   --  idiom) and returned in statement form -- a conditional *expression*
-   --  observe would violate SPARK RM 3.10(4). This lets Decode fetch nested
-   --  members unconditionally and move every branch to the value level.
    function Obj_Member
      (Obj : access constant Types.JSON_Value; Key : String)
       return access constant Types.JSON_Value
    is
+      --  The member Key of Obj, or null when Obj is null, is not an object, or
+      --  has no such member. Statement form rather than an expression function:
+      --  the observer is rooted at Obj, and a conditional expression may not
+      --  observe. Null-safe, so nested members can be fetched unconditionally.
    begin
       if Obj = null or else Types.Kind (Obj) /= Types.Object_Kind then
          return null;
@@ -104,14 +105,13 @@ package body Memcp.Envelope with SPARK_Mode => On is
    -- Decode --
    ------------
 
-   --  Validate and extract fields from an already-parsed document. Assumes
-   --  Doc /= null (Parsers.Parse guarantees it). The Envelope is indefinite
-   --  (its String components are sized by discriminants), so it is built in one
-   --  aggregate at each exit. Any field that would exceed Max_Field (never, for
-   --  a transport-capped request) degrades the whole request to Bad_Request.
    function Decode
      (Doc : not null access constant Types.JSON_Value) return Req.Envelope
    is
+      --  Validate an already-parsed document and extract its fields. Doc is
+      --  non-null by Parsers.Parse's postcondition. Any field that would exceed
+      --  Max_Field -- never, for a transport-capped request -- degrades the
+      --  whole request to Bad_Request.
    begin
       if Types.Kind (Doc) /= Types.Object_Kind then
          return Bad_Req;
@@ -142,32 +142,44 @@ package body Memcp.Envelope with SPARK_Mode => On is
          declare
             Method : constant String := Types.Value (MV);
 
-            --  A request without "id" is a notification; otherwise capture the
-            --  id as its verbatim JSON token so Dispatch can echo it.
             IV       : constant access constant Types.JSON_Value :=
               Types.Get (Doc, "id");
+            --  The "id" member, or null when the request carries none.
+
             Is_Notif : constant Boolean := (IV = null);
+            --  A request without "id" is a notification.
+
             Id       : constant String :=
               (if Is_Notif then "" else To_Json_Text (IV));
+            --  The id as its verbatim JSON token, to be echoed in the response.
 
-            --  tools/call carries params.name (string) and params.arguments
-            --  (raw JSON text). The observers are fetched unconditionally
-            --  (Obj_Member is null-safe); the Is_Call gate lives on the values,
-            --  so no observe is wrapped in a conditional expression.
             Is_Call   : constant Boolean := (Method = "tools/call");
+            --  Whether this is the one method that carries params.name and
+            --  params.arguments.
+
             PV        : constant access constant Types.JSON_Value :=
               Obj_Member (Doc, "params");
+            --  The "params" member, or null.
+
             NV        : constant access constant Types.JSON_Value :=
               Obj_Member (PV, "name");
+            --  params.name, or null.
+
             AV        : constant access constant Types.JSON_Value :=
               Obj_Member (PV, "arguments");
+            --  params.arguments, or null. All three are fetched
+            --  unconditionally, with the Is_Call gate applied to the values
+            --  below, so no observe sits inside a conditional expression.
 
             Tool_Name : constant String :=
               (if Is_Call and then NV /= null
                  and then Types.Kind (NV) = Types.String_Kind
                then Types.Value (NV) else "");
+            --  The tool to invoke, or "" for any other method.
+
             Args      : constant String :=
               (if Is_Call and then AV /= null then To_Json_Text (AV) else "{}");
+            --  The tool arguments as raw JSON text, "{}" when absent.
          begin
             if Method'Length > Max_Field or else Id'Length > Max_Field
               or else Tool_Name'Length > Max_Field
@@ -193,26 +205,25 @@ package body Memcp.Envelope with SPARK_Mode => On is
    function Parse_Envelope
      (Request : String) return Req.Envelope is
    begin
-      --  Parsers.Create requires a length below Positive'Last (Request'Length,
-      --  a Natural, can only ever equal it, never exceed it).
+      --  Parsers.Create requires a length below Positive'Last; Request'Length,
+      --  a Natural, can only ever equal Natural'Last, never exceed it.
       if Request'Length = Natural'Last then
          return Bad_Json;
       end if;
 
       declare
-         --  P and Doc are released on every path (Destroy/Free below). json now
-         --  annotates Parser ownership + Always_Terminates on Parse/Destroy/Free,
-         --  so both leak-freedom and termination discharge -- no justification.
          P   : Parsers.Parser;
+         --  The parser, destroyed on every path below.
+
          Doc : aliased Types.JSON_Value_Access;
+         --  The parsed document, freed on every path below.
       begin
          Parsers.Create (P, Request);
 
          begin
             Parsers.Parse (P, Doc);
          exception
-            --  Parse_Error (malformed JSON or a number out of range) maps to
-            --  JSON-RPC Parse_Error at the envelope.
+            --  Malformed JSON, or a number outside the tokenizer's range.
             when Parsers.Parse_Error =>
                Parsers.Destroy (P);
                Types.Free (Doc);  --  null on the error path (Parse leaves it so)
