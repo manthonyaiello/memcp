@@ -99,7 +99,14 @@ location with `MEMCP_MODEL_PATH`.
 make run        # serves POST /mcp on 127.0.0.1:8786 (blocking)
 ```
 
-Register the server with Claude Code in `~/.claude/settings.json`:
+Register the server with Claude Code:
+
+```sh
+claude mcp add --transport http --scope user memcp http://127.0.0.1:8786/mcp
+```
+
+or add it by hand to `~/.claude.json` (MCP servers live there, **not** in
+`~/.claude/settings.json`):
 
 ```json
 {
