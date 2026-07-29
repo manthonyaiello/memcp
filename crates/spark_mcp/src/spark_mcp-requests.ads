@@ -1,22 +1,7 @@
---  Vocabulary of the inbound JSON-RPC 2.0 envelope seam.
---
---  spark_mcp is json-free: it never parses request text itself. The application
---  supplies a Parse_Envelope function (a generic formal of Spark_Mcp.Server)
---  that decodes request text -- with the application's own JSON library -- into
---  this neutral Envelope record. Spark_Mcp.Server.Dispatch then maps the
---  Envelope to a response and owns ALL JSON-RPC response framing. The split:
---  the application decodes bytes -> fields; spark_mcp owns the MCP method layer
---  and the wire shape of every response (see Spark_Mcp.Server.Respond).
---
---  This type lives here, in a non-generic package, rather than inside
---  Spark_Mcp.Server, because the formal Parse_Envelope returns it: an
---  application must be able to name the type BEFORE instantiating the generic.
---
---  The string fields are fixed String components sized by the *_Len
---  discriminants, matching Spark_Mcp.Tools: no controlled type, no cap, no
---  copy-out. The record is therefore indefinite and built fully-initialized in
---  one aggregate (see Memcp.Envelope.Decode and No_Parser); an error Kind sets
---  every length to 0.
+--  Vocabulary of the inbound JSON-RPC 2.0 envelope seam: the neutral record a
+--  Parse_Envelope function decodes request text into, and the default parser
+--  that decodes nothing. Non-generic, because Spark_Mcp.Server's formal returns
+--  the type and so must be able to name it before instantiation.
 
 package Spark_Mcp.Requests with SPARK_Mode => On is
 
@@ -40,44 +25,39 @@ package Spark_Mcp.Requests with SPARK_Mode => On is
       Arg_Len : Natural)   --  length of Arguments
    is record
       Kind            : Parse_Result_Kind := Unimplemented;
+      --  How decoding turned out; the fields below are meaningful only when
+      --  Parsed.
 
-      --  True when the request carried no "id": no response is owed.
       Is_Notification : Boolean           := False;
+      --  True when the request carried no "id": no response is owed.
 
-      --  The JSON-RPC "method".
       Method          : String (1 .. M_Len);
+      --  The JSON-RPC "method".
 
-      --  The request's "id" as its VERBATIM JSON token ("42", "null", or a
+      Id              : String (1 .. Id_Len);
+      --  The request's "id" as its verbatim JSON token ("42", "null", or a
       --  quoted string like """abc"""), echoed into the response. Ignored when
       --  Is_Notification.
-      Id              : String (1 .. Id_Len);
 
-      --  For method "tools/call": params.name ("" otherwise).
       Tool_Name       : String (1 .. TN_Len);
+      --  For method "tools/call": params.name ("" otherwise).
 
+      Arguments       : String (1 .. Arg_Len);
       --  For method "tools/call": params.arguments as raw JSON text ("{}" when
       --  absent, supplied by the parser); handed opaquely to the tool's Invoke.
-      Arguments       : String (1 .. Arg_Len);
    end record
-   --  Every field is bounded by Max_Field (see Spark_Mcp) so that Dispatch can
-   --  route an Envelope straight into Spark_Mcp.Server.Respond, whose
-   --  precondition requires exactly this. A conforming Parse_Envelope must
-   --  produce envelopes within the bound; No_Parser (all lengths 0) trivially
-   --  does, as does the all-zero shape of every non-Parsed Kind.
    with Dynamic_Predicate =>
+     --  A conforming Parse_Envelope must stay within the bound. The all-zero
+     --  lengths of No_Parser and of every non-Parsed Kind trivially do.
      M_Len <= Max_Field and then Id_Len <= Max_Field
      and then TN_Len <= Max_Field and then Arg_Len <= Max_Field;
-   --  A decoded JSON-RPC 2.0 request. Only the Parsed case populates the
-   --  fields; for every other Kind, Dispatch frames the error from Kind alone
-   --  (so a non-Parsed envelope carries every *_Len => 0).
+   --  A decoded JSON-RPC 2.0 request. A non-Parsed envelope carries every
+   --  *_Len => 0, since the error is framed from Kind alone.
 
    function No_Parser (Request : String) return Envelope;
-   --  The default Parse_Envelope for Spark_Mcp.Server: reports Unimplemented,
-   --  which Dispatch renders as an honest Internal_Error ("no parser wired")
-   --  rather than a silently-wrong result. It lets the reusable core be built,
-   --  proved, and unit-tested with NO JSON library at all (the tests drive
-   --  Respond directly); an application that wants a live Dispatch supplies its
-   --  own JSON-based parser at instantiation (see memcp's Memcp.Envelope).
+   --  The default Parse_Envelope: reports Unimplemented, which renders as an
+   --  honest Internal_Error rather than a silently-wrong result, so the crate
+   --  can be built, proved and tested with no JSON library at all.
    --  @param Request The raw request text (ignored; no decoding is attempted).
    --  @return An Envelope with Kind => Unimplemented and every *_Len => 0.
 
