@@ -14,7 +14,7 @@ GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
 
 .PHONY: all build run model test prove prove-deps prove-check docs docs-check \
-        clean help
+        docs-placement clean help
 
 all: build
 
@@ -82,8 +82,18 @@ prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 docs: prove-deps ## Generate the API docs into docs/api + report undocumented entities
 	./scripts/check-docs.sh --no-gate
 
-docs-check: prove-deps ## `docs` as a pass/fail gate (undocumented entity => exit 1)
+docs-check: prove-deps ## `docs` as a gate: undocumented entity or misplaced block => exit 1
 	./scripts/check-docs.sh
+	./scripts/check-doc-placement.sh
+
+# check-docs.sh cannot see placement: --warnings is per entity, not per
+# declaration, so a block on the wrong side of a declaration either reads as a
+# missing comment on the entity below or silently satisfies the entity above.
+# This is the source-level lint that does see it. No toolchain needed -- it is
+# awk over `git ls-files` -- so unlike docs-check it has no prerequisite and
+# runs on a bare checkout.
+docs-placement: ## Report doc blocks attributed to the wrong declaration
+	./scripts/check-doc-placement.sh --no-gate
 
 clean: ## Remove build artifacts
 	$(ALR) clean

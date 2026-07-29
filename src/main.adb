@@ -1,13 +1,6 @@
---  memcp: composition root. The only crate that knows the whole picture --
---  it wires the concrete tools into the generic core and the core into the
---  transport, and owns the Resources object (the Store + Embedder) the tools
---  run against. Ada owns `main`, so elaboration stays automatic.
---
---  The Resources object is a tracked local, not package state: it is Opened at
---  the top of the body and Closed on every exit, and the tool seam reaches it
---  through a nested adapter (Invoke_Tool below) that closes over it. That is
---  what lets SPARK check the open/close lifecycle by ownership (see #20); the
---  generic core and transport never learn that application state exists.
+--  memcp: the composition root. Reads the configuration out of the
+--  environment, wires the concrete tools into the generic MCP core and the core
+--  into the HTTP transport, and owns the resources the tools run against.
 
 with Ada.Text_IO;
 
@@ -25,20 +18,18 @@ with Memcp.Envelope;
 
 procedure Main with SPARK_Mode => On is
 
-   --  Environment (mirrors server.py main): MEMCP_DB_PATH, MEMCP_PORT, and
-   --  MEMCP_MODEL_PATH (weights; see candle_spark/scripts/install-model.sh).
-   --
-   --  A value longer than Max_Env (a generous bound on any real path/port) is
-   --  ignored in favour of the default, so every derived string is provably
-   --  bounded -- the alternative, an unbounded env value, defeats AoRTE on the
-   --  concatenations below. The result is 1-based.
    Max_Env : constant := 4096;
+   --  Longest environment value Env will honour -- a generous bound on any real
+   --  path or port. A longer one is ignored, which is what keeps every string
+   --  derived below provably bounded.
 
    function Env (Name, Default : String) return String
      with Post => Env'Result'First = 1
                   and then Env'Result'Length
                              <= Natural'Max (Max_Env, Default'Length)
                   and then (if Default'Length > 0 then Env'Result'Length > 0);
+   --  The value of environment variable Name, or Default when it is unset or
+   --  longer than Max_Env.
 
    function Env (Name, Default : String) return String is
    begin
@@ -58,8 +49,10 @@ procedure Main with SPARK_Mode => On is
       end return;
    end Env;
 
-   --  Parse a port with no exceptions (T'Value would raise on junk): digits
-   --  only, in 1 .. 65_535, else the default 8786.
+   function Parse_Port (S : String) return Spark_Mcp.Http.Port_Number;
+   --  S as a port number: digits only, in 1 .. 65_535, else the default
+   --  8786. Hand-rolled rather than 'Value, which raises on junk.
+
    function Parse_Port (S : String) return Spark_Mcp.Http.Port_Number is
       Acc : Natural := 0;
    begin
@@ -82,63 +75,67 @@ procedure Main with SPARK_Mode => On is
       return Spark_Mcp.Http.Port_Number (Acc);
    end Parse_Port;
 
-   --  Convention over configuration: unless MEMCP_MODEL_PATH overrides it, look
-   --  for the weights at a conventional, working-directory-independent location
-   --  (install-model.sh writes here by default too). HOME-relative because
-   --  `alr run` launches from memcp/, so a cwd-relative default would miss a
-   --  repo-level checkout. Empty only if HOME itself is unset, in which case the
-   --  embedding-dependent tools report "embedder unavailable" (as before).
    Home : constant String := Env ("HOME", "");
+   --  The user's home directory, "" when HOME is unset.
+
    Default_Model_Path : constant String :=
      (if Home'Length > 0 then Home & "/.memcp/models/all-MiniLM-L6-v2" else "");
+   --  Where the weights live absent MEMCP_MODEL_PATH: HOME-relative, so it is
+   --  independent of the working directory `alr run` launches from, and the
+   --  location install-model.sh writes to by default. Empty when HOME is unset,
+   --  which leaves the embedder unavailable.
 
    DB_Path    : constant String := Env ("MEMCP_DB_PATH", ":memory:");
+   --  Database file the store opens; in-memory by default.
+
    Model_Path : constant String := Env ("MEMCP_MODEL_PATH", Default_Model_Path);
+   --  Directory the embedding weights are loaded from.
 
    Port : constant Spark_Mcp.Http.Port_Number :=
      Parse_Port (Env ("MEMCP_PORT", "8786"));
+   --  TCP port the transport binds.
 
-   --  The owned resources, a tracked local (see the header note). Fresh, so
-   --  reclaimed by its Default_Initial_Condition -- which discharges Open's
-   --  Pre => Is_Reclaimed (R).
    R       : Memcp.Resources.Resources;
+   --  The store and embedder the tools run against. A tracked local rather than
+   --  package state: the nested steps below reach it up-level, which is what
+   --  lets SPARK check its open/close lifecycle by ownership. Fresh here, so
+   --  Open's Pre holds.
+
    Open_St : Memcp.Resources.Status;
+   --  How the Open below ended.
    use type Memcp.Resources.Status;
 
-   --  Named steps, in the order Main's statements call them. Both close over
-   --  R (an up-level reference, not a parameter) exactly as Invoke_Tool below
-   --  does -- that up-level access to the one tracked local is what lets
-   --  SPARK check its open/close lifecycle by ownership (see the header
-   --  note); passing R around as a parameter would defeat that.
+   procedure Open_Database (Status : out Memcp.Resources.Status);
+   --  Open R against DB_Path and Model_Path, reporting the outcome.
 
    procedure Open_Database (Status : out Memcp.Resources.Status) is
    begin
       Memcp.Resources.Open (R, DB_Path, Model_Path, Status);
    end Open_Database;
 
-   --  Wires the concrete tools into the generic MCP core and the core into
-   --  the HTTP transport, then serves until the transport gives up. All of
-   --  this is instantiated HERE, where R is open, so the tool seam
-   --  (Invoke_Tool) can close over it.
-   --  Connect_To_Server is proved in its own context (not inlined into
-   --  Main), so the length bounds Env's postcondition already put on
-   --  DB_Path/Model_Path -- facts about "constants with variable input"
-   --  that don't otherwise cross that analysis boundary -- have to be
-   --  restated here for the startup log line below to be provably bounded.
    procedure Connect_To_Server (Port : Spark_Mcp.Http.Port_Number)
      with Pre => DB_Path'Length <= Max_Env
                  and then Default_Model_Path'Length <= Max_Env + 31
                  and then Model_Path'Length
-                            <= Natural'Max (Max_Env, Default_Model_Path'Length)
-   is
+                            <= Natural'Max (Max_Env, Default_Model_Path'Length);
+   --  Serve on Port until the transport gives up. The core and the transport
+   --  are instantiated here, where R is open, so the tool seam can close
+   --  over it.
+   --
+   --  Pre: proved in its own context, so the bounds Env's Post already puts
+   --  on DB_Path and Model_Path -- facts about constants with variable input
+   --  -- do not reach here on their own, and the log line below needs them to
+   --  be provably bounded.
 
-      --  The 3-argument generic actual the core expects; it forwards to the
-      --  4-argument Memcp.Tools.Invoke, threading R.
+   procedure Connect_To_Server (Port : Spark_Mcp.Http.Port_Number) is
+
       procedure Invoke_Tool
         (Id        : Memcp.Tools.Tool_Id;
          Arguments : String;
          Result    : out Spark_Mcp.Tools.Result_Ptr)
         with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
+      --  The three-argument Invoke actual the core expects, forwarding to the
+      --  four-argument Memcp.Tools.Invoke with R.
 
       procedure Invoke_Tool
         (Id        : Memcp.Tools.Tool_Id;
@@ -149,9 +146,8 @@ procedure Main with SPARK_Mode => On is
          Memcp.Tools.Invoke (R, Id, Arguments, Result);
       end Invoke_Tool;
 
-      --  The generic MCP core, specialized to memcp's 9 tools. Parse_Envelope
-      --  is the one json-dependent formal -- memcp supplies it (Memcp.Envelope,
-      --  built on the json crate) so spark_mcp itself stays json-free.
+      --  The generic MCP core, specialized to memcp's tools and to
+      --  Memcp.Envelope for the one json-dependent formal, Parse_Envelope.
       package MCP is new Spark_Mcp.Server
         (Server_Name    => "memcp",
          Server_Version => "0.1.0",
@@ -163,17 +159,14 @@ procedure Main with SPARK_Mode => On is
          Invoke          => Invoke_Tool,
          Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
 
-      --  The transport, specialized to the core's Dispatch. Both seams are
-      --  procedures handing out exactly-sized ownership allocations, but of
-      --  distinct access types in distinct packages (Spark_Mcp.Response_Ptr vs
-      --  Spark_Mcp.Http.Message_Ptr), so this adapter moves between them: null
-      --  (notification) passes straight through -> the transport answers 204;
-      --  otherwise the response body is copied into a transport allocation and
-      --  the core's allocation is freed. The one copy lives here in the
-      --  composition root, off the proven hot path -- the price of keeping the
-      --  core and its transport free of any shared pointer type.
       procedure Dispatch_Owned
         (Request : String; Response : out Spark_Mcp.Http.Message_Ptr);
+      --  The core's Dispatch as the transport's handler. Both seams hand out
+      --  exactly-sized ownership allocations, but of distinct access types
+      --  (Spark_Mcp.Response_Ptr and Spark_Mcp.Http.Message_Ptr), so the body
+      --  copies into a transport allocation and frees the core's. Null -- a
+      --  notification -- passes straight through. That one copy is the price of
+      --  the core and its transport sharing no pointer type.
 
       procedure Dispatch_Owned
         (Request : String; Response : out Spark_Mcp.Http.Message_Ptr)
@@ -191,6 +184,7 @@ procedure Main with SPARK_Mode => On is
       end Dispatch_Owned;
 
       procedure Run is new Spark_Mcp.Http.Serve (On_Request => Dispatch_Owned);
+      --  The transport's blocking accept loop, answered by Dispatch_Owned.
 
    begin
       Ada.Text_IO.Put_Line
@@ -200,7 +194,7 @@ procedure Main with SPARK_Mode => On is
          & (if Memcp.Resources.Embedder_Loaded (R)
             then "loaded"
             else "off [" & Model_Path & "]") & ")");
-            
+
       Run (Port);
    exception
       when others =>

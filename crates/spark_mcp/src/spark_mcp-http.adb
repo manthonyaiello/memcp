@@ -1,5 +1,4 @@
---  Body exists only to carry Network's null refinement: the socket world has
---  no Ada-side constituents -- it lives across the FFI, in Rust.
+--  Spark_Mcp.Http body: no code of its own; it exists to refine Network.
 
 package body Spark_Mcp.Http
   with SPARK_Mode    => On,

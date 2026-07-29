@@ -1,3 +1,7 @@
+--  Recorded clocks kept as a vector plus a consumption cursor, recorded
+--  embeddings as a vector searched linearly: a fixture holds a few hundred
+--  entries, so neither wants an index.
+
 with Ada.Containers; use type Ada.Containers.Count_Type;
 
 with SPARK.Containers.Formal.Unbounded_Vectors;
@@ -11,12 +15,13 @@ package body Memcp.Replay with
        (Is_On, Clocks, Clock_Cur, Embs, Misses, Miss_Text))
 is
 
-   --  A recorded clock value, indefinite so a list of them needs no owning
-   --  element.
    type Clock_Entry (Len : Natural) is record
       Value : String (1 .. Len);
    end record;
+   --  One recorded clock value, indefinite so the vector needs no owning
+   --  element.
 
+   --  The recorded clock values of one call, in recorded order.
    package Clock_Vectors is new SPARK.Containers.Formal.Unbounded_Vectors
      (Index_Type => Positive, Element_Type => Clock_Entry);
 
@@ -24,20 +29,34 @@ is
       Text : String (1 .. Len);
       Vec  : Candle_Spark.Embedding;
    end record;
+   --  One recorded embedding, keyed by the text it was produced from.
 
+   --  The recorded embeddings of one call.
    package Emb_Vectors is new SPARK.Containers.Formal.Unbounded_Vectors
      (Index_Type => Positive, Element_Type => Emb_Entry);
 
-   --  A soft cap so Add_* never approach Count_Type'Last (fixtures hold at most
-   --  a few hundred entries); a further Add past it is silently dropped.
    Max_Entries : constant Clock_Vectors.Capacity_Range := 1_000_000;
+   --  Soft cap on recorded entries per call, keeping Add_* clear of
+   --  Count_Type'Last; an Add past it is silently dropped.
 
    Is_On     : Boolean := False;
+   --  Whether the replay path is armed.
+
    Clocks    : Clock_Vectors.Vector;
+   --  Recorded clock values for the current call.
+
    Clock_Cur : Natural := 0;
+   --  How many of Clocks have been consumed by Advance_Clock.
+
    Embs      : Emb_Vectors.Vector;
+   --  Recorded embeddings for the current call.
+
    Misses    : Natural := 0;
+   --  Embedding lookups that found no recorded vector, saturating rather than
+   --  overflowing.
+
    Miss_Text : Memcp.Text.Builder;
+   --  The text of the most recent missed lookup.
 
    ------------
    -- Enable --

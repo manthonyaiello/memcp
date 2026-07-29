@@ -1,3 +1,6 @@
+--  Memcp.Resources body: each operation guards its own preconditions, then
+--  passes through to the owned Store or Embedder.
+
 package body Memcp.Resources with SPARK_Mode => On is
 
    use type MS.Open_Status;
@@ -14,9 +17,8 @@ package body Memcp.Resources with SPARK_Mode => On is
       Result     : out Status)
    is
       Store_St : MS.Open_Status;
+      --  Outcome of the store open; anything but Opened is Store_Failed.
    begin
-      --  R arrives reclaimed (Pre), so both handles may be (over)written
-      --  directly -- no pre-reclaim dance, no leak.
       MS.Open (R.The_Store, DB_Path, Store_St);
       if Store_St /= MS.Opened then
          Result := Store_Failed;
@@ -26,13 +28,11 @@ package body Memcp.Resources with SPARK_Mode => On is
       if Model_Path'Length > 0 then
          declare
             Load_St : Candle_Spark.Status;
+            --  Outcome of the model load; never reported to the caller.
          begin
-            --  Load takes The_Embedder as an out parameter; the Is_Reclaimed
-            --  precondition on R licensed that overwrite, so this needs no
-            --  caller-side Unload and raises no "statement has no effect".
             Candle_Spark.Load (R.The_Embedder, Model_Path, Load_St);
-            --  The load outcome is carried by the handle itself
-            --  (Embedder_Loaded reads it); assert the tie so Load_St is used.
+            --  The outcome lives in the handle, which Embedder_Loaded reads;
+            --  the assertion is what consumes Load_St.
             pragma Assert
               (Embedder_Loaded (R) = (Load_St = Candle_Spark.Ok));
          end;
@@ -47,8 +47,7 @@ package body Memcp.Resources with SPARK_Mode => On is
 
    procedure Close (R : in out Resources) is
    begin
-      --  Both reclaimers are idempotent, so Close is safe on any R state and
-      --  leaves it fully reclaimed.
+      --  Both reclaimers are idempotent, which is what makes Close idempotent.
       Candle_Spark.Unload (R.The_Embedder);
       MS.Close (R.The_Store);
    end Close;

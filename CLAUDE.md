@@ -20,6 +20,69 @@ make help       # list all targets
 If `alr`, `gnatprove`, `gnat`, or `cargo` is missing from PATH, **stop and ask
 the user to fix it** — do not hunt for binaries or reinstall.
 
+## Comments
+
+Terse. Say what a competent Ada/SPARK reader cannot see in the code, then stop.
+Applies to Ada, C shims, GPR files, shell scripts and the Makefile alike.
+
+- **No teaching.** Do not explain SPARK, Ada or SQLite semantics. Name the
+  entity and let the RM or vendor docs be the source. Explain this code's
+  purpose, requirement or hazard.
+- **No history.** Describe the code as it is, not as a change from what it was.
+  No dates, no "used to", no PR narration — that belongs in the commit.
+- **Respect abstraction.** Never name a client of the current unit. Name a peer
+  unit only when it is `with`'d *and* the comment is wrong without it. Naming
+  the C entity being bound is fine: that is the contract.
+- **Don't explain aspects.** `Global`, `Depends`, `Volatile_Function`,
+  `Annotate`, `Abstract_State` and their properties say what they say. Do not
+  restate them or justify their shape. Where a note is genuinely needed on an
+  aspect, put it *inside* the aspect clause.
+- **Say what an entity is, not how it came to be that way.** A type gets a line
+  ("Opaque database connection handle."), not a paragraph on its representation.
+- **Unit headers name the unit and its scope**, in a sentence or two. Facts
+  about individual entities belong on those entities, never summarized upward
+  into the header.
+
+### Placement is correctness, not style
+
+The AdaCore LSP plugins follow gnatdoc `--style=gnat`, so a doc block is
+attributed to the declaration **above** it. A block placed *before* a
+declaration therefore becomes the hover text of the *preceding* entity — the
+comment is not merely dropped, it is shown against the wrong name.
+
+- **Every doc block goes below its declaration.** Types, subprograms, objects,
+  constants, `pragma`s, and local declarations inside bodies. Bodies included:
+  hover works there too, and a body reader deserves documentation even though
+  gnatdoc does not publish it.
+- **A subprogram body has a declaration to document.** `-gnatys` is on, so every
+  local subprogram has one: put the block below the declaration and leave the
+  body bare. An aspect clause moves to the declaration too — Ada allows
+  `Pre`/`Post` on a body only when no declaration exists. An expression function
+  is already a declaration and needs nothing.
+- **One block per declaration.** Never share a leading block across a run of
+  constants — separate them with blank lines and give each its own block below.
+- **Never let a comment be the first thing inside a package.** It silently
+  becomes the package comment and overrides the file header.
+- **Packages and generics are the exception**: their block is read from above,
+  which is what makes a file header work.
+- Start the text with the entity's name where that aids hover reading
+  ("`Length`, clamped from size_t to Natural...").
+- `@param`/`@return`/`@enum` complete, and always a one-sentence lead line even
+  where it repeats a tag. Never delete a tag: `make docs-check` gates on them.
+- A note that belongs to an aspect goes *inside* the aspect clause, as a comment
+  between `with` and the aspect name — not in the doc block below.
+- `make docs-check` gates placement too, via `scripts/check-doc-placement.sh`
+  (`make docs-placement` to report without failing). The tree is at zero.
+
+### Where the prose goes instead
+
+Design rationale — why a seam, bound or schema has the shape it does, what a
+trust boundary assumes, what breaks if it changes — belongs in `docs/design/` as
+a numbered ADR, not in a comment. History belongs in the commit message. See
+`docs/design/0005`–`0013`; 0012 is the one to read first, since it records the
+parity obligations that no longer have a reference implementation to check
+against.
+
 ## Development
 
 If the user wants to do development, check to make sure the AdaCore skills

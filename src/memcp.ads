@@ -1,5 +1,4 @@
---  memcp: the composition root's namespace. Holds no declarations of its own
---  -- it exists only so Env, Json, Envelope, Extractor, Log, Replay,
---  Resources, Store, Text, and Tools can be its children.
+--  memcp: token-efficient, multi-project, multi-surface external memory for
+--  AI agents.
 package Memcp with SPARK_Mode => On is
 end Memcp;

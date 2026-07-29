@@ -1,26 +1,13 @@
---  Thin SPARK wrappers over the Rust pull API. Spec AND body are in SPARK:
---  the wrapper bodies are proved against these contracts, so the lifecycle
---  Posts below are theorems, not promises. The trusted base is reduced to
---  the five C import declarations in the body (whose Global/Side_Effects
---  claims describe rust/src/lib.rs) plus one single-statement escape hatch
---  (an uninitialized allocator, see Alloc_Uninit). No Ada subprogram is ever
---  called from Rust, so there are no exported symbols, no
---  access-to-subprogram values, and no callback whose caller SPARK cannot
---  see.
+--  C trust seam of the transport: the Rust pull API (open, next, read, respond)
+--  wrapped in SPARK contracts. The wrapper bodies are proved against these
+--  contracts, so the Posts below are theorems; the trusted base is the five
+--  imports in the body plus Alloc_Uninit's one statement.
 --
---  Handle lifecycle, enforced by proof in every SPARK caller:
---    Open  -> Is_Open (Server) or bind failed
---    Next  -> blocks; yields a live Request (or dead: transport ended)
---    Read_Body -> hands the caller OWNERSHIP of an exactly-sized copy of
---                 the body (the caller frees it; leak-freedom is proved)
---    Respond   -> consumes the Request (Post => not Is_Live)
---
---  The trusted claims (Rust side of the bargain, rust/src/lib.rs):
---    * a live handle stays valid until Respond, and its body bytes are
---      stable and exactly Body_Length long;
---    * bodies are capped at Max_Message (larger requests get 413 before a
---      handle is ever created);
---    * Respond copies the response before returning and frees the request.
+--  What Rust is trusted for (rust/src/lib.rs): a live handle stays valid until
+--  Respond, and its body bytes are stable and exactly Body_Length long; bodies
+--  are capped at Max_Message, larger requests getting 413 before a handle
+--  exists; Respond copies the response before returning, then frees the
+--  request.
 
 with System;
 
@@ -29,7 +16,10 @@ private package Spark_Mcp.Http.Bridge
 is
 
    type Server_Handle  is private;
+   --  A listening socket, bound by Open.
+
    type Request_Handle is private;
+   --  One pulled request, live until it is answered.
 
    function Is_Open (Server : Server_Handle) return Boolean;
    --  True once Open has bound the listening socket for this server.
@@ -37,8 +27,8 @@ is
    --  @return True if the socket is bound and the server can accept requests.
 
    function Is_Live (Request : Request_Handle) return Boolean;
-   --  True while a request handle is still awaiting a response (not yet
-   --  consumed by Respond, and not a dead handle from an ended accept loop).
+   --  True while a request still awaits a response: not yet consumed by
+   --  Respond, and not a dead handle from an ended accept loop.
    --  @param Request The request handle to query.
    --  @return True if the request is live and may still be read or answered.
 
@@ -58,10 +48,9 @@ is
    procedure Next (Server : Server_Handle; Request : out Request_Handle)
      with Global => (In_Out => Network),
           Pre    => Is_Open (Server);
-   --  Block until the next POST /mcp arrives; Rust answers 404/400/413
-   --  traffic itself and only surfaces real MCP requests. A dead Request
-   --  (not Is_Live) means the accept loop ended and no further request will
-   --  ever arrive.
+   --  Block until the next POST /mcp arrives; Rust answers 404/400/413 traffic
+   --  itself and surfaces only real MCP requests. A dead Request means the
+   --  accept loop ended and nothing further will arrive.
    --  @param Server An open server to accept the next request from.
    --  @param Request The next live request, or a dead handle if the loop ended.
 
@@ -70,9 +59,8 @@ is
           Pre    => Is_Live (Request),
           Post   => Data /= null
                     and then Data'Length = Body_Length (Request);
-   --  Allocate a String of exactly Body_Length and fill it with the request
-   --  body (a single memcpy in the trusted body -- no blank initialization,
-   --  no oversized buffer). Ownership moves to the caller.
+   --  Allocate a String of exactly Body_Length, fill it with the request body,
+   --  and move ownership to the caller. One memcpy, no blank initialization.
    --  @param Request The live request whose body is copied out.
    --  @param Data An exactly-sized owned copy of the body; the caller frees it.
 
@@ -81,35 +69,30 @@ is
           Pre    => Is_Live (Request),
           Post   => not Is_Live (Request);
    --  Send the response and release the request. Data = "" is a JSON-RPC
-   --  notification: Rust answers 204 with no body, otherwise 200 with
-   --  Content-Type: application/json. Data is read for exactly its length;
-   --  responses are not size-capped (only requests are).
+   --  notification, answered 204 with no body; otherwise 200 with Content-Type:
+   --  application/json. Responses are not size-capped, only requests.
    --  @param Request The live request to answer; consumed, so no longer Is_Live.
    --  @param Data The response payload, or "" to send a 204 notification ack.
 
 private
-   --  Full views: raw addresses of Rust-owned objects, modeled in SPARK as
-   --  opaque values (System.Address is private; only null-comparison is
-   --  used). Len's subtype makes Body_Length's bound a subtype fact rather
-   --  than a trusted claim -- Next proves it when constructing the handle.
 
    subtype Message_Length is Natural range 0 .. Max_Message;
-   --  Body sizes as a subtype, so Body_Length's bound is a subtype fact that
-   --  Next proves when constructing a handle rather than a trusted claim.
+   --  Body sizes, so Body_Length's bound is a subtype fact Next proves when it
+   --  constructs a handle rather than a trusted claim.
 
    type Server_Handle is record
       Ptr : System.Address := System.Null_Address;
       --  Raw address of the Rust-owned listener; null when unbound.
    end record;
-   --  Full view of a server handle: an opaque Rust listener address.
+   --  A listening socket, as the address of the Rust-owned listener.
 
    type Request_Handle is record
       Ptr : System.Address := System.Null_Address;
       --  Raw address of the Rust-owned request; null when dead.
       Len : Message_Length := 0;
-      --  Cached body length carrying Body_Length's proven bound.
+      --  Cached body length, carrying Body_Length's bound.
    end record;
-   --  Full view of a request handle: an opaque Rust request address plus its
-   --  proven body length.
+   --  One pulled request, as the address of the Rust-owned request plus its
+   --  body length.
 
 end Spark_Mcp.Http.Bridge;

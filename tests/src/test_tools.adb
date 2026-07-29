@@ -1,13 +1,10 @@
---  Proof-of-life driver for Memcp.Tools: the 9-tool marshalling layer end to
---  end, in-process (no socket). It seeds the Memcp.Resources Store directly --
---  the same singleton Invoke reads -- then drives each tool via Invoke and
---  checks the rendered JSON. No model is loaded, so the embedding-dependent
---  tools (save/search/fetch_chunks) are checked on their "embedder unavailable"
---  path; the read/list tools are checked against real seeded rows. -gnata makes
---  the Store's and spark_mcp's Pre/Post live along the way.
+--  Drives all nine Memcp.Tools entry points in process, with no socket: seeds
+--  Memcp.Resources directly, then calls each tool through Invoke and checks the
+--  rendered JSON. No model is loaded, so save, search and fetch_chunks are
+--  checked on their "embedder unavailable" path and the read/list tools against
+--  seeded rows. Built with -gnata, so every Pre/Post crossed is live.
 
 with Ada.Strings.Fixed;
-with Ada.Strings.Unbounded;  use Ada.Strings.Unbounded;
 with Ada.Text_IO;
 
 with Spark_Mcp;
@@ -26,6 +23,10 @@ procedure Test_Tools is
    use type Spark_Mcp.Tools.Result_Ptr;
 
    Failures : Natural := 0;
+   --  Number of failed checks; reported by the closing banner.
+
+   procedure Check (Cond : Boolean; Label : String);
+   --  Report Cond as one ok/FAIL line labelled Label, counting failures.
 
    procedure Check (Cond : Boolean; Label : String) is
    begin
@@ -37,18 +38,21 @@ procedure Test_Tools is
       end if;
    end Check;
 
-   --  True when Needle occurs anywhere in Haystack.
    function Has_Sub (Haystack, Needle : String) return Boolean is
      (Ada.Strings.Fixed.Index (Haystack, Needle) /= 0);
+   --  True when Needle occurs anywhere in Haystack.
 
    function Img (V : Memcp.Store.Row_Id) return String is
      (Ada.Strings.Fixed.Trim (V'Image, Ada.Strings.Both));
+   --  V as a trimmed decimal string, for splicing into JSON arguments.
 
-   --  The throwaway Resources the tools run against; Call closes over it.
    Res : Memcp.Resources.Resources;
+   --  The throwaway Resources every tool call runs against.
 
-   --  Drive one tool and return its rendered payload (or a marker for an error
-   --  result / null), freeing the ownership allocation.
+   function Call (Id : Memcp.Tools.Tool_Id; Args : String) return String;
+   --  Drive one tool and return its rendered payload, or a marker for an
+   --  error or null result, freeing the ownership allocation.
+
    function Call (Id : Memcp.Tools.Tool_Id; Args : String) return String is
       R : Spark_Mcp.Tools.Result_Ptr;
    begin
@@ -66,10 +70,14 @@ procedure Test_Tools is
    end Call;
 
    Zero : constant Candle_Spark.Embedding := [others => 0.0];
+   --  The embedding every seeded row carries: no model is loaded here.
+
    TS   : constant String := "2026-01-01T12:00:00+00:00";
+   --  created_at for the seeded rows.
 
    Open_St     : Memcp.Resources.Status;
    Seed_Sum_Id : Memcp.Store.Row_Id := 0;
+   --  Summary id of the seeded row, filled in by the seeding Save below.
 
 begin
    Memcp.Resources.Open (Res, ":memory:", "", Open_St);
@@ -83,8 +91,8 @@ begin
           "list_projects (empty) -> []");
    Check (Call (Memcp.Tools.Recent, "{""projects"":[""demo""]}") = "[]",
           "recent (empty) -> []");
-   --  A miss is a benign negative answer, not a failure: a plain
-   --  (isError:false at the envelope) one-line message, not a "null" block.
+   --  A miss is a benign answer: a one-line message with isError false at the
+   --  envelope, not a null block.
    Check (Call (Memcp.Tools.Fetch_Summary, "{""summary_id"":999}")
             = "No summary found for id 999.",
           "fetch_summary (miss) -> message");
@@ -124,26 +132,24 @@ begin
           "save without model -> embedder unavailable");
    --  A leaked-parameter save: the summary swallowed the diary across a
    --  </parameter><parameter name="diary"> boundary, with diary omitted. The
-   --  salvage splits it back apart (server.py's _salvage_leaked_params), so the
-   --  emptiness gate passes and we reach the embedder-unavailable path -- NOT
-   --  the "diary required" rejection the strict pre-salvage code returned.
+   --  salvage must split it back apart, so the emptiness gate passes and the
+   --  call reaches the embedder-unavailable path rather than "diary required".
    Check (Has_Sub (Call (Memcp.Tools.Save,
             "{""project"":""demo"",""summary"":""real summary</parameter>"
             & "<parameter name=\""diary\"">the diary</parameter>""}"),
             "embedder"),
           "save with leaked diary boundary -> salvaged, reaches embedder");
-   --  The leaked tags may carry an `ns:`-style namespace prefix (server.py's
-   --  _LEAK_BOUNDARY matches `(?:[A-Za-z][\w.\-]*:)?`); a prefixed leak must
-   --  still salvage rather than fall through to the "diary required" rejection.
+   --  A leaked tag may carry an `ns:`-style namespace prefix; it must still
+   --  salvage rather than fall through to "diary required".
    Check (Has_Sub (Call (Memcp.Tools.Save,
             "{""project"":""demo"",""summary"":""real summary</ns:parameter>"
             & "<ns:parameter name=\""diary\"">the diary</parameter>""}"),
             "embedder"),
           "save with namespace-prefixed leaked boundary -> salvaged");
-   --  When the model supplies BOTH fields, a boundary-looking sequence is
-   --  legitimate content, not a leak, so it must NOT be split. Here the summary
-   --  is exactly a leading boundary: splitting would truncate it to empty and
-   --  wrongly reject the save; leaving it intact reaches the embedder gate.
+   --  With both fields supplied, a boundary-looking sequence is content, not a
+   --  leak. This summary is exactly a leading boundary: splitting it would
+   --  truncate it to empty and reject the save, so reaching the embedder gate is
+   --  what says it was left intact.
    Check (Has_Sub (Call (Memcp.Tools.Save,
             "{""project"":""demo"",""diary"":""real diary"","
             & """summary"":""</parameter><parameter name=\""diary\"">"
@@ -159,8 +165,8 @@ begin
                    "project"),
           "save without project -> invalid params");
    --  upload_session, no-model paths. A transcript with turns needs the
-   --  embedder; a turn-free one (here: empty) does not, so its success path is
-   --  exercisable without a model.
+   --  embedder; a turn-free one does not, so its success path is exercisable
+   --  without a model.
    declare
    B64_With_Turns : constant String :=
      "eyJ0eXBlIjoidXNlciIsIm1lc3NhZ2UiOnsicm9sZSI6InVzZXIiLCJjb250ZW50Ijoi"
@@ -171,6 +177,8 @@ begin
      & "Y29udGVudCI6W3sidHlwZSI6InRoaW5raW5nIiwidGhpbmtpbmciOiJvbmx5IHRoaW5r"
      & "aW5nIn1dfX0Kbm90IGpzb24gYXQgYWxsCnsidHlwZSI6InN5c3RlbSIsInN1YnR5cGUi"
      & "OiJhd2F5X3N1bW1hcnkiLCJjb250ZW50IjoidGhlIHJlY2FwIGxpbmUifQo=";
+   --  A JSONL transcript carrying two text-bearing turns, a thinking-only
+   --  message, a non-JSON line and an away_summary recap.
 begin
    Check (Has_Sub
             (Call (Memcp.Tools.Upload_Session,
@@ -189,7 +197,7 @@ begin
              "base64"),
           "upload_session with bad base64 -> invalid params");
    --  "gA==" is valid base64 for the single byte 16#80#, which is not valid
-   --  UTF-8 -- Python's .decode("utf-8") rejects it, so we must too (issue #4).
+   --  UTF-8; the transcript has to be rejected on that ground.
    Check (Has_Sub
             (Call (Memcp.Tools.Upload_Session,
                    "{""project"":""up"",""session_id"":""u"","
@@ -220,11 +228,10 @@ begin
              "upload_session (repeat) -> idempotent already_existed:true");
    end;
 
-   --  The genuinely-new logic under upload_session -- base64 decode + the
-   --  extractor.py port -- verified directly (model-independent): only the two
-   --  text-bearing user/assistant messages survive; thinking parts, a
-   --  thinking-only message, and the non-JSON line are dropped; the recap is
-   --  the away_summary content.
+   --  Base64 decode and turn extraction, checked directly and independently of
+   --  any model: only the two text-bearing user/assistant messages survive,
+   --  thinking parts and the non-JSON line are dropped, and the recap is the
+   --  away_summary content.
    declare
       use type Memcp.Extractor.Transcript_Ptr;
       Dec  : Memcp.Extractor.Transcript_Ptr;
@@ -301,7 +308,7 @@ begin
       Check (St = Memcp.Store.Success, "seed Save_Session -> Success");
    end;
 
-   --  list_projects now reports demo.
+   --  list_projects reports the seeded project.
    declare
       J : constant String := Call (Memcp.Tools.List_Projects, "{}");
    begin
@@ -315,8 +322,7 @@ begin
       J : constant String :=
         Call (Memcp.Tools.Recent, "{""projects"":[""demo""],""n"":5}");
    begin
-      --  The Header's headline is derived from the *summary* body
-      --  (Parse_Headline), not the diary line -- store.py parity.
+      --  The headline is derived from the summary body, not the diary line.
       Check (Has_Sub (J, """headline"":""the full summary body""")
              and then Has_Sub (J, """session_id"":""sess-1""")
              and then Has_Sub (J, """kind"":""diary"""),

@@ -1,39 +1,7 @@
---  The composition-root resources the tool layer runs against: one opened
---  Store and one loaded Embedder, bundled in a single owning object. The tool
---  layer (and the -gnata test drivers) reach them ONLY through the total
---  operations below -- SPARK forbids handing out an access to an owned object,
---  so a caller passes the Resources object in and the operation reads the
---  Store/Embedder from it. Every operation is a thin, precondition-free
---  pass-through to the proved units beneath (Memcp.Store, Candle_Spark): it
---  guards the Store's own preconditions internally (Is_Open, non-empty
---  project, ...) and degrades to Db_Error / an empty result rather than
---  requiring the caller to establish them.
---
---  Why an object, not a package singleton: a Store and an Embedder are both
---  owned resources (Needs_Reclamation), and SPARK's leak/ownership analysis
---  tracks reclamation through the flow of a *data object*, not through package
---  state (which every subprogram must conservatively assume the worst about at
---  entry, since SPARK does not do whole-program analysis). Holding them in a
---  Resources object makes the open-once lifecycle explicit and proof-enforced:
---  Open's Pre => Is_Reclaimed (R) licenses the re-(over)write of the owned
---  handles with no pre-reclaim dance and no "statement has no effect"
---  suppression, and Close's Post => Is_Reclaimed (R) discharges the drop at
---  end of scope. The singleton form could prove neither (see issue #20).
---
---  SPARK_Mode On throughout; the verified work is in the units beneath.
---
---  Every store operation -- read or write -- carries In_Out on
---  Sqlite_Vec_Spark.DBMS, the external abstract state modelling the SQLite
---  subsystem across the FFI (see its note). The Resources object itself is
---  only observed (an `in` parameter): opening the connection once fixes the
---  handle, and thereafter running any query mutates DBMS, not the handle. A
---  read like Fetch_Summary is In_Out on DBMS because stepping a cursor mutates
---  connection state, and SPARK does not attempt to prove that one statement
---  cannot influence another over the same connection (the Ada.Text_IO
---  File_System stance). This effect propagates on up: through Memcp.Tools.Invoke
---  into the generic Spark_Mcp.Server.Dispatch seam and the Spark_Mcp.Http.Serve
---  loop, each re-analysed at memcp's instantiation, so the DBMS mutation stays
---  visible to flow analysis rather than hidden behind the seam.
+--  Memcp.Resources: the composition root's owned resources -- one opened Store
+--  and one loaded Embedder -- bundled in a single object whose open-once
+--  lifecycle GNATprove enforces. Opening is the one fallible step; every
+--  operation after it is total.
 
 with Ada.Text_IO;
 
@@ -44,20 +12,13 @@ with Sqlite_Vec_Spark;
 package Memcp.Resources with SPARK_Mode => On is
 
    package MS renames Memcp.Store;
+   --  Shorthand for the store vocabulary this spec is written in.
 
    type Resources is limited private
      with Annotate => (GNATprove, Ownership, "Needs_Reclamation"),
           Default_Initial_Condition =>
             not Is_Open (Resources) and then Is_Reclaimed (Resources);
-   --  The bundled composition-root resources: an owned Store and an owned
-   --  Embedder. Limited because its components are (each owns a raw C handle;
-   --  a copy would double-free).
-   --
-   --  Needs_Reclamation: a Resources owns its two constituents, so it must be
-   --  Closed before it is dropped or re-Opened. Its ownership is carried by its
-   --  owning components (Store, Embedder) -- promoting the partial view to an
-   --  ownership type is what lets its holders (memcp's main, the test drivers)
-   --  see the obligation and have GNATprove check the lifecycle at every call.
+   --  An owned Store and an owned Embedder, opened and closed as one.
 
    function Is_Open (R : Resources) return Boolean;
    --  Whether the bundled Store is currently open.
@@ -66,23 +27,19 @@ package Memcp.Resources with SPARK_Mode => On is
 
    function Is_Reclaimed (R : Resources) return Boolean
      with Ghost, Annotate => (GNATprove, Ownership, "Is_Reclaimed");
-   --  Reclamation predicate for the Needs_Reclamation annotation above. A
-   --  Resources is reclaimed once both constituents are -- the state GNATprove
-   --  requires before it is dropped or re-Opened. Ghost: proof only.
+   --  Reclamation predicate for Resources: reclaimed once both constituents
+   --  are.
    --  @param R The resources to test.
    --  @return True iff both the Store and the Embedder are reclaimed.
 
    function Embedder_Loaded (R : Resources) return Boolean;
-   --  True once a model has been loaded (Open with a non-empty Model_Path that
-   --  succeeded). The embedding-dependent tools gate on this.
+   --  Whether a model is loaded: Open was given a non-empty Model_Path and the
+   --  load succeeded.
    --  @param R The resources to test.
    --  @return True when an embedding model is loaded, False otherwise.
 
    type Status is (Ready, Store_Failed);
-   --  How Open ended. A failed embedder load is not fatal to serving: the
-   --  read/list tools work without an embedder; only save/search/fetch_chunks
-   --  need one and they report an error when it is absent (Embedder_Loaded is
-   --  False).
+   --  How Open ended; a failed embedder load does not appear here.
    --  @enum Ready The Store opened; serving can begin.
    --  @enum Store_Failed The Store could not be opened -- nothing is usable.
 
@@ -95,54 +52,42 @@ package Memcp.Resources with SPARK_Mode => On is
                     and then Is_Reclaimed (R),
           Post   => (if Result = Ready then Is_Open (R)),
           Global => (In_Out => Sqlite_Vec_Spark.DBMS);
-   --  Open the Store at DB_Path (":memory:" for a throwaway) and, when
-   --  Model_Path is non-empty, load the Embedder from it. Store_Failed means
-   --  the Store could not be opened -- nothing is usable. A failed or skipped
-   --  embedder load is not reported here; query Embedder_Loaded.
-   --
-   --  Pre => Is_Reclaimed (R): Open (over)writes both owned handles, so R must
-   --  arrive reclaimed -- a fresh Resources is reclaimed by its
-   --  Default_Initial_Condition; a re-Open requires a Close first. This is the
-   --  proof-enforced open-once protocol; it is what lets Candle_Spark.Load keep
-   --  its natural `out` mode with no caller-side pre-Unload and no "statement
-   --  has no effect" suppression. The DB_Path precondition (rather than an
-   --  internal guard that would skip the open) keeps the store-open on every
-   --  path.
-   --  @param R The resources to open; must arrive reclaimed.
+   --  Open the Store at DB_Path and, when Model_Path is non-empty, load the
+   --  Embedder from it. A failed or skipped embedder load is not reported here;
+   --  query Embedder_Loaded.
+   --  @param R The resources to open; a fresh one qualifies, a re-Open needs a
+   --    Close first.
    --  @param DB_Path Filesystem path to the SQLite database, ":memory:" for a
-   --    throwaway; the precondition requires it non-empty and DB_Path'Last below
-   --    Natural'Last.
-   --  @param Model_Path Path to the embedding model; when non-empty the Embedder
-   --    is loaded from it, otherwise the embedder load is skipped.
+   --    throwaway.
+   --  @param Model_Path Path to the embedding model; empty skips the embedder
+   --    load.
    --  @param Result How the open ended: Ready or Store_Failed.
 
    procedure Close (R : in out Resources)
      with Post    => Is_Reclaimed (R),
           Global  => (In_Out => Sqlite_Vec_Spark.DBMS),
+          --  R's new value is a constant and its old handles reach C only as
+          --  addresses, so a caller that Closes R and never reads it back needs
+          --  no "set but not used" suppression.
           Depends => (Sqlite_Vec_Spark.DBMS =>+ null, R => null, null => R);
-   --  Close the Store and unload the Embedder, leaving R reclaimed. Idempotent
-   --  -- safe on an already-reclaimed R -- so a caller may Close on every exit
-   --  path (including after a Store_Failed Open) to discharge R at end of scope.
-   --  Depends (as for Memcp.Store.Close): R's new value is a constant and its
-   --  old handles reach C only as addresses, so a caller that Closes R and
-   --  never reads it back needs no "set but not used" flow suppression.
+   --  Close the Store and unload the Embedder, leaving R reclaimed. Idempotent,
+   --  so a caller may Close on every exit path -- including after a Store_Failed
+   --  Open -- to discharge R at end of scope.
    --  @param R The resources to close; left reclaimed.
 
    function Embed
      (R : Resources; Text : String) return Candle_Spark.Embedding;
    --  Embed Text with the loaded model; the zero vector when no model is loaded
-   --  or Text is empty (the caller decides whether that is an error). The replay
-   --  path (recorded vectors) lives in the tool layer, not here.
+   --  or Text is empty, leaving the caller to decide whether that is an error.
    --  @param R The resources holding the embedder.
    --  @param Text The text to embed.
    --  @return The embedding vector, or the zero vector when no model is loaded
    --    or Text is empty.
 
    ---------------------------------------------------------------------------
-   --  Store operations. Each guards Is_Open (and the Store's other
-   --  preconditions) and degrades to Db_Error / an empty result, so callers
-   --  need no precondition of their own. R is observed (an `in` parameter);
-   --  the mutation lands on DBMS, not on R.
+   --  Store operations. Each guards Is_Open and the Store's other
+   --  preconditions itself, degrading to Db_Error and an empty result, so a
+   --  caller needs no precondition of its own.
    ---------------------------------------------------------------------------
 
    procedure Recent_Diary
@@ -347,34 +292,27 @@ package Memcp.Resources with SPARK_Mode => On is
 
 private
 
-   --  Hide the representation from clients' proof context: the Ownership
-   --  annotation on Resources requires its private part to be either SPARK_Mode
-   --  (Off) or hidden, and hiding keeps this body IN SPARK. Clients reason about
-   --  Resources abstractly -- through Is_Open, the Needs_Reclamation obligation,
-   --  and the operation contracts -- exactly as for Memcp.Store.Store and
-   --  Candle_Spark.Embedder.
    pragma Annotate (GNATprove, Hide_Info, "Private_Part");
+   --  Required for the Ownership annotation on Resources, and keeps the body in
+   --  SPARK.
 
    type Resources is limited record
       The_Store    : MS.Store;                --  The owned SQLite store.
       The_Embedder : Candle_Spark.Embedder;   --  The owned embedding model.
    end record;
-   --  Full view: the two owned constituents. No status flags -- the open/loaded
-   --  state and the reclamation state are read straight off the handles (a
-   --  handle IS its own liveness), which is what removes the old implicit
-   --  flag <-> ownership coupling the singleton relied on.
+   --  Full view: the two owned constituents and no status flags -- open, loaded
+   --  and reclaimed are each read off a handle.
 
    function Is_Open (R : Resources) return Boolean is
      (MS.Is_Open (R.The_Store));
-   --  Completion of the openness predicate: read straight off the owned store.
+   --  Completion of the openness predicate: read off the owned store.
    --  @param R The resources to test.
    --  @return True iff R holds an open store.
 
    function Is_Reclaimed (R : Resources) return Boolean is
      (MS.Is_Reclaimed (R.The_Store)
       and then Candle_Spark.Is_Reclaimed (R.The_Embedder));
-   --  Completion of the reclamation predicate: both owned constituents must be
-   --  reclaimed before a Resources object may be dropped.
+   --  Completion of the reclamation predicate.
    --  @param R The resources to test.
    --  @return True iff neither the store nor the embedder owns anything.
 

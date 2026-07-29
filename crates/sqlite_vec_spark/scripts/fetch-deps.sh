@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
 #
-# Vendor the C sources sqlite_vec_spark binds to: the SQLite amalgamation and
-# the sqlite-vec extension amalgamation. Both are compiled straight into the
-# Ada library by this crate's GPR (Languages => ("Ada", "C")) -- there is no
-# system libsqlite3 dependency and no separate build system.
+# Vendor the C sources sqlite_vec_spark binds to: the SQLite and sqlite-vec
+# amalgamations, compiled straight into the Ada library by this crate's GPR (no
+# system libsqlite3, no separate build system). Version- and sha256-pinned below
+# and .gitignore'd, so the build is reproducible and a supply-chain swap trips
+# the checksum. Run once before the first `alr build`; a no-op when the files
+# are already present.
 #
-# The fetched sources are version- and sha256-PINNED (below) and .gitignore'd,
-# mirroring candle_spark/scripts/install-model.sh: the repo stays light,
-# the build is reproducible, and a supply-chain swap trips the checksum. Run
-# once before the first `alr build`; it is a no-op when the files are present.
-#
-# Usage:  scripts/fetch-deps.sh
-# Requires: curl, shasum, unzip, tar. No system SQLite, no package manager.
+# Requires: curl, shasum, unzip, tar.
 
 set -euo pipefail
 
 # --- pinned versions + checksums -------------------------------------------
-# SQLite amalgamation 3.53.3 (2026-06-26). Path year is the release year.
+# SQLite amalgamation 3.53.3. The year in the URL path is the release year.
 SQLITE_URL="https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip"
 SQLITE_SHA256="646421e12aac110282ef8cc68f1a62d4bb15fc7b8f09da0b53e29ee690500431"
 SQLITE_SUBDIR="sqlite-amalgamation-3530300"
@@ -30,7 +26,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="${HERE}/csrc"
 mkdir -p "${DEST}"
 
-# verify SHA <file> <expected>: fail loudly on mismatch.
+# verify <file> <expected-sha256>: exit 1 on mismatch.
 verify() {
   local got
   got="$(shasum -a 256 "$1" | awk '{print $1}')"

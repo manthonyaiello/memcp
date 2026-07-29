@@ -1,3 +1,6 @@
+--  Memcp.Extractor body: hand-rolled base64 and UTF-8 acceptance, then one json
+--  parse per transcript line, with every parsed tree released on the spot.
+
 with Ada.Containers;         use type Ada.Containers.Count_Type;
 with Ada.Strings.Fixed;
 with Ada.Strings.Maps;
@@ -9,12 +12,13 @@ with Memcp.Text;
 
 package body Memcp.Extractor with SPARK_Mode => On is
 
-   --  Ownership-reclamation discards (see Memcp.Json for the rationale): Free /
-   --  Destroy null their argument as they reclaim it, and a Parse whose tree is
-   --  discarded keeps only its Status. The reclaimed handles are not read after.
    pragma Warnings
      (GNATprove, Off, "statement has no effect",
       Reason => "reclaiming owned memory has no SPARK-modelled effect");
+   --  This and the three pragmas below discard the flow reports of ownership
+   --  reclamation: Free and Destroy null their argument as they reclaim it, and
+   --  a Parse whose tree is discarded keeps only its Status.
+
    pragma Warnings
      (GNATprove, Off, "*is set by ""Free"" but not used after the call",
       Reason => "Free nulls its argument as it reclaims it; not read after");
@@ -24,37 +28,43 @@ package body Memcp.Extractor with SPARK_Mode => On is
    pragma Warnings
      (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
       Reason => "the parser is destroyed after Parse; its post-state is unread");
-   --  Add_Piece keeps a running count of appended parts; its final increment is
-   --  never read, which is inherent to the counter idiom, not a dead store.
+
    pragma Warnings
      (GNATprove, Off, "*is set by ""Add_Piece"" but not used after the call",
       Reason => "the final part count is never read after the last Add_Piece");
+   --  The running part count Add_Piece keeps: its final increment is never
+   --  read, which is the counter idiom rather than a dead store.
 
-   --  A JSON value model wide enough for any transcript line. Numeric ranges
-   --  only bound what the tokenizer accepts; the extractor reads only strings.
+   --  A JSON value model wide enough for any transcript line; the numeric
+   --  bounds limit only what the tokenizer accepts, and only strings are read.
    package Types is new JSON.Types
      (Integer_Type => Long_Long_Integer, Float_Type => Long_Float);
 
+   --  The line parser over that model; 512 levels of nesting is far past
+   --  anything a transcript line carries.
    package Parsers is new JSON.Parsers
      (Types => Types, Default_Maximum_Depth => 512);
 
    use type Types.Value_Kind;
    use type Types.JSON_Value_Access;
 
-   --  Python str.strip() removes ASCII whitespace; mirror that exact set (a
-   --  bare Trim would only drop spaces, and \r\n line ends would survive).
    Whitespace : constant Ada.Strings.Maps.Character_Set :=
      Ada.Strings.Maps.To_Set
        (' ' & ASCII.HT & ASCII.LF & ASCII.VT & ASCII.FF & ASCII.CR);
+   --  The whole ASCII whitespace set, not just the space a bare Trim would
+   --  drop: \r and \n line ends have to come off too.
 
    function Strip (S : String) return String is
      (Ada.Strings.Fixed.Trim (S, Whitespace, Whitespace));
+   --  S with ASCII whitespace trimmed from both ends.
 
    ------------
    -- Sextet --
    ------------
 
-   --  The base64 sextet for C, or -1 if C is outside the standard alphabet.
+   function Sextet (C : Character) return Integer;
+   --  The base64 sextet for C, or -1 when C is not in the standard alphabet.
+
    function Sextet (C : Character) return Integer is
    begin
       case C is
@@ -71,20 +81,22 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Valid_Utf8 --
    ----------------
 
-   --  True when S (a byte sequence, one octet per Character) is well-formed
-   --  UTF-8 per RFC 3629 -- the same acceptance Python's bytes.decode("utf-8")
-   --  enforces (rejects overlong forms, surrogates U+D800..DFFF, and code
-   --  points above U+10FFFF). upload_session refuses a transcript that fails
-   --  this, matching server.py, rather than persisting mojibake.
+   function Valid_Utf8 (S : String) return Boolean;
+   --  True when S, taken as one octet per Character, is well-formed UTF-8
+   --  per RFC 3629: overlong forms, surrogates U+D800 .. DFFF and code
+   --  points above U+10FFFF are all rejected.
+
    function Valid_Utf8 (S : String) return Boolean is
       I : Integer := S'First;
+      --  Index of the octet that starts the sequence under examination.
 
       function Byte (K : Integer) return Natural is (Character'Pos (S (K)))
         with Pre => K in S'Range;
+      --  The octet at K as a number.
 
-      --  A continuation octet 10xxxxxx present at K (in range).
       function Cont (K : Integer) return Boolean is
         (K in S'Range and then Byte (K) in 16#80# .. 16#BF#);
+      --  True when K is in range and holds a 10xxxxxx continuation octet.
    begin
       while I <= S'Last loop
          pragma Loop_Invariant (I >= S'First);
@@ -161,14 +173,17 @@ package body Memcp.Extractor with SPARK_Mode => On is
       Ok      : out Boolean)
    is
       Groups : constant Natural := Encoded'Length / 4;
+      --  Number of 4-character groups in Encoded.
+
       B      : Memcp.Text.Builder;
+      --  The decoded bytes; the builder's own cap is Max_Transcript.
    begin
       Decoded := null;
       Ok      := False;
       Memcp.Text.Reset (B);
 
-      --  Standard base64 is always a whole number of 4-char groups (padding
-      --  included); anything else is malformed (Python's "Incorrect padding").
+      --  Padding included, standard base64 is a whole number of 4-character
+      --  groups; anything else is malformed.
       if Encoded'Length mod 4 /= 0 then
          return;
       end if;
@@ -222,21 +237,21 @@ package body Memcp.Extractor with SPARK_Mode => On is
             end if;
          end;
 
-         --  A decoded transcript past the field budget is refused (never a
-         --  runtime fault); the caller reports it like malformed base64.
+         --  Past Max_Transcript the transcript is refused, not truncated and
+         --  never a runtime fault.
          if Memcp.Text.Overflowed (B) then
             return;
          end if;
       end loop;
 
-      --  Python decodes the bytes as UTF-8 and rejects an invalid encoding;
-      --  do the same so a non-UTF-8 payload is refused, not persisted as
-      --  mojibake and later re-emitted by fetch_turns/fetch_chunks.
+      --  Refuse a payload that is not valid UTF-8 rather than store mojibake to
+      --  be handed back later.
       declare
          V : constant String := Memcp.Text.Value (B);
+         --  The decoded bytes, still unvalidated.
       begin
          if not Valid_Utf8 (V) then
-            return;   --  Ok stays False -- the caller reports it like bad base64
+            return;   --  Ok stays False: refused like malformed base64
          end if;
          Decoded := new String'(V);
          Ok      := True;
@@ -247,8 +262,11 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Str_Member --
    ----------------
 
-   --  The string value of member Key of Obj, or "" (Obj null / not object /
-   --  member absent or not a string). Observer rooted at the access parameter.
+   function Str_Member
+     (Obj : access constant Types.JSON_Value; Key : String) return String;
+   --  The string value of member Key of Obj, or "" when Obj is null, is not
+   --  an object, or has no such string member.
+
    function Str_Member
      (Obj : access constant Types.JSON_Value; Key : String) return String
    is
@@ -270,7 +288,12 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Obj_Get --
    -------------
 
-   --  The member Key of Obj as an observer, or null (null-safe, statement form).
+   function Obj_Get
+     (Obj : access constant Types.JSON_Value; Key : String)
+      return access constant Types.JSON_Value;
+   --  The member Key of Obj, or null when Obj is null, is not an object, or
+   --  has no such member.
+
    function Obj_Get
      (Obj : access constant Types.JSON_Value; Key : String)
       return access constant Types.JSON_Value
@@ -286,19 +309,25 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Parse_Line --
    ----------------
 
-   --  Parse one transcript line. Doc is null (no leak) when the line is blank
-   --  or not a JSON object. The caller destroys any returned tree via Free.
    procedure Parse_Line
      (Line : String;
       Doc  : out Types.JSON_Value_Access;
       Ok   : out Boolean)
-     with Post => (if not Ok then Doc = null)
+     with Post => (if not Ok then Doc = null);
+   --  Parse one transcript line. Doc is null, with nothing leaked, when the
+   --  line is blank or is not a JSON object; otherwise the caller owns the
+   --  tree and must Free it.
+
+   procedure Parse_Line
+     (Line : String;
+      Doc  : out Types.JSON_Value_Access;
+      Ok   : out Boolean)
    is
-      --  P and Local are released on every path (Destroy/Free below); json's
-      --  ownership + Always_Terminates contracts prove leak-freedom and
-      --  termination, so these discharge cleanly.
       P     : Parsers.Parser;
+      --  The line's parser, destroyed on every path below.
+
       Local : aliased Types.JSON_Value_Access;
+      --  The parsed tree, handed to Doc only when it is a JSON object.
    begin
       Doc := null;
       Ok  := False;
@@ -329,14 +358,24 @@ package body Memcp.Extractor with SPARK_Mode => On is
    -- Append_Text_Parts --
    -----------------------
 
-   --  extractor.py _text_parts: append the user/assistant text of a content
-   --  field (a bare string, or a list of typed parts, only "text" kept) into B,
-   --  joined with a blank line. Appends nothing when nothing survives.
+   procedure Append_Text_Parts
+     (B       : in out Memcp.Text.Builder;
+      Content : access constant Types.JSON_Value);
+   --  Append the text of a message's content field to B, joining the pieces
+   --  with a blank line. Content is either a bare string or a list of typed
+   --  parts of which only "text" is kept; nothing is appended when nothing
+   --  survives.
+
    procedure Append_Text_Parts
      (B       : in out Memcp.Text.Builder;
       Content : access constant Types.JSON_Value)
    is
       Count : Natural := 0;
+      --  Pieces appended so far; nonzero is what earns a separator.
+
+      procedure Add_Piece (Text : String);
+      --  Append Text stripped, preceded by a blank line unless it is first.
+      --  A piece that strips to nothing is dropped.
 
       procedure Add_Piece (Text : String) is
          S : constant String := Strip (Text);
@@ -384,10 +423,15 @@ package body Memcp.Extractor with SPARK_Mode => On is
 
    function Extract_Turns (Transcript : String) return Turn_List is
       Turns : Turn_List := Turn_Vectors.Empty_Vector;
-      Start : Natural := Transcript'First;
+      --  The turns accumulated so far, in transcript order.
 
-      --  Append the turn for one transcript line to Turns (nothing for a line
-      --  that is not a surviving user/assistant message).
+      Start : Natural := Transcript'First;
+      --  First index of the line the scan below is inside.
+
+      procedure Process_Line (Line : String);
+      --  Append the turn for one line to Turns, or nothing when the line is
+      --  not a user/assistant message with surviving text.
+
       procedure Process_Line (Line : String) is
          Doc : Types.JSON_Value_Access;
          Ok  : Boolean;
@@ -431,6 +475,8 @@ package body Memcp.Extractor with SPARK_Mode => On is
                         declare
                            S : constant String := Memcp.Text.Value (TB);
                         begin
+                           --  Capacity guard, out of reach for a transcript
+                           --  bounded by Max_Transcript.
                            if Turn_Vectors.Length (Turns)
                              < Turn_Vectors.Capacity_Range'Last
                            then
@@ -468,7 +514,14 @@ package body Memcp.Extractor with SPARK_Mode => On is
 
    function Extract_Recap (Transcript : String) return String is
       Last  : Memcp.Text.Builder;
+      --  The most recent non-empty recap seen, and the result.
+
       Start : Natural := Transcript'First;
+      --  First index of the line the scan below is inside.
+
+      procedure Process_Line (Line : String);
+      --  Replace Last with this line's recap, when it is a non-empty
+      --  away_summary.
 
       procedure Process_Line (Line : String) is
          Doc : Types.JSON_Value_Access;

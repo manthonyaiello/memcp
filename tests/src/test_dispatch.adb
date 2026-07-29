@@ -1,8 +1,6 @@
 --  End-to-end test of memcp's Dispatch: raw JSON-RPC 2.0 request text in,
---  response text out. This exercises the piece wired up in this step -- the
---  json-based Memcp.Envelope.Parse_Envelope supplying spark_mcp's generic
---  formal -- plus all of Respond's routing behind it. Mirrors the request
---  shapes in ../../tests/test_server.py (Python) at the wire level.
+--  response text out. Covers method routing, id echoing and error framing at
+--  the wire level -- not tool behaviour.
 
 with Ada.Command_Line;
 with Ada.Strings.Fixed;
@@ -19,6 +17,10 @@ with Memcp.Resources;
 procedure Test_Dispatch is
 
    Failures : Natural := 0;
+   --  Failed checks so far; a non-zero count sets a non-zero exit status.
+
+   procedure Check (Cond : Boolean; Label : String);
+   --  Report Cond against Label as "ok" or "FAIL", counting a failure.
 
    procedure Check (Cond : Boolean; Label : String) is
    begin
@@ -30,6 +32,9 @@ procedure Test_Dispatch is
       end if;
    end Check;
 
+   procedure Check_Has (Haystack, Needle, Label : String);
+   --  Check that Needle occurs in Haystack, printing both on failure.
+
    procedure Check_Has (Haystack, Needle, Label : String) is
       use Ada.Strings.Fixed;
    begin
@@ -40,16 +45,15 @@ procedure Test_Dispatch is
       end if;
    end Check_Has;
 
-   --  A throwaway in-memory Resources the tools run against; the seam is a
-   --  3-argument adapter that closes over it (mirrors memcp.adb). Opened in the
-   --  body below before any request is dispatched.
    Res : Memcp.Resources.Resources;
+   --  The store the tools run against, opened :memory: before any dispatch.
 
    procedure Invoke_Tool
      (Id        : Memcp.Tools.Tool_Id;
       Arguments : String;
       Result    : out Spark_Mcp.Tools.Result_Ptr)
      with Pre => Arguments'Length <= Spark_Mcp.Max_Field;
+   --  The Invoke seam: a three-argument adapter closing over Res.
 
    procedure Invoke_Tool
      (Id        : Memcp.Tools.Tool_Id;
@@ -60,7 +64,8 @@ procedure Test_Dispatch is
       Memcp.Tools.Invoke (Res, Id, Arguments, Result);
    end Invoke_Tool;
 
-   --  The real composition: memcp's tools + the json-based envelope parser.
+   --  The composition under test: memcp's tools plus its json-based envelope
+   --  parser supplying spark_mcp's Parse_Envelope formal.
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
       Server_Version => "0.1.0",
@@ -72,11 +77,12 @@ procedure Test_Dispatch is
       Invoke          => Invoke_Tool,
       Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
 
-   --  Dispatch is now a procedure handing out an ownership allocation (null for
-   --  a notification). This wrapper keeps the assertions below reading as raw
-   --  text-in / text-out: drive Dispatch, copy the body out ("" for null), free.
+   function Dispatch_Str (Request : String) return String;
+   --  Dispatch one request and return the response text, "" for a
+   --  notification, freeing the allocation Dispatch hands out.
+
    function Dispatch_Str (Request : String) return String is
-      use type Spark_Mcp.Response_Ptr;  --  "=" against null below
+      use type Spark_Mcp.Response_Ptr;
       P : Spark_Mcp.Response_Ptr;
    begin
       MCP.Dispatch (Request, P);
@@ -92,12 +98,12 @@ procedure Test_Dispatch is
    end Dispatch_Str;
 
    Open_St : Memcp.Resources.Status;
+   --  Status of the Open below; :memory: does not fail, so nothing reads it.
 
 begin
-   --  The tools run against Res; open a throwaway in-memory store so a
-   --  tools/call routes to a live tool (no model loaded, so the embedding tools
-   --  would report "embedder unavailable" -- not exercised here; this file tests
-   --  routing, not tool behaviour).
+   --  A live store, so a tools/call reaches a real tool. No model is loaded, so
+   --  the embedding tools would report "embedder unavailable"; they are not
+   --  exercised here.
    Memcp.Resources.Open (Res, ":memory:", "", Open_St);
 
    -------------------------------------------------------------------------
@@ -115,7 +121,7 @@ begin
    end;
 
    -------------------------------------------------------------------------
-   --  ping -- STRING id echoed verbatim (quotes preserved)
+   --  ping -- string id echoed verbatim, quotes preserved
    -------------------------------------------------------------------------
    Check
      (Dispatch_Str ("{""jsonrpc"":""2.0"",""id"":""abc"",""method"":""ping""}")
@@ -147,8 +153,7 @@ begin
       "notification: method with no id is a notification");
 
    -------------------------------------------------------------------------
-   --  tools/call -- name extracted, routed to the (stubbed) tool. Nested
-   --  arguments must parse without tripping Bad_Json.
+   --  tools/call -- name extracted and routed, nested arguments parsed
    -------------------------------------------------------------------------
    declare
       R : constant String := Dispatch_Str
@@ -159,17 +164,16 @@ begin
       Check_Has (R, """id"":3", "tools/call: id echoed");
       Check_Has (R, """isError"":false",
                  "tools/call: reaches the tool (success)");
-      --  recent got an explicit (empty) 'projects', so the empty store yields
-      --  "[]" -- proof the name routed to recent and its arguments parsed.
+      --  An explicit empty 'projects' over an empty store yields "[]", so the
+      --  name routed to recent and its arguments parsed.
       Check_Has (R, """text"":""[]""",
                  "tools/call: tool NAME extracted, routed to recent");
    end;
 
    -------------------------------------------------------------------------
-   --  tools/call, tool-execution failure -- surfaced to the model as an
-   --  isError result (the MCP way), NOT a JSON-RPC error. JSON-RPC errors are
-   --  reserved for faults caught before Invoke (see the unknown-tool case just
-   --  below). fetch_summary with no summary_id fails validation in-tool.
+   --  tools/call, tool-execution failure -- an isError result, not a JSON-RPC
+   --  error, which is reserved for faults caught before Invoke. fetch_summary
+   --  with no summary_id fails validation in-tool.
    -------------------------------------------------------------------------
    declare
       use Ada.Strings.Fixed;
@@ -185,8 +189,8 @@ begin
    end;
 
    -------------------------------------------------------------------------
-   --  tools/call, fetch_summary miss -- a benign non-error one-line message,
-   --  not a bare "null" block (the :memory: store is empty, so any id misses).
+   --  tools/call, fetch_summary miss -- a benign one-line message, not a bare
+   --  "null" block. The store is empty, so any id misses.
    -------------------------------------------------------------------------
    declare
       R : constant String := Dispatch_Str

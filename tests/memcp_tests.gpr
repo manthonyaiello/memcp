@@ -15,7 +15,7 @@ project Memcp_Tests is
    for Create_Missing_Dirs use "True";
 
    package Compiler is
-      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99");
+      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99", "-gnatys");
       --  Same permission memcp needs to instantiate the json generics.
       for Local_Configuration_Pragmas use "../gnat.adc";
    end Compiler;

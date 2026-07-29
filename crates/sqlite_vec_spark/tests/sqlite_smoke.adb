@@ -1,17 +1,9 @@
---  Proof-of-life for sqlite_vec_spark: drive the WHOLE binding end-to-end in
---  process against an in-memory database, the way memcp's Store will.
---
---    open :memory:  ->  create a table + a vec0 virtual table  ->  INSERT a row
---    (prepare/bind_text/step, read last_insert_rowid)  ->  INSERT its packed
---    float[384] embedding (bind_int64 + bind_blob)  ->  KNN `MATCH ... ORDER BY
---    distance` (bind_blob query, read column_int64 rowid + column_double
---    distance)  ->  read the TEXT back through a caller-owned Text_Ptr (+ Free).
---
---  Every step is asserted; built with -gnata (see the gpr), so a bad Status,
---  wrong rowid, non-zero self-distance, or mismatched text aborts with
---  Assertion_Error and a non-zero exit. This is the sqlite analogue of candle's
---  "hello -> norm 1.0" run: it proves the C link, the vec0 registration, and
---  the marshalling actually work, not just that the wrappers prove.
+--  Exercises the whole binding against an in-memory database: create a table
+--  and a vec0 virtual table, INSERT a row plus its packed float[384] embedding,
+--  KNN MATCH, read the TEXT back. Built with -gnata (see the gpr), so a bad
+--  Status, wrong rowid, non-zero self-distance or mismatched text exits
+--  non-zero. Covers the C link, vec0 registration and marshalling -- what proof
+--  cannot reach.
 
 with Ada.Text_IO;            use Ada.Text_IO;
 with Ada.Streams;
@@ -24,18 +16,19 @@ procedure Sqlite_Smoke is
    use type Interfaces.IEEE_Float_64;
    use type Ada.Streams.Stream_Element_Offset;
 
-   --  A 384-float embedding and its byte-identical blob view (1536 bytes). The
-   --  Unchecked_Conversion is the same packed layout sqlite-vec stores and
-   --  memcp will overlay onto Candle_Spark.Embedding.
    type F32_Array is array (1 .. 384) of Interfaces.IEEE_Float_32;
+   --  A 384-float embedding, the packed layout vec0 expects.
+
    subtype Blob is Ada.Streams.Stream_Element_Array (1 .. 384 * 4);
+   --  The byte-identical 1536-byte view of an F32_Array.
+
    function To_Blob is new Ada.Unchecked_Conversion (F32_Array, Blob);
 
    DB : Database;
    St : Status;
    V  : F32_Array := (others => 0.0);
 begin
-   --  A simple non-degenerate unit-ish vector; stored == queried so the KNN
+   --  Non-degenerate, and the same vector is stored and queried, so the KNN
    --  self-distance must come back ~0.
    V (1) := 1.0;
    V (2) := 0.5;
@@ -110,7 +103,8 @@ begin
       Finalize (Stmt);
    end;
 
-   --  Read the TEXT back through an owned Text_Ptr, distinguishing NULL.
+   --  Read the TEXT back: Column_Text hands over a caller-owned Text_Ptr, so
+   --  Free it; Column_Is_Null separates SQL NULL from an empty string.
    declare
       Stmt : Statement;
       T    : Text_Ptr;

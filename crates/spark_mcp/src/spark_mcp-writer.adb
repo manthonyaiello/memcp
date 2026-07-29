@@ -1,18 +1,22 @@
+--  Spark_Mcp.Writer body: escaping in one pass into a worst-case-sized buffer.
+
 package body Spark_Mcp.Writer with SPARK_Mode => On is
 
    Hex_Digit : constant array (0 .. 15) of Character := "0123456789abcdef";
+   --  Lowercase hex digits indexed by value, for the "\u00XX" form.
 
-   ----------
+   ------------
    -- Escape --
-   ----------
+   ------------
 
    function Escape (S : String) return String is
-      --  Worst case every character expands to Max_Expansion, so a single
-      --  buffer of that size never overflows and no second pass is needed.
-      --  Fully initialized so flow analysis sees Buf (1 .. Last) as defined;
-      --  the tail past Last is intentionally unused.
       Buf  : String (1 .. Max_Expansion * S'Length) := (others => ' ');
+      --  The escaped content, built in place. Sized for the worst case, so one
+      --  pass never overflows; initialized in full so flow analysis sees
+      --  Buf (1 .. Last) as defined, and the tail past Last is unused.
+
       Last : Natural := 0;
+      --  Index in Buf of the last character written.
    begin
       for I in S'Range loop
          pragma Loop_Invariant (Last <= Max_Expansion * (I - S'First));

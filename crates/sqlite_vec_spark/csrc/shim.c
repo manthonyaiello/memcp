@@ -1,24 +1,11 @@
-/* shim.c -- the small, committed C surface between the Sqlite_Vec_Spark SPARK
- * wrappers and the two vendored amalgamations (sqlite3.c, sqlite-vec.c, both
- * .gitignore'd -- see scripts/fetch-deps.sh). Everything here is deliberately
- * kept in C rather than imported straight into Ada, because each item hides a
- * C-ism that has no clean Ada spelling:
+/* shim.c -- the committed C surface between the Sqlite_Vec_Spark wrappers and
+ * the vendored amalgamations (sqlite3.c, sqlite-vec.c, both .gitignore'd -- see
+ * scripts/fetch-deps.sh). Each entry point hides a C-ism with no clean Ada
+ * spelling: the void(*)(void) cast for sqlite3_auto_extension, the
+ * SQLITE_TRANSIENT sentinel ((destructor)-1), SQLite-owned column buffers.
  *
- *   1. sqlite-vec registration -- sqlite3_auto_extension takes a
- *      void(*)(void); the cast and the run-once guard live here.
- *   2. bind text/blob -- sqlite3_bind_text/blob need the SQLITE_TRANSIENT
- *      sentinel ((destructor)-1) so SQLite copies the bytes before returning.
- *      Passing that magic pointer from Ada is ugly; hide it.
- *   3. column text -- SQLite owns the column buffer and it is only valid until
- *      the next step/reset/finalize, and the byte length must be measured in
- *      the type-conversion-safe order (text THEN bytes). The two entry points
- *      below encapsulate that: _len probes, _copy fills a caller-owned buffer.
- *      This is the sqlite analogue of Spark_Mcp.Http's mcp_body_read: SQLite
- *      never frees anything of ours and we never free anything of SQLite's;
- *      the Ada side owns (and Unchecked_Deallocation-frees) the copy.
- *
- * SQLITE_CORE makes sqlite-vec.h pull in sqlite3.h (not sqlite3ext.h) and use
- * the core API directly -- the documented static-link path.
+ * SQLITE_CORE makes sqlite-vec.h pull in sqlite3.h (not sqlite3ext.h) -- the
+ * documented static-link path.
  */
 
 #define SQLITE_CORE 1
@@ -26,23 +13,14 @@
 #include "sqlite-vec.h"
 #include <string.h>
 
-/* Every mutating entry point below returns void and reports its SQLite result
- * code through an `int *out_rc`, rather than returning the code directly. This
- * is the same (return code, out param) split as memcp_sqlite_open/prepare, but
- * for a different SPARK reason: a void return lets the Ada side import each of
- * these as a *procedure*, and only a procedure may carry an In_Out effect on
- * the DBMS abstract state (a value-returning function may not). Modelling every
- * mutation as an In_Out on DBMS is what makes SPARK treat operations on one
- * statement as potentially influencing another through the shared connection --
- * the same honesty Ada.Text_IO takes with its File_System state. The read-only
- * entry points (column_*, changes, last_insert_rowid) keep returning their
- * value directly: they carry no DBMS effect. */
+/* Every mutating entry point returns void and reports its SQLite result code
+ * (SQLITE_OK == 0) through `int *out_rc`, so Ada imports it as a procedure with
+ * an In_Out effect on DBMS. The column_* readers return their value directly. */
 
-/* Register sqlite-vec as an auto-extension so every connection opened
- * afterwards gets the vec0 virtual table + vec_* functions. Idempotent: the
- * static guard means repeated Open calls do not grow SQLite's auto-extension
- * list. Single-threaded by design (see README), so the unguarded static is
- * safe. Reports an SQLite result code (SQLITE_OK == 0) through out_rc. */
+/* Register sqlite-vec as an auto-extension: connections opened afterwards get
+ * the vec0 virtual table and vec_* functions. The static guard keeps repeat
+ * calls from growing SQLite's auto-extension list; it is unsynchronized -- the
+ * crate is single-threaded by design. */
 void memcp_sqlite_register_vec(int *out_rc) {
   static int done = 0;
   if (done) {
@@ -56,53 +34,39 @@ void memcp_sqlite_register_vec(int *out_rc) {
   *out_rc = rc;
 }
 
-/* Open (or create) the database at `path`, READWRITE|CREATE. Splits SQLite's
- * (return code, out handle) into two out-pointers with a void return, because
- * SPARK functions may not have out parameters -- so the Ada side imports this
- * as a procedure (the shape of candle_embed_load). On failure SQLite may still
- * set *out_db to a handle that must be closed; the Ada wrapper does so. */
+/* Open (or create) the database at `path`, READWRITE|CREATE. On failure
+ * sqlite3_open_v2 may still leave a handle in *out_db that must be closed. */
 void memcp_sqlite_open(const char *path, sqlite3 **out_db, int *out_rc) {
   *out_rc = sqlite3_open_v2(path, out_db,
                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
 }
 
-/* Close the connection and null the caller's handle.
- *
- * Takes sqlite3** rather than sqlite3*, and nulls it, for the Ada ownership
- * model: the Ada handle type is a SPARK ownership type, so its release
- * operation has to be an `in out` parameter whose postcondition says the
- * handle is left in the reclaimed (null) state. Passing the handle by
- * reference is what makes that postcondition *executable* -- the test builds
- * run with -gnata, so every Close checks at run time that the pointer really
- * was released, rather than the Ada side merely asserting it. It also makes
- * Close idempotent and use-after-close impossible through this handle: a
- * second call sees NULL, and sqlite3_close_v2 (NULL) is a documented no-op.
- *
- * close_v2 (not close) because it tolerates statements that have not been
- * finalized yet: it defers the actual close until the last one is. The result
- * code is deliberately dropped -- there is nothing a caller can do about a
- * failed close, and the handle is gone either way. */
+/* Close the connection and null the caller's handle. Nulling through sqlite3**
+ * is what the Ada release postcondition checks at run time under -gnata, and it
+ * makes Close idempotent: sqlite3_close_v2 (NULL) is a documented no-op.
+ * close_v2, not close: it tolerates statements not yet finalized, deferring the
+ * real close until the last one goes. The result code is dropped -- nothing a
+ * caller could do about it. */
 void memcp_sqlite_close(sqlite3 **db) {
   sqlite3_close_v2(*db);
   *db = NULL;
 }
 
-/* Compile one statement (first `nbyte` bytes of `sql`, no NUL needed). Same
- * two-out-pointer split as memcp_sqlite_open, for the same SPARK reason. */
+/* Compile one statement from the first `nbyte` bytes of `sql` (no NUL needed).
+ * The resulting statement points into `db`, which must outlive it. */
 void memcp_sqlite_prepare(sqlite3 *db, const char *sql, int nbyte,
                           sqlite3_stmt **out_stmt, int *out_rc) {
   *out_rc = sqlite3_prepare_v2(db, sql, nbyte, out_stmt, NULL);
 }
 
-/* Run `sql` (NUL-terminated) with no result rows. The callback/arg/errmsg
- * arguments sqlite3_exec takes are always NULL here, so they are folded into
- * the shim rather than threaded through Ada. */
+/* Run `sql` (NUL-terminated) with no result rows. sqlite3_exec's
+ * callback/arg/errmsg are always NULL here, so they are not threaded to Ada. */
 void memcp_sqlite_exec(sqlite3 *db, const char *sql, int *out_rc) {
   *out_rc = sqlite3_exec(db, sql, 0, 0, 0);
 }
 
-/* Bind parameter `idx` (1-based) to `len` bytes of text. SQLITE_TRANSIENT tells
- * SQLite to take its own copy, so the Ada String need not outlive the call. */
+/* Bind parameter `idx` (1-based) to `len` bytes of text. SQLITE_TRANSIENT:
+ * SQLite copies, so the Ada String need not outlive the call. */
 void memcp_sqlite_bind_text(sqlite3_stmt *stmt, int idx, const char *text,
                             int len, int *out_rc) {
   *out_rc = sqlite3_bind_text(stmt, idx, text, len, SQLITE_TRANSIENT);
@@ -136,33 +100,28 @@ void memcp_sqlite_reset(sqlite3_stmt *stmt, int *out_rc) {
   *out_rc = sqlite3_reset(stmt);
 }
 
-/* Destroy the statement and null the caller's handle. Takes sqlite3_stmt**,
- * and nulls it, for exactly the reasons memcp_sqlite_close does (see there):
- * it is the release operation of an Ada ownership type, so the reclaimed state
- * must be observable in the handle itself. Idempotent -- sqlite3_finalize
- * (NULL) is a documented no-op. The result code is dropped: finalize reports
- * the *last step's* deferred error, which Step/Reset already surfaced. */
+/* Destroy the statement and null the caller's handle, as memcp_sqlite_close
+ * does, and likewise idempotent: sqlite3_finalize (NULL) is a documented no-op.
+ * The result code is dropped: it repeats the last step's deferred error, which
+ * Step/Reset already surfaced. */
 void memcp_sqlite_finalize(sqlite3_stmt **stmt) {
   sqlite3_finalize(*stmt);
   *stmt = NULL;
 }
 
-/* UTF-8 byte length of column `col` (0-based) of the current row. Calls
- * column_text FIRST to force any type conversion, THEN column_bytes -- the
- * order SQLite documents as safe (bytes-before-text can report a pre-conversion
- * size). Valid only while the current row is live (no step/reset/finalize since
- * the last SQLITE_ROW). Returns 0 for NULL or empty. */
+/* UTF-8 byte length of column `col` (0-based) of the current row. column_text
+ * before column_bytes: the reverse order can report a pre-conversion size.
+ * Valid only after SQLITE_ROW and before the next step/reset/finalize. Returns
+ * 0 for NULL or empty. */
 size_t memcp_sqlite_column_text_len(sqlite3_stmt *stmt, int col) {
   (void)sqlite3_column_text(stmt, col);
   int n = sqlite3_column_bytes(stmt, col);
   return n < 0 ? (size_t)0 : (size_t)n;
 }
 
-/* Copy `len` bytes of column `col`'s text into the caller-owned `dst`. The
- * caller sized `dst` from memcp_sqlite_column_text_len with no intervening
- * step, so `len` is exact and this never truncates. column_text returns the
- * pointer conversion already cached by the _len probe. NULL columns yield a
- * zero-length copy (guarded by len == 0 on the Ada side). */
+/* Copy `len` bytes of column `col` (0-based) into caller-owned `dst`, sized from
+ * memcp_sqlite_column_text_len with no intervening step, so `len` is exact and
+ * this never truncates. Neither side frees the other's buffer. */
 void memcp_sqlite_column_text_copy(sqlite3_stmt *stmt, int col, char *dst,
                                    size_t len) {
   const unsigned char *src = sqlite3_column_text(stmt, col);
