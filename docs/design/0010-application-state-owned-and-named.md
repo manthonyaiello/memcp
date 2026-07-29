@@ -76,6 +76,18 @@ at memcp's instantiation. That is the visibility argument of 0007 paid off at
 the application end, and it has a practical edge: adding a log line to a store
 operation changes its `Global`, and every `Global` above it.
 
+`Candle_Spark` is the deliberate opposite call, and the contrast is the point.
+Both binding crates are shaped alike from the outside — a native library behind
+an owned handle, no accept loop — so the state question is not settled by that
+shape. It is settled by whether anything *else* can write what the handle reads.
+A loaded embedding engine is a pure transform: given the same text it returns
+the same vector, nothing outside the process touches it, and its three C imports
+honestly carry `Global => null`. A SQLite database is a file that other
+processes may write while we hold it open, which is exactly what
+`Async_Writers => True` claims and what forces even a read to be `In_Out`. Two
+FFI crates, the same trusted-body posture, different state models — because the
+peer that can interfere differs, not because the bindings differ.
+
 ## The environment is state too
 
 `Ada.Environment_Variables` carries no SPARK contracts, so calling it directly
@@ -112,3 +124,5 @@ underlying run-time unit carries contracts and the other does not.
 - `src/memcp-log.ads` — the proved counterpart, on `Ada.Text_IO.File_System`.
 - `crates/sqlite_vec_spark/src/sqlite_vec_spark.ads` — `DBMS` and its external
   properties.
+- `crates/candle_spark/src/candle_spark.adb` — the `Global => null` imports the
+  contrast turns on.
