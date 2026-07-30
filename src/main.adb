@@ -2,6 +2,7 @@
 --  environment, wires the concrete tools into the generic MCP core and the core
 --  into the HTTP transport, and owns the resources the tools run against.
 
+with Ada.Directories;
 with Ada.Text_IO;
 
 with Memcp.Env;
@@ -85,8 +86,15 @@ procedure Main with SPARK_Mode => On is
    --  location install-model.sh writes to by default. Empty when HOME is unset,
    --  which leaves the embedder unavailable.
 
-   DB_Path    : constant String := Env ("MEMCP_DB_PATH", ":memory:");
-   --  Database file the store opens; in-memory by default.
+   Default_DB_Path : constant String :=
+     (if Home'Length > 0 then Home & "/.memcp/memcp.db" else ":memory:");
+   --  Where the store lives absent MEMCP_DB_PATH: HOME-relative, on the same
+   --  footing as Default_Model_Path. ":memory:" only when HOME is unset, since
+   --  a store with no on-disk parent keeps nothing across a restart and anchors
+   --  no sessions directory for upload_session to write into.
+
+   DB_Path    : constant String := Env ("MEMCP_DB_PATH", Default_DB_Path);
+   --  Database file the store opens.
 
    Model_Path : constant String := Env ("MEMCP_MODEL_PATH", Default_Model_Path);
    --  Directory the embedding weights are loaded from.
@@ -105,6 +113,32 @@ procedure Main with SPARK_Mode => On is
    --  How the Open below ended.
    use type Memcp.Resources.Status;
 
+   procedure Ensure_Directory_Of (Path : String)
+     with Global => null;
+   --  Create the directory the file Path names lives in. sqlite opens no file
+   --  under a directory that does not exist, so without this the HOME-relative
+   --  default fails on a machine where ~/.memcp has never been created.
+   --  Best-effort: a directory that cannot be created leaves Open to report the
+   --  failure. A Path holding no '/' -- ":memory:", a bare filename -- names no
+   --  directory to create. Body outside SPARK.
+
+   procedure Ensure_Directory_Of (Path : String)
+     with SPARK_Mode => Off
+   is
+   begin
+      for I in reverse Path'Range loop
+         if Path (I) = '/' then
+            if I > Path'First then
+               Ada.Directories.Create_Path (Path (Path'First .. I - 1));
+            end if;
+            return;
+         end if;
+      end loop;
+   exception
+      when others =>
+         null;
+   end Ensure_Directory_Of;
+
    procedure Open_Database (Status : out Memcp.Resources.Status);
    --  Open R against DB_Path and Model_Path, reporting the outcome.
 
@@ -114,7 +148,9 @@ procedure Main with SPARK_Mode => On is
    end Open_Database;
 
    procedure Connect_To_Server (Port : Spark_Mcp.Http.Port_Number)
-     with Pre => DB_Path'Length <= Max_Env
+     with Pre => Default_DB_Path'Length <= Max_Env + 16
+                 and then DB_Path'Length
+                            <= Natural'Max (Max_Env, Default_DB_Path'Length)
                  and then Default_Model_Path'Length <= Max_Env + 31
                  and then Model_Path'Length
                             <= Natural'Max (Max_Env, Default_Model_Path'Length);
@@ -202,6 +238,7 @@ procedure Main with SPARK_Mode => On is
    end Connect_To_Server;
 
 begin
+   Ensure_Directory_Of (DB_Path);
    Open_Database (Open_St);
 
    if Open_St = Memcp.Resources.Ready then
