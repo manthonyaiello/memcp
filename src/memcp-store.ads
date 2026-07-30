@@ -399,6 +399,13 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Result The session id, chunk count, and idempotency/write flags.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
+   type Autorecap_Result is record
+      Summary_Id : Row_Id;    --  Rowid of the written summary.
+      Diary_Id   : Row_Id;    --  Rowid of the written diary line.
+      Written    : Boolean;   --  A new autorecap row was written.
+   end record;
+   --  Save_Autorecap's outcome: the two rowids plus the write flag.
+
    procedure Save_Autorecap
      (S           : Store;
       Project     : String;
@@ -407,9 +414,7 @@ package Memcp.Store with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
-      Summary_Id  : out Row_Id;
-      Diary_Id    : out Row_Id;
-      Written     : out Boolean;
+      Result      : out Autorecap_Result;
       Status      : out Op_Status)
      with Pre => Is_Open (S)
                  and then Project'Length > 0
@@ -428,9 +433,7 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Embedding The recap's [384] embedding.
    --  @param Has_Created Whether Created_At overrides the "now" timestamp.
    --  @param Created_At The ISO-8601 timestamp to use when Has_Created.
-   --  @param Summary_Id On a fresh write, the new summary rowid.
-   --  @param Diary_Id On a fresh write, the new diary rowid.
-   --  @param Written True iff a new autorecap row was written.
+   --  @param Result The rowids written and whether a write happened.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
    procedure Reindex_Session

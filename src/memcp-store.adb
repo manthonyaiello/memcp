@@ -2001,9 +2001,7 @@ package body Memcp.Store with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
-      Summary_Id  : out Row_Id;
-      Diary_Id    : out Row_Id;
-      Written     : out Boolean;
+      Result      : out Autorecap_Result;
       Status      : out Op_Status)
    is
       Proj_Id : Row_Id;
@@ -2012,9 +2010,7 @@ package body Memcp.Store with SPARK_Mode => On is
       DH   : constant String := Dedup_Hash (Project, Recap_Text, Recap_Text);
       Blob : constant Packed_Blob := To_Blob (Embedding);
    begin
-      Summary_Id := 0;
-      Diary_Id   := 0;
-      Written    := False;
+      Result := (Summary_Id => 0, Diary_Id => 0, Written => False);
 
       Project_Id (S, Project, Proj_Id, Status);
       if Status /= Success then
@@ -2148,10 +2144,10 @@ package body Memcp.Store with SPARK_Mode => On is
          if Step_Ok then
             Exec (S, "COMMIT", Ok);
             if Ok then
-               Summary_Id := New_Summary;
-               Diary_Id   := New_Diary;
-               Written    := True;
-               Status     := Success;
+               Result := (Summary_Id => New_Summary,
+                          Diary_Id   => New_Diary,
+                          Written    => True);
+               Status := Success;
                return;
             end if;
          end if;

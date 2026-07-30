@@ -23,20 +23,6 @@ with Memcp.Text;
 
 package body Memcp.Tools with SPARK_Mode => On is
 
-   pragma Warnings
-     (GNATprove, Off, "statement has no effect",
-      Reason => "Closing the parsed Doc reclaims owned memory; no SPARK effect");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Close"" but not used after the call",
-      Reason => "the Doc is nulled by Close and never read afterwards");
-   --  Both reports are the shape of the end-of-scope Doc cleanup: the handle is
-   --  nulled by Close and never read again.
-
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Save_Autorecap"" but not used after the call",
-      Reason => "this caller uses only Summary_Id, not the parallel Diary_Id");
-   --  The autorecap path needs only Summary_Id, for the recap line.
-
    package MS renames Memcp.Store;
    package MJ renames Memcp.Json;
    package MR renames Memcp.Resources;
@@ -1469,8 +1455,7 @@ package body Memcp.Tools with SPARK_Mode => On is
                           and then Memcp.Replay.Has_Clock;
                         TS2      : constant String :=
                           (if Rep2 then Memcp.Replay.Peek_Clock else "");
-                        Sum_Id   : MS.Row_Id;
-                        Diary_Id : MS.Row_Id;
+                        Rec      : MS.Autorecap_Result;
                         R_St     : MS.Op_Status;
                      begin
                         Embed_One (R, Recap, Emb);
@@ -1485,14 +1470,11 @@ package body Memcp.Tools with SPARK_Mode => On is
                            Embedding   => Emb,
                            Has_Created => Rep2,
                            Created_At  => TS2,
-                           Summary_Id  => Sum_Id,
-                           Diary_Id    => Diary_Id,
-                           Written     => Wrote,
+                           Result      => Rec,
                            Status      => R_St);
-                        if R_St = MS.Success and then Wrote then
-                           Recap_Id := Sum_Id;
-                        else
-                           Wrote := False;
+                        if R_St = MS.Success and then Rec.Written then
+                           Recap_Id := Rec.Summary_Id;
+                           Wrote    := True;
                         end if;
                      end;
                   end if;

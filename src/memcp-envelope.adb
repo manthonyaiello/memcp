@@ -7,19 +7,6 @@ with JSON.Streams;
 
 package body Memcp.Envelope with SPARK_Mode => On is
 
-   pragma Warnings
-     (GNATprove, Off, "statement has no effect",
-      Reason => "reclaiming owned memory has no SPARK-modelled effect");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Free"" but not used after the call",
-      Reason => "Free nulls its argument as it reclaims it; not read after");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Destroy"" but not used after the call",
-      Reason => "Destroy nulls the parser/buffer as it reclaims it; unread");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
-      Reason => "the parser is destroyed after Parse; its post-state is unread");
-
    --  Shorthand for the neutral request types this unit returns.
    package Req renames Spark_Mcp.Requests;
 
