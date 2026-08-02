@@ -75,12 +75,18 @@ that run is cached): nothing unproved at `--level=2`. Neither gate is the
 invariant on its own. Together they say *this code is in SPARK* and *it
 discharges* — and the first is what the second silently assumed.
 
-Two stronger mechanisms are deliberately not used yet. The `.spark` files
-GNATprove emits carry a per-entity SPARK status that no formatting can evade,
-unlike a search of the sources, but they exist only after a prover run and would
-gate minutes late rather than at the root. `CODEOWNERS` over the manifest would
-make the review unskippable rather than merely expected, which is a branch
-protection decision rather than a change to the tree.
+There is a further hole the gate cannot close: it can be satisfied by editing the
+manifest, since it checks that a justification is present and not that anyone
+read it. `.github/CODEOWNERS` covers that by requesting the review the design
+assumes. Requesting is not requiring — making it blocking is
+`require_code_owner_review` on the `main` ruleset, which is a repository setting
+rather than a change to the tree, and which with a single owner would also block
+that owner's own pull requests, because GitHub does not allow self-approval.
+
+One stronger mechanism is deliberately not used. The `.spark` files GNATprove
+emits carry a per-entity SPARK status that no formatting can evade, unlike a
+search of the sources, but they exist only after a prover run and would gate
+minutes late rather than at the root.
 
 ## Where it lives
 
@@ -91,4 +97,5 @@ protection decision rather than a change to the tree.
 - `gnat.adc`, `crates/*/gnat.adc` — SPARK as the default.
 - `scripts/check-proof.sh` — `--warnings=error`, and the exit status that makes it
   bite.
+- `.github/CODEOWNERS` — review routing for all of the above.
 - `CONTRIBUTING.md` — the same rule, for someone who has not read this.
