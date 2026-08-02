@@ -13,7 +13,7 @@ with Interfaces;
 with Candle_Spark;
 with Memcp.Store;
 
-procedure Test_Store is
+procedure Test_Store with SPARK_Mode => Off is
 
    use type Memcp.Store.Open_Status;
    use type Memcp.Store.Op_Status;

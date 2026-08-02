@@ -1,0 +1,24 @@
+# trust-surface.txt — every site a proof of this tree does not cover.
+#
+# One entry per site, checked by scripts/check-trust-surface.sh:
+#
+#     kind | path | entity | why no SPARK formulation works
+#
+# `entity` is `-` for the file-level kinds. The fourth field is required and is
+# what a reviewer reads. See CONTRIBUTING.md.
+
+spark-mode-off   | src/main.adb                                            | Ensure_Directory_Of  | Ada.Directories.Create_Path is not in SPARK, and the best-effort handler drops its failure for Open to report instead (#45 tracks narrowing this to the call).
+spark-mode-off   | src/memcp-env.adb                                       | Memcp.Env            | Ada.Environment_Variables carries no contracts, so the spec's Input => Environment is trusted here rather than proved.
+spark-mode-off   | src/memcp-store.adb                                     | Dedup_Hash           | GNAT.SHA256 is not in SPARK.
+spark-mode-off   | src/memcp-store.adb                                     | Now_Iso              | Ada.Calendar and its Formatting and Time_Zones children are not in SPARK.
+spark-mode-off   | src/memcp-store.adb                                     | Write_Session_File   | Stream_IO under a catch-all handler; SPARK has no formulation for best-effort file I/O.
+spark-mode-off   | crates/spark_mcp/src/spark_mcp-http-bridge.adb          | Alloc_Uninit         | SPARK forbids uninitialized allocators, and mcp_body_read fills the buffer on the next statement, so blank-filling would write every request body twice.
+spark-mode-off   | crates/sqlite_vec_spark/src/sqlite_vec_spark.adb        | Alloc_Uninit         | Same shape: Bridge.Column_Text_Copy overwrites the buffer in full, so blank-filling would write every column body twice.
+
+foreign-binding  | crates/candle_spark/src/candle_spark.adb                | -                    | Imports candle_ffi's entry points; their Global, Depends and Always_Terminates contracts are asserted of Rust, not proved.
+foreign-binding  | crates/spark_mcp/src/spark_mcp-http-bridge.adb          | -                    | Imports spark_mcp_http_rs's entry points, with the same asserted contracts.
+foreign-binding  | crates/sqlite_vec_spark/src/sqlite_vec_spark-bridge.ads | -                    | Imports the SQLite and sqlite-vec shim, with the same asserted contracts.
+
+native-source    | crates/candle_spark/candle_ffi/src/lib.rs               | -                    | The embedding backend, in Rust over candle; no SPARK proof reaches it.
+native-source    | crates/spark_mcp/rust/src/lib.rs                        | -                    | The HTTP server backend, in Rust over tiny_http; no SPARK proof reaches it.
+native-source    | crates/sqlite_vec_spark/csrc/shim.c                     | -                    | Narrows SQLite's C API to the bound surface; no SPARK proof reaches it.

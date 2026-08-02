@@ -1,0 +1,3 @@
+--  SPARK is the default for every unit compiled against this file. A unit
+--  outside SPARK must say so at its own declaration.
+pragma SPARK_Mode (On);

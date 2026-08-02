@@ -1,0 +1,44 @@
+# Contributing
+
+Contributions are welcome. One rule here is not the usual one.
+
+## The trust surface
+
+memcp is SPARK, proved to Silver (absence of runtime errors, `--level=2`), with
+nothing unproved. `scripts/trust-surface.txt` lists every site that proof does
+not cover:
+
+- code outside SPARK — `SPARK_Mode => Off`
+- assumptions the prover takes on faith — `pragma Assume`, and any
+  `False_Positive` or `Intentional` justification
+- the foreign code behind the bindings — the imports, and the C and Rust bodies
+
+A contribution is not expected to add to that list. Where one genuinely must,
+add the entry with a one-sentence justification in its fourth field, and say so
+in the pull request. A reviewer will read that sentence.
+
+```sh
+make trust         # list the derived set, in manifest form
+make trust-check   # the same set as a gate: any drift from the manifest exits 1
+```
+
+The gate runs first in CI, ahead of the documentation, build and proof jobs.
+
+SPARK is the default: `gnat.adc` sets `pragma SPARK_Mode (On)` for the product
+sources, so a unit outside SPARK has to say so at its own declaration. Units
+also carry that aspect explicitly, which the configuration pragma does not
+replace.
+
+## Before opening a pull request
+
+```sh
+make               # build the whole DAG
+make test          # unit drivers + smoke tests
+make trust-check   # the trust surface is unchanged
+make prove-check   # Silver, gated on a clean proof
+make docs-check    # every entity documented, every doc block correctly placed
+```
+
+Comment conventions are in [CLAUDE.md](CLAUDE.md). Design rationale belongs in a
+numbered ADR under [`docs/design/`](docs/design/), not in a comment; history
+belongs in the commit message.

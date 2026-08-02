@@ -6,10 +6,15 @@ name: CI
 # Doc-only changes are skipped.
 #
 # The `docs` job (issue #22) is the third signal, and it is a gate — the other
-# two both `needs: docs`:
+# two both `needs: docs`. `trust` (issue #46) gates everything ahead of it:
 #
-#     docs --> build-test (both platforms)
-#          --> prove
+#     trust --> docs --> build-test (both platforms)
+#                    --> prove
+#
+# `trust` needs no toolchain at all — grep over `git ls-files` — so it is the
+# cheapest signal by an order of magnitude and reports in seconds. A PR that
+# widens what the proof does not cover is answered before the runners spend a
+# build on it.
 #
 # `build-test` and `prove` still have NO edge between them, deliberately (issue
 # #3): proof needs the sources to compile — which it arranges for itself, in its
@@ -51,11 +56,24 @@ permissions:
   contents: read
 
 jobs:
-  # API documentation + the doc gate (issue #22). It needs nothing itself, so it
-  # starts immediately; `build-test` and `prove` wait on it. See the graph in the
-  # header comment for what that edge saves.
+  # The trust-surface gate (issue #46): every site a proof of this tree does not
+  # cover must be listed, with a justification, in scripts/trust-surface.txt.
+  # Checkout and grep — no Alire, no compile — so it is the root of the DAG.
+  trust:
+    name: Trust surface (gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check trust surface
+        run: make trust-check
+
+  # API documentation + the doc gate (issue #22). `build-test` and `prove` wait
+  # on it. See the graph in the header comment for what that edge saves.
   docs:
     name: GNATdoc (gate)
+    needs: trust
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

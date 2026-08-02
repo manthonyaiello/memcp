@@ -20,6 +20,7 @@ project Sqlite_Vec_Spark is
 
    package Compiler is
       for Default_Switches ("Ada") use Sqlite_Vec_Spark_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys");
+      for Local_Configuration_Pragmas use "gnat.adc";
 
       --  -w on the amalgamations: vendored, not ours to fix. SQLITE_CORE puts
       --  sqlite-vec.c on the static-link path. shim.c is ours, hence -Wall.

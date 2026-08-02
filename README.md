@@ -244,6 +244,20 @@ make prove         # gnatprove -P memcp.gpr -j0 --level=2
 The whole `memcp` crate is `SPARK_Mode => On` and proves to **Silver** (Absence
 of Runtime Errors) at `--level=2`, with no unproved and no justified checks.
 
+### Trust surface
+
+```sh
+make trust         # list every site the proof does not cover
+make trust-check   # the same set as a gate: any drift from the manifest exits 1
+```
+
+`scripts/trust-surface.txt` lists each one — code outside SPARK, assumptions the
+prover takes on faith, and the foreign code behind the bindings — with a
+justification. `gnat.adc` sets `pragma SPARK_Mode (On)` for the product sources,
+so a unit outside SPARK has to say so at its own declaration. The gate runs first
+in CI, ahead of the documentation, build and proof jobs. Contributions are not
+expected to add to the manifest; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### API documentation
 
 ```sh
@@ -283,6 +297,8 @@ allocated to exact size and provably freed exactly once. The trust boundary is
 narrow and explicit — the three foreign bodies (tiny_http, candle, and
 SQLite/sqlite-vec) are trusted across the FFI via `Pre`/`Post` contracts that
 gnatprove checks at every Ada call site and that `-gnata` test builds execute.
+`scripts/trust-surface.txt` enumerates that boundary in full, and CI gates on it
+(see [Trust surface](#trust-surface)).
 
 The server binds `127.0.0.1` only and speaks a single route (`POST /mcp`) with
 no authentication: treat access to the port as read/write access to your memory

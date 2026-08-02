@@ -14,7 +14,7 @@ GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
 
 .PHONY: all build run model test prove prove-deps prove-check docs docs-check \
-        docs-placement clean help
+        docs-placement trust trust-check clean help
 
 all: build
 
@@ -94,6 +94,14 @@ docs-check: prove-deps ## `docs` as a gate: undocumented entity or misplaced blo
 # runs on a bare checkout.
 docs-placement: ## Report doc blocks attributed to the wrong declaration
 	./scripts/check-doc-placement.sh --no-gate
+
+# grep over `git ls-files`, so like docs-placement it needs no toolchain and runs
+# on a bare checkout. That is what lets CI gate on it before anything compiles.
+trust: ## List the derived trust surface, in manifest form
+	./scripts/check-trust-surface.sh --list
+
+trust-check: ## `trust` as a gate: any drift from scripts/trust-surface.txt => exit 1
+	./scripts/check-trust-surface.sh
 
 clean: ## Remove build artifacts
 	$(ALR) clean

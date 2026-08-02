@@ -5,6 +5,10 @@
 --  the same permission. See ../../json-spark/json/gnat.adc.
 pragma Unevaluated_Use_Of_Old (Allow);
 
+--  SPARK is the default for every unit compiled against this file. A unit
+--  outside SPARK must say so at its own declaration.
+pragma SPARK_Mode (On);
+
 --  SPARKlib's formal containers (Memcp.Store's Unbounded_Vectors) are Ada 2022
 --  (aspect Aggregate, etc.); instantiating them re-analyses their specs here,
 --  so memcp compiles in Ada 2022 mode. A superset of what the json generics
