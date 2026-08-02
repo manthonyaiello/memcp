@@ -1,0 +1,17 @@
+# Review routing for the files that define and enforce the trust surface.
+#
+# The trust-surface gate can be satisfied by editing the manifest: it checks
+# that a justification is present, not that anyone read it. These entries put
+# the reviewer the design assumes into the loop automatically.
+#
+# GitHub applies the LAST matching pattern, so general patterns come first.
+
+*.gpr                            @manthonyaiello
+/gnat.adc                        @manthonyaiello
+/crates/*/gnat.adc               @manthonyaiello
+
+/scripts/trust-surface.txt       @manthonyaiello
+/scripts/check-trust-surface.sh  @manthonyaiello
+
+/scripts/proof-xfail.txt         @manthonyaiello
+/scripts/check-proof.sh          @manthonyaiello
