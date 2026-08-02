@@ -64,13 +64,37 @@ native_sources() {
 
 # --- deriving the surface -----------------------------------------------------
 
-# Name of the innermost declaration at or above line $2 of file $1. Empty when
-# no declaration precedes the hit, which the caller reports rather than hides.
+# Name of the innermost declaration still open at line $2 of file $1. Empty when
+# none is, which the caller reports rather than hides.
+#
+# Scope-aware rather than nearest-above: a suppression in a body's statement part
+# follows every local subprogram in the text, so "nearest above" names the last
+# one declared instead of the unit the site is actually in. Declarations push and
+# `end <Name>;` pops every entry of that name, which retires a spec together with
+# its body. An `end` naming nothing on the stack -- `end loop;`, `end if;`,
+# `end record;` -- pops nothing.
 enclosing_entity() {
-  head -n "$2" "$1" \
-    | grep -Ei '^[[:space:]]*(procedure|function|package([[:space:]]+body)?)[[:space:]]+[A-Za-z]' \
-    | tail -1 \
-    | sed -E 's/^[[:space:]]*//; s/^(package[[:space:]]+body|package|procedure|function)[[:space:]]+//I; s/[^A-Za-z0-9_.].*$//'
+  awk -v target="$2" '
+    NR > target { exit }
+    {
+      line = $0
+      sub(/--.*$/, "", line)
+      if (match(line, /^[ \t]*(procedure|function|package[ \t]+body|package)[ \t]+[A-Za-z]/)) {
+        name = line
+        sub(/^[ \t]*(procedure|function|package[ \t]+body|package)[ \t]+/, "", name)
+        sub(/[^A-Za-z0-9_.].*$/, "", name)
+        if (name != "") { depth++; stack[depth] = name }
+      } else if (match(line, /^[ \t]*end[ \t]+[A-Za-z]/)) {
+        ends = line
+        sub(/^[ \t]*end[ \t]+/, "", ends)
+        sub(/[^A-Za-z0-9_.].*$/, "", ends)
+        found = 0
+        for (i = 1; i <= depth; i++) if (stack[i] == ends) { found = i; break }
+        if (found) depth = found - 1
+      }
+    }
+    END { if (depth >= 1) print stack[depth] }
+  ' "$1"
 }
 
 # Emit "kind|path|entity" for every suppression pragma in the Ada sources.
