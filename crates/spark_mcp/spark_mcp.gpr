@@ -18,7 +18,8 @@ project Spark_Mcp is
       --  Append after the config switches so it overrides the default line
       --  length; 79 is too tight for SPARK contracts.
       for Default_Switches ("Ada") use
-        Spark_Mcp_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys");
+        Spark_Mcp_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys", "-gnatwe");
+      for Local_Configuration_Pragmas use "gnat.adc";
    end Compiler;
 
    package Binder is

@@ -14,7 +14,7 @@ with Memcp.Tools;
 with Memcp.Envelope;
 with Memcp.Resources;
 
-procedure Test_Dispatch is
+procedure Test_Dispatch with SPARK_Mode => Off is
 
    Failures : Natural := 0;
    --  Failed checks so far; a non-zero count sets a non-zero exit status.

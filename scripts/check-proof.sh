@@ -7,6 +7,10 @@
 # (scripts/proof-xfail.txt) is therefore empty and the gate demands a fully
 # clean proof: any unproved check at all is a regression.
 #
+# The run is --warnings=error, so a GNATprove warning fails it too. Leaving one
+# standing takes a suppression pragma, which scripts/check-trust-surface.sh then
+# requires to be named and justified in scripts/trust-surface.txt.
+#
 # The allowlist holds substring patterns rather than exact check identities,
 # because an upstream gap need not present identically on every platform — the
 # provers can clear on a fast arm64 dev machine what they miss on the x86_64 CI
@@ -37,6 +41,9 @@ cd "$ROOT"
 ALR="${ALR:-alr}"
 XFAIL="scripts/proof-xfail.txt"
 OUT="obj/development/gnatprove/gnatprove.out"
+RUNLOG="obj/development/gnatprove-run.txt"
+#  gnatprove.out carries the summary only, so the messages are captured here to
+#  report what --warnings=error rejected.
 
 LIST=0
 case "${1:-}" in
@@ -47,13 +54,17 @@ esac
 # expands to nothing when empty (safe under `set -u`).
 EXTRA="${GNATPROVE_EXTRA:-}"
 
-echo ">> alr gnatprove -P memcp.gpr -j0 --level=2 $EXTRA"
+echo ">> alr gnatprove -P memcp.gpr -j0 --level=2 --warnings=error $EXTRA"
 # GNATprove exits non-zero when checks are unproved. We do our own gating from
 # gnatprove.out below, so don't let its exit status abort the script here.
 # $EXTRA is intentionally unquoted so it splits into separate flags (or
 # disappears when empty).
 # shellcheck disable=SC2086
-"$ALR" gnatprove -P memcp.gpr -j0 --level=2 $EXTRA || true
+mkdir -p "$(dirname "$RUNLOG")"
+set +e
+"$ALR" gnatprove -P memcp.gpr -j0 --level=2 --warnings=error $EXTRA 2>&1 | tee "$RUNLOG"
+GP_STATUS=${PIPESTATUS[0]}
+set -e
 
 [ -f "$OUT" ] || { echo "!! no GNATprove output at $OUT" >&2; exit 2; }
 
@@ -118,6 +129,25 @@ if [ -n "$regressions" ]; then
   echo "" >&2
   echo "   If this is a newly-vetted upstream gap, add a substring pattern to" >&2
   echo "   $XFAIL (see it with: $0 --list). Otherwise it is a real regression." >&2
+  exit 1
+fi
+
+# --- gate: nothing else made gnatprove fail -----------------------------------
+
+# Under --warnings=error a warning is one of these. It is the only remaining way
+# for the run to fail once the allowlist accounts for every unproved check, and
+# the only way past it is a suppression pragma -- which
+# scripts/check-trust-surface.sh then requires to be named and justified.
+if [ "$GP_STATUS" -ne 0 ]; then
+  echo ""
+  echo "!! GNATPROVE FAILED — exit $GP_STATUS with no unproved check outside $XFAIL." >&2
+  echo "   Under --warnings=error, a warning is an error. What it reported:" >&2
+  echo "" >&2
+  { grep -E -A1 '^[[:space:]]*(warning|error):' "$RUNLOG" || true; } \
+    | sed 's/^/     /' >&2
+  echo "" >&2
+  echo "   Fix it, or suppress it and add the site to scripts/trust-surface.txt" >&2
+  echo "   with a justification (see CONTRIBUTING.md)." >&2
   exit 1
 fi
 

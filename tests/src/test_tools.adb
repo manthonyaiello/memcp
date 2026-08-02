@@ -16,7 +16,7 @@ with Memcp.Resources;
 with Memcp.Tools;
 with Memcp.Extractor;
 
-procedure Test_Tools is
+procedure Test_Tools with SPARK_Mode => Off is
 
    use type Memcp.Resources.Status;
    use type Memcp.Store.Op_Status;

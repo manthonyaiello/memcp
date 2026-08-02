@@ -79,7 +79,7 @@ comment is not merely dropped, it is shown against the wrong name.
 Design rationale — why a seam, bound or schema has the shape it does, what a
 trust boundary assumes, what breaks if it changes — belongs in `docs/design/` as
 a numbered ADR, not in a comment. History belongs in the commit message. See
-`docs/design/0005`–`0013`; 0012 is the one to read first, since it records the
+`docs/design/0005`–`0014`; 0012 is the one to read first, since it records the
 parity obligations that no longer have a reference implementation to check
 against.
 

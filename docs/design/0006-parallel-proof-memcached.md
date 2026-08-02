@@ -2,9 +2,9 @@
 
 `make prove` proves the whole `memcp` closure (`memcp` + `spark_mcp` +
 `sqlite_vec_spark` + `candle_spark` + `json` + `sparklib`) to SPARK Silver in one
-`gnatprove -P memcp.gpr -j0 --level=2` run — 5348 checks. Cold, on the GitHub
-runner, that is **~23 minutes**. This note explains how we make CI proof cheap
-without weakening the guarantee.
+`gnatprove -P memcp.gpr -j0 --level=2` run. Cold, on the GitHub runner, that is
+**~23 minutes**. This note explains how we make CI proof cheap without weakening
+the guarantee.
 
 Three decisions, each load-bearing:
 
