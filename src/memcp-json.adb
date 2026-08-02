@@ -13,21 +13,6 @@ with Spark_Mcp.Writer;
 
 package body Memcp.Json with SPARK_Mode => On is
 
-   pragma Warnings
-     (GNATprove, Off, "statement has no effect",
-      Reason => "reclaiming owned memory has no SPARK-modelled effect");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Free"" but not used after the call",
-      Reason => "Free nulls its argument as it reclaims it; not read after");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Destroy"" but not used after the call",
-      Reason => "Destroy nulls the parser as it reclaims it; not read after");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
-      Reason => "the parser is destroyed after Parse; its post-state is unread");
-   --  The four suppressions above are the shape of end-of-scope reclamation: the
-   --  handle each call nulls is genuinely not read afterwards.
-
    package Types is new Standard.JSON.Types
      (Integer_Type => Long_Long_Integer, Float_Type => Long_Float);
    --  The json value model. Its numeric bounds only limit what the tokenizer
@@ -108,8 +93,8 @@ package body Memcp.Json with SPARK_Mode => On is
    begin
       if D.Impl /= null then
          Types.Free (D.Impl.Root);
-         Free_Impl (D.Impl);
       end if;
+      Free_Impl (D.Impl);
       D.Is_Valid := False;
    end Close;
 

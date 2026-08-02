@@ -559,25 +559,23 @@ begin
    --  Save_Autorecap: writes when no Header exists, then short-circuits.
    ------------------------------------------------------------------
    declare
-      Sum_Id, Diary_Id : Memcp.Store.Row_Id;
-      Written : Boolean;
-      St      : Memcp.Store.Op_Status;
+      Rec : Memcp.Store.Autorecap_Result;
+      St  : Memcp.Store.Op_Status;
    begin
       --  se-1 has chunks but no summary yet -> autorecap is written.
       Memcp.Store.Save_Autorecap
         (S, "sessapp", "se-1", "session recap line", Hot (5),
          Has_Created => True, Created_At => TS,
-         Summary_Id => Sum_Id, Diary_Id => Diary_Id,
-         Written => Written, Status => St);
-      Check (St = Memcp.Store.Success and then Written
-             and then Sum_Id > 0 and then Diary_Id > 0,
+         Result => Rec, Status => St);
+      Check (St = Memcp.Store.Success and then Rec.Written
+             and then Rec.Summary_Id > 0 and then Rec.Diary_Id > 0,
              "Save_Autorecap: fresh -> written");
 
       declare
          P   : Memcp.Store.Summary_Ptr;
          St2 : Memcp.Store.Op_Status;
       begin
-         Memcp.Store.Fetch_Summary (S, Sum_Id, P, St2);
+         Memcp.Store.Fetch_Summary (S, Rec.Summary_Id, P, St2);
          Check (St2 = Memcp.Store.Success and then P /= null
                 and then P.Kind = "autorecap"
                 and then P.Content = "session recap line"
@@ -593,9 +591,8 @@ begin
       Memcp.Store.Save_Autorecap
         (S, "sessapp", "se-1", "a different recap", Hot (5),
          Has_Created => True, Created_At => TS,
-         Summary_Id => Sum_Id, Diary_Id => Diary_Id,
-         Written => Written, Status => St);
-      Check (St = Memcp.Store.Success and then not Written,
+         Result => Rec, Status => St);
+      Check (St = Memcp.Store.Success and then not Rec.Written,
              "Save_Autorecap: existing Header -> not written");
 
       --  A real Save for a session must also block a later autorecap.
@@ -610,9 +607,8 @@ begin
          Memcp.Store.Save_Autorecap
            (S, "sessapp", "se-2", "recap for se-2", Hot (6),
             Has_Created => True, Created_At => TS,
-            Summary_Id => Sum_Id, Diary_Id => Diary_Id,
-            Written => Written, Status => St);
-         Check (St = Memcp.Store.Success and then not Written,
+            Result => Rec, Status => St);
+         Check (St = Memcp.Store.Success and then not Rec.Written,
                 "Save_Autorecap: real save() takes precedence");
       end;
    end;

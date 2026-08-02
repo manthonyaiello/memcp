@@ -26,7 +26,7 @@ json = "^7.0.0"
 #  Git-pinned to a fixed commit so `alr build` fetches json-spark automatically;
 #  no sibling checkout required. The crate lives in the repo's json/ subdir.
 [[pins]]
-json = { url='https://github.com/manthonyaiello/json-spark.git', commit='92b11fefcdf84954d171cc7aba4a6e5eca52549c', subdir='json' }
+json = { url='https://github.com/manthonyaiello/json-spark.git', commit='cf6e226c704265fa0775b7d29c3131ca0f76af6a', subdir='json' }
 
 [[depends-on]]
 sqlite_vec_spark = "~0.1.0-dev"

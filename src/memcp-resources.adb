@@ -307,9 +307,7 @@ package body Memcp.Resources with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
-      Summary_Id  : out MS.Row_Id;
-      Diary_Id    : out MS.Row_Id;
-      Written     : out Boolean;
+      Result      : out MS.Autorecap_Result;
       Status      : out MS.Op_Status)
    is
    begin
@@ -318,15 +316,13 @@ package body Memcp.Resources with SPARK_Mode => On is
         or else Project'Last = Natural'Last
         or else Recap_Text'Last = Integer'Last
       then
-         Summary_Id := 0;
-         Diary_Id   := 0;
-         Written    := False;
-         Status     := MS.Db_Error;
+         Result := (Summary_Id => 0, Diary_Id => 0, Written => False);
+         Status := MS.Db_Error;
          return;
       end if;
       MS.Save_Autorecap
         (R.The_Store, Project, Session_Id, Recap_Text, Embedding,
-         Has_Created, Created_At, Summary_Id, Diary_Id, Written, Status);
+         Has_Created, Created_At, Result, Status);
    end Save_Autorecap;
 
 end Memcp.Resources;

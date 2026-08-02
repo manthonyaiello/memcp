@@ -29,7 +29,9 @@ package Memcp.Json with SPARK_Mode => On is
    --  @param D The document to populate; owns the parsed value tree on return.
    --  @param Text The raw JSON argument text to parse.
 
-   procedure Close (D : in out Doc) with Post => Is_Closed (D);
+   procedure Close (D : in out Doc)
+     with Post => Is_Closed (D),
+          Depends => (D => null, null => D);
    --  Reclaim D's value tree, leaving it closed.
    --  @param D The document to close; Is_Closed (D) holds afterwards.
 

@@ -12,29 +12,6 @@ with Memcp.Text;
 
 package body Memcp.Extractor with SPARK_Mode => On is
 
-   pragma Warnings
-     (GNATprove, Off, "statement has no effect",
-      Reason => "reclaiming owned memory has no SPARK-modelled effect");
-   --  This and the three pragmas below discard the flow reports of ownership
-   --  reclamation: Free and Destroy null their argument as they reclaim it, and
-   --  a Parse whose tree is discarded keeps only its Status.
-
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Free"" but not used after the call",
-      Reason => "Free nulls its argument as it reclaims it; not read after");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Destroy"" but not used after the call",
-      Reason => "Destroy nulls the parser as it reclaims it; not read after");
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Parse"" but not used after the call",
-      Reason => "the parser is destroyed after Parse; its post-state is unread");
-
-   pragma Warnings
-     (GNATprove, Off, "*is set by ""Add_Piece"" but not used after the call",
-      Reason => "the final part count is never read after the last Add_Piece");
-   --  The running part count Add_Piece keeps: its final increment is never
-   --  read, which is the counter idiom rather than a dead store.
-
    --  A JSON value model wide enough for any transcript line; the numeric
    --  bounds limit only what the tokenizer accepts, and only strings are read.
    package Types is new JSON.Types
@@ -370,8 +347,8 @@ package body Memcp.Extractor with SPARK_Mode => On is
      (B       : in out Memcp.Text.Builder;
       Content : access constant Types.JSON_Value)
    is
-      Count : Natural := 0;
-      --  Pieces appended so far; nonzero is what earns a separator.
+      Start : constant Natural := Memcp.Text.Length (B);
+      --  B's length before any piece; growth past it is what earns a separator.
 
       procedure Add_Piece (Text : String);
       --  Append Text stripped, preceded by a blank line unless it is first.
@@ -383,13 +360,10 @@ package body Memcp.Extractor with SPARK_Mode => On is
          if S'Length = 0 then
             return;
          end if;
-         if Count > 0 then
+         if Memcp.Text.Length (B) > Start then
             Memcp.Text.Add (B, ASCII.LF & ASCII.LF);
          end if;
          Memcp.Text.Add (B, S);
-         if Count < Natural'Last then
-            Count := Count + 1;
-         end if;
       end Add_Piece;
 
    begin

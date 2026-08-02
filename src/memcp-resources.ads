@@ -272,9 +272,7 @@ package Memcp.Resources with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
-      Summary_Id  : out MS.Row_Id;
-      Diary_Id    : out MS.Row_Id;
-      Written     : out Boolean;
+      Result      : out MS.Autorecap_Result;
       Status      : out MS.Op_Status)
      with Global => (In_Out => (Sqlite_Vec_Spark.DBMS, Ada.Text_IO.File_System));
    --  Persist a fallback autorecap summary/diary pair for a session.
@@ -285,9 +283,7 @@ package Memcp.Resources with SPARK_Mode => On is
    --  @param Embedding The recap embedding vector.
    --  @param Has_Created Whether Created_At is supplied.
    --  @param Created_At Creation timestamp (used only when Has_Created is True).
-   --  @param Summary_Id Row id of the written summary.
-   --  @param Diary_Id Row id of the written diary entry.
-   --  @param Written True when the recap was actually written.
+   --  @param Result The rowids written and whether a write happened.
    --  @param Status Outcome of the write (Db_Error on failure).
 
 private
