@@ -15,6 +15,9 @@ spark-mode-off   | src/memcp-store.adb                                     | Wri
 spark-mode-off   | crates/spark_mcp/src/spark_mcp-http-bridge.adb          | Alloc_Uninit         | SPARK forbids uninitialized allocators, and mcp_body_read fills the buffer on the next statement, so blank-filling would write every request body twice.
 spark-mode-off   | crates/sqlite_vec_spark/src/sqlite_vec_spark.adb        | Alloc_Uninit         | Same shape: Bridge.Column_Text_Copy overwrites the buffer in full, so blank-filling would write every column body twice.
 
+warning-off      | src/memcp-store.adb                                     | Fetch_Turns          | The running-position bind idiom advances Idx a final time that no one reads, so GNATprove's unused-assignment warning is inherent to the shape rather than a defect.
+warning-off      | crates/spark_mcp/src/spark_mcp-requests.adb             | No_Parser            | The null parser satisfies a signature it cannot use; Request is unreferenced by construction.
+
 foreign-binding  | crates/candle_spark/src/candle_spark.adb                | -                    | Imports candle_ffi's entry points; their Global, Depends and Always_Terminates contracts are asserted of Rust, not proved.
 foreign-binding  | crates/spark_mcp/src/spark_mcp-http-bridge.adb          | -                    | Imports spark_mcp_http_rs's entry points, with the same asserted contracts.
 foreign-binding  | crates/sqlite_vec_spark/src/sqlite_vec_spark-bridge.ads | -                    | Imports the SQLite and sqlite-vec shim, with the same asserted contracts.

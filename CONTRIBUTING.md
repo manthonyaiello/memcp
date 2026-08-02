@@ -11,7 +11,14 @@ not cover:
 - code outside SPARK — `SPARK_Mode => Off`
 - assumptions the prover takes on faith — `pragma Assume`, and any
   `False_Positive` or `Intentional` justification
+- suppressions — `pragma Warnings (Off)`, `Unreferenced`, `Unmodified`,
+  `Suppress`
 - the foreign code behind the bindings — the imports, and the C and Rust bodies
+
+Suppressions are on that list because the build is warnings-as-errors
+(`-gnatwe`) and `make prove-check` fails on any GNATprove warning in our
+sources. A suppression is the only way to leave one standing, which makes it a
+claim, made by hand, that the tool is wrong.
 
 A contribution is not expected to add to that list. Where one genuinely must,
 add the entry with a one-sentence justification in its fourth field, and say so

@@ -17,8 +17,16 @@
 #   assume           pragma Assume              entity
 #   justification    GNATprove False_Positive
 #                    or Intentional             entity
+#   warning-off      pragma Warnings (Off),
+#                    Unreferenced, Unmodified   entity
+#   check-suppressed pragma Suppress            entity
 #   foreign-binding  Import / Convention => C   file
 #   native-source    hand-written .c / .rs      file
+#
+# The two suppression kinds are here because the build is warnings-as-errors
+# (-gnatwe) and the proof gate fails on any GNATprove warning: a suppression is
+# the only way to leave one standing, so it is a claim, made by hand, that the
+# tool is wrong.
 #
 # Usage:
 #   scripts/check-trust-surface.sh          # gate      (exit 1 on any difference)
@@ -42,13 +50,16 @@ esac
 # --- the file universe --------------------------------------------------------
 
 # git-tracked only, so vendored amalgamations and build output cannot enter the
-# surface by appearing on disk.
+# surface by appearing on disk. The shape is pinned with a regex rather than a
+# pathspec because a git pathspec wildcard matches '/' -- 'crates/*/src' would
+# take in crates/*/tests/src too.
 ada_sources() {
-  git ls-files 'src/*.ads' 'src/*.adb' 'crates/*/src/*.ads' 'crates/*/src/*.adb'
+  git ls-files | grep -E '^(src|crates/[^/]+/src)/[^/]+\.(ads|adb)$'
 }
 
 native_sources() {
-  git ls-files 'crates/*/csrc/*.c' 'crates/*/csrc/*.h' 'crates/*/*/src/*.rs'
+  git ls-files \
+    | grep -E '^crates/[^/]+/(csrc/[^/]+\.[ch]|[^/]+/src/[^/]+\.rs)$'
 }
 
 # --- deriving the surface -----------------------------------------------------
@@ -60,6 +71,40 @@ enclosing_entity() {
     | grep -Ei '^[[:space:]]*(procedure|function|package([[:space:]]+body)?)[[:space:]]+[A-Za-z]' \
     | tail -1 \
     | sed -E 's/^[[:space:]]*//; s/^(package[[:space:]]+body|package|procedure|function)[[:space:]]+//I; s/[^A-Za-z0-9_.].*$//'
+}
+
+# Emit "kind|path|entity" for every suppression pragma in the Ada sources.
+# Statement-scoped rather than line-scoped: a pragma Warnings routinely wraps
+# before its Off, and a scoped pair's closing On suppresses nothing.
+scan_pragmas() {
+  local file line kind entity
+  ada_sources | while IFS= read -r file; do
+    awk '
+      {
+        low = tolower($0)
+        sub(/--.*$/, "", low)   # a pragma named in a comment suppresses nothing
+        if (!cap && low ~ /pragma[ \t]+(warnings|unreferenced|unmodified|suppress)([^a-z_]|$)/) {
+          cap = 1; start = NR; buf = ""
+        }
+        if (cap) {
+          buf = buf " " low
+          if (index(low, ";")) {
+            cap = 0
+            if (buf ~ /pragma[ \t]+(unreferenced|unmodified)/)   print "warning-off:" start
+            else if (buf ~ /pragma[ \t]+suppress/)               print "check-suppressed:" start
+            else if (buf ~ /[(,][ \t]*off[ \t]*[,)]/)            print "warning-off:" start
+          }
+        }
+      }
+    ' "$file" | while IFS=: read -r kind line; do
+      entity="$(enclosing_entity "$file" "$line")"
+      if [ -z "$entity" ]; then
+        echo "!! cannot name the entity at $file:$line -- the gate needs one" >&2
+        exit 2
+      fi
+      printf '%s|%s|%s\n' "$kind" "$file" "$entity"
+    done
+  done
 }
 
 # Emit "kind|path|entity" for every match of $2 in the Ada sources.
@@ -95,6 +140,7 @@ derive() {
   scan_entities assume 'pragma[[:space:]]+Assume\b'
   scan_entities justification \
     'pragma[[:space:]]+Annotate[[:space:]]*\([[:space:]]*GNATprove[[:space:]]*,[[:space:]]*(False_Positive|Intentional)'
+  scan_pragmas
   scan_files foreign-binding 'with[[:space:]]+Import\b|pragma[[:space:]]+Import\b|Convention[[:space:]]*=>[[:space:]]*C\b'
   scan_files native-source
 }

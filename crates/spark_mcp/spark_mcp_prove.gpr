@@ -14,7 +14,7 @@ project Spark_Mcp_Prove is
 
    package Compiler is
       for Default_Switches ("Ada") use
-        Spark_Mcp_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys");
+        Spark_Mcp_Config.Ada_Compiler_Switches & ("-gnatyM99", "-gnatys", "-gnatwe");
       for Local_Configuration_Pragmas use "gnat.adc";
    end Compiler;
 

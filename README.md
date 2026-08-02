@@ -252,8 +252,11 @@ make trust-check   # the same set as a gate: any drift from the manifest exits 1
 ```
 
 `scripts/trust-surface.txt` lists each one — code outside SPARK, assumptions the
-prover takes on faith, and the foreign code behind the bindings — with a
-justification. `gnat.adc` sets `pragma SPARK_Mode (On)` for the product sources,
+prover takes on faith, suppressed warnings, and the foreign code behind the
+bindings — with a justification. The build is warnings-as-errors (`-gnatwe`) and
+`make prove-check` fails on any GNATprove warning in our sources, so a warning
+can only be left standing by a suppression the manifest then has to name.
+`gnat.adc` sets `pragma SPARK_Mode (On)` for the product sources,
 so a unit outside SPARK has to say so at its own declaration. The gate runs first
 in CI, ahead of the documentation, build and proof jobs. Contributions are not
 expected to add to the manifest; see [CONTRIBUTING.md](CONTRIBUTING.md).
