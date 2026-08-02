@@ -2,6 +2,7 @@
 --  environment, wires the concrete tools into the generic MCP core and the core
 --  into the HTTP transport, and owns the resources the tools run against.
 
+with Ada.Command_Line;
 with Ada.Directories;
 with Ada.Text_IO;
 
@@ -13,6 +14,7 @@ with Spark_Mcp.Server;
 with Spark_Mcp.Http;
 with Spark_Mcp.Http.Serve;
 
+with Memcp.Log;
 with Memcp.Resources;
 with Memcp.Tools;
 with Memcp.Envelope;
@@ -113,30 +115,51 @@ procedure Main with SPARK_Mode => On is
    --  How the Open below ended.
    use type Memcp.Resources.Status;
 
-   procedure Ensure_Directory_Of (Path : String)
-     with Global => null;
-   --  Create the directory the file Path names lives in. sqlite opens no file
-   --  under a directory that does not exist, so without this the HOME-relative
-   --  default fails on a machine where ~/.memcp has never been created.
-   --  Best-effort: a directory that cannot be created leaves Open to report the
-   --  failure. A Path holding no '/' -- ":memory:", a bare filename -- names no
-   --  directory to create. Body outside SPARK.
+   Dir_Ok  : Boolean;
+   --  Whether the directory holding DB_Path is there to open a file under.
 
-   procedure Ensure_Directory_Of (Path : String)
-     with SPARK_Mode => Off
-   is
+   procedure Ensure_Directory_Of (Path : String; Ok : out Boolean)
+     with Global => null;
+   --  Create the directory the file Path names lives in, reporting in Ok
+   --  whether it is there afterwards. sqlite opens no file under a directory
+   --  that does not exist, so without this the HOME-relative default fails on a
+   --  machine where ~/.memcp has never been created. A Path holding no '/' --
+   --  ":memory:", a bare filename -- names no directory to create, and is Ok.
+   --  @param Path The store path whose containing directory is wanted.
+   --  @param Ok False when the directory is absent and could not be created.
+
+   procedure Ensure_Directory_Of (Path : String; Ok : out Boolean) is
    begin
+      Ok := True;
+
       for I in reverse Path'Range loop
          if Path (I) = '/' then
             if I > Path'First then
+               pragma Warnings
+                 (GNATprove, Off, "no Global contract available*",
+                  Reason => "Create_Path is not SPARK_Mode => On, so SPARK must assume this");
+               --  Accepted: the filesystem mutation stays hidden from SPARK, and
+               --  nothing else here reads or depends on that state.
+
+               pragma Warnings
+                 (GNATprove, Off, "no Always_Terminates aspect available*",
+                  Reason => "Create_Path is not SPARK_Mode => On, so SPARK must assume this");
+
                Ada.Directories.Create_Path (Path (Path'First .. I - 1));
+
+               pragma Warnings (GNATprove, On, "no Always_Terminates aspect available*");
+               pragma Warnings (GNATprove, On, "no Global contract available*");
             end if;
             return;
          end if;
       end loop;
    exception
       when others =>
-         null;
+         pragma Warnings
+           (GNATprove, Off, "this statement is never reached",
+            Reason => "Create_Path is not SPARK_Mode => On, so SPARK cannot see it raise");
+         Ok := False;
+         pragma Warnings (GNATprove, On, "this statement is never reached");
    end Ensure_Directory_Of;
 
    procedure Open_Database (Status : out Memcp.Resources.Status);
@@ -238,7 +261,30 @@ procedure Main with SPARK_Mode => On is
    end Connect_To_Server;
 
 begin
-   Ensure_Directory_Of (DB_Path);
+   Ensure_Directory_Of (DB_Path, Dir_Ok);
+
+   if not Dir_Ok then
+      Memcp.Log.Error
+        ("cannot create the directory holding " & DB_Path & "; aborting");
+
+      pragma Warnings
+        (GNATprove, Off, "no Global contract available*",
+         Reason => "Set_Exit_Status is not SPARK_Mode => On, so SPARK must assume this");
+      --  Accepted: the exit status is process state SPARK does not model, and
+      --  nothing here reads it back.
+
+      pragma Warnings
+        (GNATprove, Off, "no Always_Terminates aspect available*",
+         Reason => "Set_Exit_Status is not SPARK_Mode => On, so SPARK must assume this");
+
+      Ada.Command_Line.Set_Exit_Status (Ada.Command_Line.Failure);
+
+      pragma Warnings (GNATprove, On, "no Always_Terminates aspect available*");
+      pragma Warnings (GNATprove, On, "no Global contract available*");
+
+      return;
+   end if;
+
    Open_Database (Open_St);
 
    if Open_St = Memcp.Resources.Ready then
