@@ -46,6 +46,9 @@ make prove-check   # Silver, gated on a clean proof
 make docs-check    # every entity documented, every doc block correctly placed
 ```
 
+Why the surface is budgeted rather than forbidden, and what the gate cannot see,
+are in [`docs/design/0014-the-trust-surface.md`](docs/design/0014-the-trust-surface.md).
+
 Comment conventions are in [CLAUDE.md](CLAUDE.md). Design rationale belongs in a
 numbered ADR under [`docs/design/`](docs/design/), not in a comment; history
 belongs in the commit message.

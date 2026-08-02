@@ -259,7 +259,8 @@ can only be left standing by a suppression the manifest then has to name.
 `gnat.adc` sets `pragma SPARK_Mode (On)` for the product sources,
 so a unit outside SPARK has to say so at its own declaration. The gate runs first
 in CI, ahead of the documentation, build and proof jobs. Contributions are not
-expected to add to the manifest; see [CONTRIBUTING.md](CONTRIBUTING.md).
+expected to add to the manifest; see [CONTRIBUTING.md](CONTRIBUTING.md), and
+[`docs/design/0014`](docs/design/0014-the-trust-surface.md) for the reasoning.
 
 ### API documentation
 
