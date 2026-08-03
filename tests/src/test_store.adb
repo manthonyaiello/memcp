@@ -513,6 +513,19 @@ begin
                 and then Memcp.Store.Chunk_Vectors.Length (Turns) = 2
                 and then Memcp.Store.Chunk_Vectors.Element (Turns, 1).Ordinal = 1,
                 "Fetch_Turns: [1,3) window -> 2 turns from ordinal 1");
+
+         --  Every filter at once: the maximal query, end to end. The positions
+         --  themselves are proved in the body, so what is left here is that
+         --  each filter's value reaches the placeholder meant for it.
+         Memcp.Store.Fetch_Turns
+           (S, "se-1", Has_Project => True, Project => "sessapp",
+            Has_Start => True, Start_Ord => 0, Has_End => True, End_Ord => 3,
+            Has_Tail => True, Tail => 2, Result => Turns, Status => FT_St);
+         Check (FT_St = Memcp.Store.Success
+                and then Memcp.Store.Chunk_Vectors.Length (Turns) = 2
+                and then Memcp.Store.Chunk_Vectors.Element (Turns, 1).Ordinal = 1
+                and then Memcp.Store.Chunk_Vectors.Element (Turns, 2).Ordinal = 2,
+                "Fetch_Turns: all filters -> tail 2 of [0,3)");
       end;
 
       --  Search_Chunks over real chunk rows: nearest to Hot(1) is turn 0.

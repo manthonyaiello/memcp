@@ -1009,31 +1009,31 @@ package body Memcp.Store with SPARK_Mode => On is
 
       Stmt : Sql.Statement;
       St   : Sql.Status;
-      Idx  : Positive := 1;
 
-      --  Inherent to the running-position idiom: the last bind advances Idx
-      --  too, and no one reads it back.
-      pragma Warnings
-        (GNATprove, Off, "unused assignment",
-         Reason => "the final Idx advance in a bind helper is never read");
+      P_Project : constant Positive := 2;
+      --  Placeholder of " AND p.name = ?", right after the session_id one.
 
-      procedure Bind_Str (Value : String);
-      --  Bind Value as text at the running parameter position, then advance.
+      P_Start : constant Positive := P_Project + Boolean'Pos (Has_Project);
+      --  Placeholder of " AND c.ordinal >= ?", which moves up only past those
+      --  optional filters Where_SQL actually emitted ahead of it.
 
-      procedure Bind_Str (Value : String) is
-      begin
-         Sql.Bind_Text (Stmt, Idx, Value, St);
-         Idx := Idx + 1;
-      end Bind_Str;
+      P_End : constant Positive := P_Start + Boolean'Pos (Has_Start);
+      --  Placeholder of " AND c.ordinal < ?".
 
-      procedure Bind_Num (Value : Row_Id);
-      --  Bind Value as an integer at the running position, then advance.
+      P_Tail : constant Positive := P_End + Boolean'Pos (Has_End);
+      --  Placeholder of the tail form's LIMIT, last in either query.
 
-      procedure Bind_Num (Value : Row_Id) is
-      begin
-         Sql.Bind_Int64 (Stmt, Idx, Value, St);
-         Idx := Idx + 1;
-      end Bind_Num;
+      Placeholder_Count : constant Positive :=
+        1 + Boolean'Pos (Has_Project) + Boolean'Pos (Has_Start)
+        + Boolean'Pos (Has_End) + Boolean'Pos (Has_Tail);
+      --  How many placeholders Query holds, summed from the flags rather than
+      --  accumulated along the chain above.
+
+      pragma Assert (P_Tail + Boolean'Pos (Has_Tail) = Placeholder_Count + 1);
+      --  Checks that the chain of positions lands exactly one past the last
+      --  placeholder, against a total derived the other way. A position that
+      --  advances for an absent filter, or holds still for a present one, makes
+      --  the two disagree.
    begin
       Result := Chunk_Vectors.Empty_Vector;
       Status := Db_Error;
@@ -1043,19 +1043,18 @@ package body Memcp.Store with SPARK_Mode => On is
          return;
       end if;
 
-      --  Bind in the same order the placeholders appear above.
-      Bind_Str (Session_Id);
+      Sql.Bind_Text (Stmt, 1, Session_Id, St);
       if St = Sql.Ok and then Has_Project then
-         Bind_Str (Project);
+         Sql.Bind_Text (Stmt, P_Project, Project, St);
       end if;
       if St = Sql.Ok and then Has_Start then
-         Bind_Num (Start_Ord);
+         Sql.Bind_Int64 (Stmt, P_Start, Start_Ord, St);
       end if;
       if St = Sql.Ok and then Has_End then
-         Bind_Num (End_Ord);
+         Sql.Bind_Int64 (Stmt, P_End, End_Ord, St);
       end if;
       if St = Sql.Ok and then Has_Tail then
-         Bind_Num (Row_Id (Tail));
+         Sql.Bind_Int64 (Stmt, P_Tail, Row_Id (Tail), St);
       end if;
       if St /= Sql.Ok then
          Sql.Finalize (Stmt);
