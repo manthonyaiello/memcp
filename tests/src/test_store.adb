@@ -514,9 +514,9 @@ begin
                 and then Memcp.Store.Chunk_Vectors.Element (Turns, 1).Ordinal = 1,
                 "Fetch_Turns: [1,3) window -> 2 turns from ordinal 1");
 
-         --  Every filter at once, so each of the five placeholders is bound at
-         --  a distinct position: a mis-derived one either binds out of range or
-         --  swaps two filters, and both change this result.
+         --  Every filter at once: the maximal query, end to end. The positions
+         --  themselves are proved in the body, so what is left here is that
+         --  each filter's value reaches the placeholder meant for it.
          Memcp.Store.Fetch_Turns
            (S, "se-1", Has_Project => True, Project => "sessapp",
             Has_Start => True, Start_Ord => 0, Has_End => True, End_Ord => 3,

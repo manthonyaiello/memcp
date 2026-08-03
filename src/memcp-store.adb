@@ -1022,6 +1022,18 @@ package body Memcp.Store with SPARK_Mode => On is
 
       P_Tail : constant Positive := P_End + Boolean'Pos (Has_End);
       --  Placeholder of the tail form's LIMIT, last in either query.
+
+      Placeholder_Count : constant Positive :=
+        1 + Boolean'Pos (Has_Project) + Boolean'Pos (Has_Start)
+        + Boolean'Pos (Has_End) + Boolean'Pos (Has_Tail);
+      --  How many placeholders Query holds, summed from the flags rather than
+      --  accumulated along the chain above.
+
+      pragma Assert (P_Tail + Boolean'Pos (Has_Tail) = Placeholder_Count + 1);
+      --  Checks that the chain of positions lands exactly one past the last
+      --  placeholder, against a total derived the other way. A position that
+      --  advances for an absent filter, or holds still for a present one, makes
+      --  the two disagree.
    begin
       Result := Chunk_Vectors.Empty_Vector;
       Status := Db_Error;
