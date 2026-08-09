@@ -15,9 +15,17 @@
 # worker does the real upload; its output goes to MEMCP_HOOK_LOG. (This
 # survives Claude Code exiting, but not the whole host being torn down.)
 #
-# Configure:
+# The project key comes from the same derivation the SessionStart hook injects
+# into the session, so this transcript and the model's summary share one key.
+#
+# SessionEnd runs after the agent has exited, so it has nobody to emit a fault
+# block to; it logs instead, and a surface whose uploads stop is detected from
+# the corpus (summaries with no transcript) rather than from here.
+#
+# Configure (environment overrides the config file; see install.sh):
+#   MEMCP_CONFIG    config file (default: $HOME/.memcp/hooks.env)
 #   MEMCP_URL       MCP endpoint (default: http://127.0.0.1:8786/mcp)
-#   MEMCP_PROJECT   project name (default: basename of cwd from payload)
+#   MEMCP_PROJECT   project key, overriding derivation
 #   MEMCP_HOOK_LOG  detached-worker log (default: $HOME/.claude/memcp-hook.log)
 #
 # Install in ~/.claude/settings.json (or per-project .claude/settings.json):
@@ -27,11 +35,21 @@
 
 set -uo pipefail
 
+HOOK_PATH="${BASH_SOURCE[0]}"
+HOOK_DIR="$(cd -- "$(dirname -- "$HOOK_PATH")" && pwd)"
+
+log() { echo "memcp-hook: $*" >&2; }
+
+if ! . "$HOOK_DIR/hook_common.sh"; then
+    log "hook_common.sh missing from $HOOK_DIR"
+    exit 0
+fi
+
+memcp_load_config
+
 MEMCP_URL="${MEMCP_URL:-http://127.0.0.1:8786/mcp}"
 PROTO_VER="2025-06-18"
 MEMCP_HOOK_LOG="${MEMCP_HOOK_LOG:-${HOME}/.claude/memcp-hook.log}"
-
-log() { echo "memcp-hook: $*" >&2; }
 
 # --- detach: return immediately so Claude Code has nothing to cancel ---------
 # Read the payload in the foreground (the stdin pipe closes when Claude Code
@@ -94,14 +112,10 @@ fi
 
 project="${MEMCP_PROJECT:-}"
 if [[ -z "$project" ]]; then
-    if [[ -z "$cwd" ]]; then
-        log "no cwd in payload and MEMCP_PROJECT unset"
-        exit 0
-    fi
-    project=$(basename "$cwd")
+    project=$(memcp_project_key "$cwd")
 fi
-if [[ -z "$project" || "$project" == "/" || "$project" == "." ]]; then
-    log "could not derive project name (cwd=$cwd)"
+if ! memcp_valid_key "$project"; then
+    log "could not derive project key (cwd=$cwd)"
     exit 0
 fi
 
@@ -116,29 +130,41 @@ body="$tmpdir/body"
 # `jq --rawfile` reads it from disk and sidesteps the limit.
 base64 <"$transcript_path" | tr -d '\n' > "$tmpdir/b64"
 
+init_body=$(jq -nc \
+    --arg proto "$PROTO_VER" \
+    --arg version "$(memcp_client_version "$HOOK_PATH")" \
+    '{jsonrpc:"2.0",id:1,method:"initialize",params:{
+        protocolVersion:$proto,capabilities:{},
+        clientInfo:{name:"memcp-session-end",version:$version}}}')
+
 if ! curl -sS --max-time 10 -D "$headers" -o "$body" \
         -X POST "$MEMCP_URL" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json, text/event-stream' \
         -H "MCP-Protocol-Version: ${PROTO_VER}" \
-        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-            "protocolVersion":"'"${PROTO_VER}"'","capabilities":{},
-            "clientInfo":{"name":"memcp-session-end","version":"0.1.0"}}}'; then
+        -d "$init_body"; then
     log "initialize failed (server down at $MEMCP_URL?)"
     exit 0
 fi
 
-sid=$(grep -i '^mcp-session-id:' "$headers" | tr -d '\r' | awk '{print $2}')
-if [[ -z "$sid" ]]; then
-    log "no mcp-session-id header from initialize"
+if ! memcp_is_rpc "$(memcp_rpc_payload "$(cat "$body")")"; then
+    log "initialize did not answer with an MCP response"
     exit 0
+fi
+
+# The session id is optional in Streamable HTTP: it is echoed on later requests
+# only when the server assigned one.
+sid=$(grep -i '^mcp-session-id:' "$headers" | tr -d '\r' | awk '{print $2}')
+sid_args=()
+if [[ -n "$sid" ]]; then
+    sid_args=(-H "Mcp-Session-Id: ${sid}")
 fi
 
 curl -sS --max-time 10 -X POST "$MEMCP_URL" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -H "MCP-Protocol-Version: ${PROTO_VER}" \
-    -H "Mcp-Session-Id: ${sid}" \
+    "${sid_args[@]+"${sid_args[@]}"}" \
     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || {
     log "notifications/initialized failed"
     exit 0
@@ -159,25 +185,24 @@ response=$(curl -sS --max-time 60 -X POST "$MEMCP_URL" \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \
     -H "MCP-Protocol-Version: ${PROTO_VER}" \
-    -H "Mcp-Session-Id: ${sid}" \
+    "${sid_args[@]+"${sid_args[@]}"}" \
     --data-binary @"$tmpdir/req") || {
     log "upload_session call failed"
     exit 0
 }
 
-# SSE: payload arrives as `data: {...}` lines.
-data=$(echo "$response" | sed -n 's/^data: //p')
-if [[ -z "$data" ]]; then
-    log "empty response from upload_session: $response"
+data=$(memcp_rpc_payload "$response")
+if ! memcp_is_rpc "$data"; then
+    log "upload_session did not answer with an MCP response: $response"
     exit 0
 fi
 
-err=$(jq -r '.error.message // empty' <<<"$data" 2>/dev/null || true)
+err=$(memcp_tool_error "$data")
 if [[ -n "$err" ]]; then
     log "upload_session error: $err"
     exit 0
 fi
 
-result=$(jq -c '.result.structuredContent // .result.content // empty' <<<"$data" 2>/dev/null || true)
-log "uploaded project=$project session=$session_id result=$result"
+result=$(memcp_tool_result "$data")
+log "uploaded project=$project session=$session_id surface=$(memcp_surface_label) result=$result"
 exit 0

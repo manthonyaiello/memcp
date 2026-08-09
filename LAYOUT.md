@@ -1,7 +1,7 @@
 # Project layout
 
-SPARK (Ada) reimplementation of **memcp** (a progressive-disclosure MCP memory
-server) for provability. Python source of truth: `../memcp`.
+**memcp**, a progressive-disclosure MCP memory server, in SPARK (Ada) so that
+it can be proved.
 
 ## Organization
 
@@ -10,10 +10,12 @@ An Alire workspace whose **root is the composition-root crate** (`memcp`):
 directly. The reusable library crates live under `crates/`.
 
 ```
-spark-memcp/
+memcp/
 ├── alire.toml  memcp.gpr  gnat.adc     the memcp bin crate, at the root
 ├── src/                                the 9 concrete tools + Store + main
+├── scripts/hooks/                      the SessionStart / SessionEnd hooks + installer
 ├── tests/                              memcp_tests.gpr + unit drivers
+│   └── hooks/                          the hooks' own tests (bash, no toolchain)
 ├── crates/
 │   ├── spark_mcp/                      MCP core + the HTTP transport it ships with
 │   │   ├── src/spark_mcp-*.ads         Spark_Mcp.Server / .Requests / .Writer / .Tools

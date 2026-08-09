@@ -6,15 +6,20 @@ name: CI
 # Doc-only changes are skipped.
 #
 # The `docs` job (issue #22) is the third signal, and it is a gate — the other
-# two both `needs: docs`. `trust` (issue #46) gates everything ahead of it:
+# two both `needs: docs`. `trust` (issue #46) and `hooks` (issue #64) gate
+# everything ahead of it:
 #
-#     trust --> docs --> build-test (both platforms)
-#                    --> prove
+#     trust --+--> docs --> build-test (both platforms)
+#     hooks --+        --> prove
 #
-# `trust` needs no toolchain at all — grep over `git ls-files` — so it is the
-# cheapest signal by an order of magnitude and reports in seconds. A PR that
-# widens what the proof does not cover is answered before the runners spend a
-# build on it.
+# Neither root needs a toolchain — `trust` is grep over `git ls-files`, `hooks`
+# is bash + curl + jq over the hook scripts — so they are the cheapest signals
+# by an order of magnitude and report in seconds. A PR that widens what the
+# proof does not cover, or that breaks the hooks every surface runs, is answered
+# before the runners spend a build on it.
+#
+# `hooks` also runs inside `make test` on both platforms, which is not
+# redundant: this job is the fast signal, and the matrix is the portability one.
 #
 # `build-test` and `prove` still have NO edge between them, deliberately (issue
 # #3): proof needs the sources to compile — which it arranges for itself, in its
@@ -69,11 +74,24 @@ jobs:
       - name: Check trust surface
         run: make trust-check
 
+  # The hook gate (issue #64). The hooks are what every surface actually runs
+  # and no Ada driver reaches them, so they carry their own table-driven tests.
+  # Checkout and bash — no Alire, no compile.
+  hooks:
+    name: Hooks (gate)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Run hook tests
+        run: make test-hooks
+
   # API documentation + the doc gate (issue #22). `build-test` and `prove` wait
   # on it. See the graph in the header comment for what that edge saves.
   docs:
     name: GNATdoc (gate)
-    needs: trust
+    needs: [trust, hooks]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
