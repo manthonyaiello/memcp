@@ -20,6 +20,17 @@ make help       # list all targets
 If `alr`, `gnatprove`, `gnat`, or `cargo` is missing from PATH, **stop and ask
 the user to fix it** — do not hunt for binaries or reinstall.
 
+## The repository is public
+
+Issue bodies, PR bodies and commit messages are published. Much of the work here
+is driven by investigation against private memcp databases, so while drafting,
+the useful evidence and the publishable evidence look alike.
+
+Never publish machine, host or surface names, project keys read out of a corpus,
+or per-key row counts — the last two enumerate a private project list. Aggregate
+figures are fine. A finding survives generalization; the identifiers are not what
+makes it a finding.
+
 ## Comments
 
 Terse. Say what a competent Ada/SPARK reader cannot see in the code, then stop.
