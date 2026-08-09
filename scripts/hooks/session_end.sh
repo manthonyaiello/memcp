@@ -5,12 +5,20 @@
 # `session_id`, `transcript_path`, and `cwd`), base64-encodes the transcript
 # file, and uploads it via the `upload_session` MCP tool.
 #
-# All failures are logged to stderr and exit 0 — a memcp outage must never
-# break Claude Code shutdown.
+# All failures are logged and exit 0 — a memcp outage must never break
+# Claude Code shutdown.
+#
+# SessionEnd fires at shutdown, and Claude Code kills hooks that don't return
+# promptly ("Hook canceled") — but the upload handshake below can take tens of
+# seconds. So the hook drains stdin, then re-execs itself detached in a new
+# session with the payload piped back in, and returns immediately. The detached
+# worker does the real upload; its output goes to MEMCP_HOOK_LOG. (This
+# survives Claude Code exiting, but not the whole host being torn down.)
 #
 # Configure:
-#   MEMCP_URL      MCP endpoint (default: http://127.0.0.1:8786/mcp)
-#   MEMCP_PROJECT  project name (default: basename of cwd from payload)
+#   MEMCP_URL       MCP endpoint (default: http://127.0.0.1:8786/mcp)
+#   MEMCP_PROJECT   project name (default: basename of cwd from payload)
+#   MEMCP_HOOK_LOG  detached-worker log (default: $HOME/.claude/memcp-hook.log)
 #
 # Install in ~/.claude/settings.json (or per-project .claude/settings.json):
 #   "hooks": { "SessionEnd": [ { "hooks": [
@@ -21,8 +29,38 @@ set -uo pipefail
 
 MEMCP_URL="${MEMCP_URL:-http://127.0.0.1:8786/mcp}"
 PROTO_VER="2025-06-18"
+MEMCP_HOOK_LOG="${MEMCP_HOOK_LOG:-${HOME}/.claude/memcp-hook.log}"
 
 log() { echo "memcp-hook: $*" >&2; }
+
+# --- detach: return immediately so Claude Code has nothing to cancel ---------
+# Read the payload in the foreground (the stdin pipe closes when Claude Code
+# exits), then re-exec detached with it piped back in. setsid gives a fresh
+# session; where it's absent (macOS), nohup provides the SIGHUP immunity that
+# actually matters here. Failing to detach must never mean a silent no-op, so
+# if neither is available we fall through and run the upload synchronously.
+if [[ "${MEMCP_HOOK_DETACHED:-}" != "1" ]]; then
+    payload=$(cat)
+    detach=""
+    if command -v setsid >/dev/null 2>&1; then
+        detach="setsid"
+    elif command -v nohup >/dev/null 2>&1; then
+        detach="nohup"
+    fi
+    if [[ -n "$detach" ]]; then
+        mkdir -p "$(dirname "$MEMCP_HOOK_LOG")" 2>/dev/null || true
+        printf '%s' "$payload" \
+          | MEMCP_HOOK_DETACHED=1 MEMCP_HOOK_LOG="$MEMCP_HOOK_LOG" \
+            "$detach" bash "$0" >>"$MEMCP_HOOK_LOG" 2>&1 &
+        exit 0
+    fi
+    # No way to detach: run synchronously below. Set the guard so the re-exec
+    # skips this block, and feed the drained payload back through the worker's
+    # `payload=$(cat)` via a here-string.
+    exec env MEMCP_HOOK_DETACHED=1 MEMCP_HOOK_LOG="$MEMCP_HOOK_LOG" \
+        bash "$0" <<<"$payload"
+fi
+# --- detached worker (or synchronous fallback) runs everything below ---------
 
 for bin in curl jq base64; do
     if ! command -v "$bin" >/dev/null 2>&1; then
