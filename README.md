@@ -206,11 +206,15 @@ Tell the user memcp is not recording this session, then continue.
 That is how the hooks' incompatibility with this server was found, on the first
 live run: memcp assigns no `Mcp-Session-Id`, answers in plain JSON rather than
 `data:` event frames, and returns a tool result as a text content block rather
-than in `structuredContent`. All three are permitted — memcp declares no
-`outputSchema`, so a client is obliged to read `content` — and all three differ
-from the Python server the hooks were written against. Each was enough on its
-own to stop a hook dead while exiting 0. The hooks now accept either shape on
-all three counts.
+than in `structuredContent`. All three are permitted, and all three differ from
+the Python server the hooks were written against, so each was enough on its own
+to stop a hook dead while exiting 0.
+
+The hooks no longer require a session id, and parse either framing — which is
+what their own `Accept` header always claimed to take. They read the result
+from the text content block only: `structuredContent` is absent unless a tool
+declares an `outputSchema`, and a tool that sends it serializes the same JSON
+into a text block anyway, so one channel covers every server.
 
 The exit status is still 0 in every one of those cases. SessionEnd runs after
 the agent has exited and so has nobody to tell; it logs to `MEMCP_HOOK_LOG`,

@@ -84,11 +84,21 @@ envelope rather than about the payload the seam compares. A client assumption
 is not a server bug, so no amount of server-versus-server replay will surface
 one.
 
-The hooks therefore accept either framing, treat the session id as the optional
-thing it is, and read a result from `structuredContent` or from the text block,
-whichever the server sent. The alternative — changing the server to match the
-hooks — would have been a protocol change to fix a client assumption, and would
-have left the client just as brittle for the next server.
+Only one of the three is answered by tolerating two shapes. The session id stops
+being required, which deletes a condition the protocol never imposed. The
+framing is parsed either way, which is what the hooks' own `Accept` header has
+been promising all along. Neither adds a branch the client did not already owe.
+
+The result is read from the text content block and from nowhere else. Reading
+`structuredContent` as well would be the gratuitous half: it is absent unless a
+tool declares an `outputSchema`, a tool that does send it serializes the same
+JSON into a text block regardless, and the shadow run confirms the two servers'
+text blocks are byte-identical. One channel covers both, so the second path is
+deleted rather than defended.
+
+Changing the server to match the hooks was the other option, and it is worse on
+the same grounds: a protocol change to repair a client assumption, leaving the
+client just as brittle for the next server.
 
 Two error channels exist for the same reason and both are read: a JSON-RPC
 `error`, and a successful response whose result carries `isError: true`. A tool

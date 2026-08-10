@@ -158,13 +158,17 @@ frame() {
 }
 
 # A tool result carrying the JSON in $1, in whichever shape the framing implies.
+# Both carry it as a text block, because both servers do; the `sse` side adds
+# structuredContent alongside, which is what a tool with an outputSchema sends
+# and what the hooks must not come to depend on.
 tool_result() {
     local escaped
+    escaped=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
     if [[ "$framing" == "json" ]]; then
-        escaped=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
         printf '{"content":[{"type":"text","text":"%s"}],"isError":false}' "$escaped"
     else
-        printf '{"structuredContent":{"result":%s}}' "$1"
+        printf '{"content":[{"type":"text","text":"%s"}],"structuredContent":{"result":%s},"isError":false}' \
+            "$escaped" "$1"
     fi
 }
 

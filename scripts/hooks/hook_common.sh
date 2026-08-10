@@ -121,15 +121,15 @@ memcp_tool_error() {
            // empty' 2>/dev/null <<<"$1"
 }
 
-# The tool's result as JSON: `structuredContent.result` where the server sends
-# it, else the first text content block, which carries the same JSON encoded as
-# a string. Empty when neither is there.
+# The tool's result as JSON, from the first text content block. That is the one
+# channel every server has: `structuredContent` is absent unless the tool
+# declares an outputSchema, and a tool that sends it serializes the same JSON
+# into a text block anyway.
 memcp_tool_result() {
-    jq -c '.result.structuredContent.result
-           // ([.result.content[]?
-                | select(.type == "text")
-                | (.text | try fromjson catch empty)] | first)
-           // empty' 2>/dev/null <<<"$1"
+    jq -c '[.result.content[]?
+            | select(.type == "text")
+            | (.text | try fromjson catch empty)] | first // empty' \
+        2>/dev/null <<<"$1"
 }
 
 # --- project derivation -----------------------------------------------------
