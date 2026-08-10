@@ -130,17 +130,14 @@ make_sandbox() {
 # The stub server: MEMCP_TEST_SCENARIO picks the fault, MEMCP_TEST_BODY_LOG
 # collects each request body so a test can assert what was sent.
 #
-# MEMCP_TEST_FRAMING picks how the answer is shaped, because both are allowed
-# and the two servers memcp has had chose differently: `sse` frames the payload
-# as a `data:` event and returns the result in `structuredContent`, `json`
-# answers in plain JSON with the result encoded as a text content block and
-# assigns no session id at all.
+# It answers the way memcp answers and no other way -- 200, plain JSON, no
+# session id, one text content block -- so a hook that drifts onto a shape this
+# server does not produce fails here rather than in production.
 make_stub_curl() {
     cat >"$1/curl" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 scenario="${MEMCP_TEST_SCENARIO:-healthy}"
-framing="${MEMCP_TEST_FRAMING:-sse}"
 
 if [[ -n "${MEMCP_TEST_ARGV_LOG:-}" ]]; then
     printf '%s\n' "$*" >>"$MEMCP_TEST_ARGV_LOG"
@@ -148,34 +145,16 @@ fi
 
 ENTRIES='[{"created_at":"2026-08-01T09:00:00Z","kind":"diary","headline":"first headline"},{"created_at":"2026-08-02T09:00:00Z","kind":"autorecap","headline":"second headline"}]'
 
-# One JSON-RPC message, framed as the transport would frame it.
-frame() {
-    if [[ "$framing" == "json" ]]; then
-        printf '%s\n' "$1"
-    else
-        printf 'data: %s\n' "$1"
-    fi
-}
-
-# A tool result carrying the JSON in $1, in whichever shape the framing implies.
-# Both carry it as a text block, because both servers do; the `sse` side adds
-# structuredContent alongside, which is what a tool with an outputSchema sends
-# and what the hooks must not come to depend on.
+# A tool result carrying the JSON in $1, the way memcp carries one.
 tool_result() {
     local escaped
     escaped=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')
-    if [[ "$framing" == "json" ]]; then
-        printf '{"content":[{"type":"text","text":"%s"}],"isError":false}' "$escaped"
-    else
-        printf '{"content":[{"type":"text","text":"%s"}],"structuredContent":{"result":%s},"isError":false}' \
-            "$escaped" "$1"
-    fi
+    printf '{"content":[{"type":"text","text":"%s"}],"isError":false}' "$escaped"
 }
 
-headers=""; output=""; data=""
+output=""; data=""
 while (( $# )); do
     case "$1" in
-        -D) headers="${2:-}"; shift 2 ;;
         -o) output="${2:-}"; shift 2 ;;
         -d|--data-binary) data="${2:-}"; shift 2 ;;
         *) shift ;;
@@ -187,29 +166,18 @@ if [[ -n "${MEMCP_TEST_BODY_LOG:-}" && -n "$data" ]]; then
     printf '%s\n' "$data" >>"$MEMCP_TEST_BODY_LOG"
 fi
 
-# initialize is the only call asking for the response headers.
-if [[ -n "$headers" ]]; then
-    if [[ "$scenario" == "unreachable" ]]; then
-        echo "curl: (7) Failed to connect to 127.0.0.1 port 8786" >&2
-        exit 7
-    fi
-    if [[ "$framing" == "json" ]]; then
-        printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n' >"$headers"
-    else
-        printf 'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nmcp-session-id: stub-sid\r\n\r\n' >"$headers"
-    fi
-    if [[ -n "$output" ]]; then
-        if [[ "$scenario" == "initialize-rejected" ]]; then
-            printf '<html>not an mcp server</html>\n' >"$output"
-        else
-            frame '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stub","version":"0.0.0"}}}' >"$output"
-        fi
-    fi
-    exit 0
+if [[ "$scenario" == "unreachable" ]]; then
+    echo "curl: (7) Failed to connect to 127.0.0.1 port 8786" >&2
+    exit 7
 fi
 
-if [[ "$data" == *notifications/initialized* ]]; then
-    [[ "$scenario" == "handshake-failed" ]] && exit 7
+# initialize is the only call whose body goes to a file.
+if [[ -n "$output" ]]; then
+    if [[ "$scenario" == "initialize-rejected" ]]; then
+        printf '<html>not an mcp server</html>\n' >"$output"
+    else
+        printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stub","version":"0.0.0"}}}' >"$output"
+    fi
     exit 0
 fi
 
@@ -217,13 +185,13 @@ case "$scenario" in
     tool-call-failed) exit 7 ;;
     malformed) printf 'this is not an mcp response\n' ;;
     tool-error)
-        frame '{"jsonrpc":"2.0","id":2,"error":{"message":"no such tool"}}' ;;
+        printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"message":"no such tool"}}' ;;
     tool-is-error)
-        frame '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"database is locked"}],"isError":true}}' ;;
+        printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"database is locked"}],"isError":true}}' ;;
     no-entries)
-        frame "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":$(tool_result '[]')}" ;;
+        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' "$(tool_result '[]')" ;;
     *)
-        frame "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":$(tool_result "$ENTRIES")}" ;;
+        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' "$(tool_result "$ENTRIES")" ;;
 esac
 exit 0
 STUB

@@ -101,7 +101,6 @@ fi
 
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
-headers="$tmpdir/headers"
 body="$tmpdir/body"
 
 init_body=$(jq -nc \
@@ -111,10 +110,10 @@ init_body=$(jq -nc \
         protocolVersion:$proto,capabilities:{},
         clientInfo:{name:"memcp-session-start",version:$version}}}')
 
-if ! curl -sS --max-time 10 -D "$headers" -o "$body" \
+if ! curl -sS --max-time 10 -o "$body" \
         -X POST "$MEMCP_URL" \
         -H 'Content-Type: application/json' \
-        -H 'Accept: application/json, text/event-stream' \
+        -H 'Accept: application/json' \
         -H "MCP-Protocol-Version: ${PROTO_VER}" \
         -d "$init_body"; then
     fault "server-unreachable" \
@@ -122,30 +121,13 @@ if ! curl -sS --max-time 10 -D "$headers" -o "$body" \
         "Start the memcp server (make run), or point MEMCP_URL at the right endpoint."
 fi
 
-if ! memcp_is_rpc "$(memcp_rpc_payload "$(cat "$body")")"; then
+# memcp assigns no session, so initialize is the whole handshake: there is no
+# id to carry, and `notifications/initialized` is discarded unread.
+if ! memcp_is_rpc "$(cat "$body")"; then
     fault "initialize-rejected" \
         "The server at $MEMCP_URL answered initialize with something that is not an MCP response, so no prior-session context was injected." \
         "Check that MEMCP_URL points at memcp and not at another HTTP service."
 fi
-
-# The session id is optional in Streamable HTTP: it is echoed on later requests
-# only when the server assigned one.
-sid=$(grep -i '^mcp-session-id:' "$headers" | tr -d '\r' | awk '{print $2}')
-sid_args=()
-if [[ -n "$sid" ]]; then
-    sid_args=(-H "Mcp-Session-Id: ${sid}")
-fi
-
-curl -sS --max-time 10 -X POST "$MEMCP_URL" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -H "MCP-Protocol-Version: ${PROTO_VER}" \
-    "${sid_args[@]+"${sid_args[@]}"}" \
-    -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || {
-    fault "handshake-failed" \
-        "The memcp server at $MEMCP_URL accepted initialize but refused notifications/initialized, so the session was never established." \
-        "Check the memcp server log, then restart it (make run)."
-}
 
 # The handshake held, so the model can save. The key is derived once, here.
 emit_session_block() {
@@ -169,18 +151,16 @@ recent_body=$(jq -nc \
         name:"recent",
         arguments:{projects:[$project],n:$n}}}')
 
-response=$(curl -sS --max-time 10 -X POST "$MEMCP_URL" \
+data=$(curl -sS --max-time 10 -X POST "$MEMCP_URL" \
     -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
+    -H 'Accept: application/json' \
     -H "MCP-Protocol-Version: ${PROTO_VER}" \
-    "${sid_args[@]+"${sid_args[@]}"}" \
     -d "$recent_body") || {
     fault "tool-call-failed" \
         "The memcp server at $MEMCP_URL dropped the \`recent\` call, so no prior-session context was injected." \
         "Check the memcp server log, then restart it (make run)."
 }
 
-data=$(memcp_rpc_payload "$response")
 if ! memcp_is_rpc "$data"; then
     fault "malformed-response" \
         "The server at $MEMCP_URL answered \`recent\` with a body that is not an MCP response, so no prior-session context was injected." \

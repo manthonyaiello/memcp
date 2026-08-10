@@ -92,43 +92,33 @@ memcp_check_digest() {
     printf '</memcp-hook-modified>\n'
 }
 
-# --- MCP responses ----------------------------------------------------------
+# --- memcp's responses ------------------------------------------------------
+#
+# Shaped to the server in this repository and to nothing else. It answers every
+# request 200 with a plain JSON body, assigns no session id, and returns a
+# tool's result as a single text content block. The two are co-designed: a
+# change on either side is a change to both, and the hook tests are where that
+# is held.
 
-# The JSON-RPC payload of an MCP response body. Streamable HTTP allows either
-# framing, and the server picks: `data:` event frames, or plain JSON.
-memcp_rpc_payload() {
-    local raw="$1" framed
-    framed=$(sed -n 's/^data: //p' <<<"$raw")
-    if [[ -n "$framed" ]]; then
-        printf '%s\n' "$framed"
-    else
-        printf '%s\n' "$raw"
-    fi
-}
-
-# True when $1 is a JSON-RPC response rather than whatever else answered.
+# True when $1 is one of memcp's JSON-RPC responses rather than whatever else
+# answered on that port.
 memcp_is_rpc() {
     jq -e 'type == "object" and (has("result") or has("error"))' \
         >/dev/null 2>&1 <<<"$1"
 }
 
-# The error a tool call reported, on either channel: a JSON-RPC error, or an
-# `isError` result whose text block carries the message. Empty when it worked.
+# The error a call reported. memcp uses both channels and means different
+# things by them: a JSON-RPC `error` is a protocol fault caught before the tool
+# ran, an `isError` result is the tool itself failing. Empty when it worked.
 memcp_tool_error() {
     jq -r '.error.message
-           // (select(.result.isError == true)
-               | [.result.content[]? | select(.type == "text") | .text] | join(" "))
+           // (select(.result.isError == true) | .result.content[0].text)
            // empty' 2>/dev/null <<<"$1"
 }
 
-# The tool's result as JSON, from the first text content block. That is the one
-# channel every server has: `structuredContent` is absent unless the tool
-# declares an outputSchema, and a tool that sends it serializes the same JSON
-# into a text block anyway.
+# The tool's result, decoded from the text block that carries it.
 memcp_tool_result() {
-    jq -c '[.result.content[]?
-            | select(.type == "text")
-            | (.text | try fromjson catch empty)] | first // empty' \
+    jq -c '.result.content[0].text | try fromjson catch empty' \
         2>/dev/null <<<"$1"
 }
 

@@ -122,8 +122,8 @@ or add it by hand to `~/.claude.json` (MCP servers live there, **not** in
 The hooks live in `scripts/hooks/` and are pure bash + curl + jq — they talk to
 the server over the HTTP MCP surface, so they are independent of how the server
 is built. Both exit 0 on every path — a memcp outage will never block Claude
-Code startup or shutdown — but SessionStart says so out loud (see
-[Reporting](#when-a-hook-cannot-do-its-job) below).
+Code startup or shutdown — and SessionStart prints a block naming any fault it
+hit (see [below](#when-a-hook-cannot-do-its-job)).
 
 Run the installer once per machine, then paste what it prints into
 `~/.claude/settings.json` (or per-project `.claude/settings.json`):
@@ -179,8 +179,7 @@ with. Resolved in order:
 
 1. the upstream remote's repository name, with or without a trailing `.git`
 2. else the directory name of the **main worktree**, from
-   `git rev-parse --git-common-dir` — not `--show-toplevel`, which returns the
-   linked worktree's own path and would invent a project per worktree
+   `git rev-parse --git-common-dir`
 3. else `basename($cwd)`
 
 So a subdirectory, a linked worktree and a detached HEAD all answer with the
@@ -189,9 +188,7 @@ same key as the top of the repository. Override per session with
 
 ### When a hook cannot do its job
 
-A hook that fails quietly is indistinguishable from a project with no history,
-and the model cannot notice context that was never injected. So every
-SessionStart failure path prints a block naming the fault and its remedy:
+Every SessionStart failure path prints a block naming the fault and its remedy:
 
 ```
 <memcp-hook-error hook="session_start" fault="server-unreachable">
@@ -203,30 +200,13 @@ Tell the user memcp is not recording this session, then continue.
 </memcp-hook-error>
 ```
 
-That is how the hooks' incompatibility with this server was found, on the first
-live run: memcp assigns no `Mcp-Session-Id`, answers in plain JSON rather than
-`data:` event frames, and returns a tool result as a text content block rather
-than in `structuredContent`. All three are permitted, and all three differ from
-the Python server the hooks were written against, so each was enough on its own
-to stop a hook dead while exiting 0.
+The exit status is 0 in every one of those cases. SessionEnd runs after the
+agent has exited and so has nobody to tell; it logs to `MEMCP_HOOK_LOG`.
 
-The hooks no longer require a session id, and parse either framing — which is
-what their own `Accept` header always claimed to take. They read the result
-from the text content block only: `structuredContent` is absent unless a tool
-declares an `outputSchema`, and a tool that sends it serializes the same JSON
-into a text block anyway, so one channel covers every server.
-
-The exit status is still 0 in every one of those cases. SessionEnd runs after
-the agent has exited and so has nobody to tell; it logs to `MEMCP_HOOK_LOG`,
-and a surface that stops uploading is detected from the corpus instead —
-summaries that never acquired a transcript.
-
-Both hooks report `memcp-session-start/0.2.0+<digest>` as their MCP
-`clientInfo.version`. The version orders releases; the digest is over the hook
-and `hook_common.sh` as installed, so a hook edited on the machine is visible
-rather than reported as whatever version it started life as. A hook whose
-runtime digest differs from what `install.sh` recorded says so in a
-`<memcp-hook-modified>` block and keeps working.
+Both hooks report `0.2.0+<digest>` as their MCP `clientInfo.version`. The
+digest is over the hook and `hook_common.sh` as installed; a hook whose runtime
+digest differs from what `install.sh` recorded emits a `<memcp-hook-modified>`
+block and keeps working.
 
 ### Surface identity
 
@@ -312,9 +292,8 @@ make test          # unit drivers + self-contained smoke tests + the hook tests
 make test-hooks    # just the hook tests: no Alire, no compiler
 ```
 
-The drivers are dependency-light (no AUnit, so they run the moment the crates
-build); `-gnata` turns the SPARK `Pre`/`Post` along each path into executable
-checks, so a contract violation fails the run.
+`-gnata` turns the SPARK `Pre`/`Post` along each path into executable checks,
+so a contract violation fails the run.
 
 | Driver | Exercises |
 | --- | --- |
@@ -324,12 +303,9 @@ checks, so a contract violation fails the run.
 | `test_spark_mcp` | the json-free `spark_mcp` core: Writer + Respond routing |
 | `sqlite_smoke` | the `sqlite_vec_spark` binding: open → vec0 → KNN match |
 
-The hooks are tested in the language they are written in, under
-`tests/hooks/`. The server is stubbed by a fake `curl` first on `PATH` rather
-than a listening process — what the hooks branch on is curl's exit status and
-the bytes it prints — so the fault table needs no port and no dependency the
-hooks themselves refuse to take. One case still dials a closed port with the
-real `curl`.
+The hooks are tested in the language they are written in, under `tests/hooks/`.
+The server is stubbed by a `curl` shim first on `PATH`; one case dials a closed
+port with the real `curl`.
 
 | Script | Exercises |
 | --- | --- |

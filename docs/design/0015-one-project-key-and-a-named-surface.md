@@ -64,41 +64,55 @@ things at once. memcp answers `initialize` without assigning an `Mcp-Session-Id`
 answers in plain JSON rather than `data:` event frames, and returns a tool's
 result as a text content block rather than in `structuredContent`.
 
-All three are permitted by Streamable HTTP, and none of them is a fault in the
-server: it declares no `outputSchema`, so a client that will not read `content`
-is the side making an assumption the protocol does not grant it.
+All three differ from the Python server the hooks were written against, and each
+one on its own is enough to stop a hook dead while exiting 0. What makes it
+worth an ADR is not how long it went unnoticed — it did not: the hooks worked
+until the SPARK binary took the port, and the first session afterwards is the
+one that reported it. It is that nothing about the failure was *legible*
+beforehand. Three defects arriving through a handshake that exits 0 either way
+read as a quiet project with no history, for as long as nobody goes looking.
 
-All three differ from the Python server the hooks were written against, and
-each one on its own is enough to stop a hook dead while exiting 0. What makes
-that worth an ADR is not how long it went unnoticed — it did not: the hooks
-worked until the SPARK binary took the port, and the first session after the
-switch is the one that reported it. It is that nothing about the failure was
-*legible* before this change. The same three defects, arriving through a
-handshake that exits 0 either way, would have read as a quiet project with no
-history for as long as nobody went looking.
+## The hooks are pinned to this server, not to the protocol
 
-That is also the limit of what a replay harness at the `Dispatch` seam can tell
-you (0013). Two of the three divergences are below that seam — a response
-header and the transport's framing — and the third is a choice about the
-envelope rather than about the payload the seam compares. A client assumption
-is not a server bug, so no amount of server-versus-server replay will surface
-one.
+The tempting repair is a client that tolerates every shape the specification
+permits. It is the wrong one. The hooks and the server ship from one repository
+and are released together; they are co-designed, and a client hedged against
+servers that do not exist pays in branches nobody can test and in a
+specification-shaped ambiguity about which behaviour is actually intended.
 
-Only one of the three is answered by tolerating two shapes. The session id stops
-being required, which deletes a condition the protocol never imposed. The
-framing is parsed either way, which is what the hooks' own `Accept` header has
-been promising all along. Neither adds a branch the client did not already owe.
+So the hooks assume memcp's answers exactly: 200, plain JSON, one text content
+block, no session. That deletes rather than adds — no event-stream parsing, no
+session id to capture and echo, no `notifications/initialized`, which
+`Respond` discards unread. The Streamable HTTP alternatives are not handled
+because this server does not produce them.
 
-The result is read from the text content block and from nowhere else. Reading
-`structuredContent` as well would be the gratuitous half: it is absent unless a
-tool declares an `outputSchema`, a tool that does send it serializes the same
-JSON into a text block regardless, and the shadow run confirms the two servers'
-text blocks are byte-identical. One channel covers both, so the second path is
-deleted rather than defended.
+Two channels remain, because memcp really uses two and means different things
+by them: a JSON-RPC `error` is a protocol fault caught before the tool ran, an
+`isError` result is the tool itself failing. Reading only one would lose half
+the failures.
 
-Changing the server to match the hooks was the other option, and it is worse on
-the same grounds: a protocol change to repair a client assumption, leaving the
-client just as brittle for the next server.
+What makes this safe is that the assumption is written down and held. The stub
+in `tests/hooks/` answers the way the server answers and no other way, and the
+tests assert the negative too — no session header echoed, no notification sent,
+no event stream accepted. A hook that drifts back toward generality fails
+there. If the server's shape changes, the tests are the first thing to break,
+which is the correct place for a co-design to be checked.
+
+The corollary is that a server behaviour we dislike is a server issue, argued on
+its own merits, not something the client quietly absorbs.
+
+## What a replay harness at the Dispatch seam cannot see
+
+None of the three would have been caught by comparing this server against the
+Python one, and the shadow runs were clean for that reason rather than by luck.
+Two of the divergences sit below the `Dispatch` seam (0013) — a response header
+and the transport's framing — and the third is a choice about the envelope
+rather than about the payload the seam compares. The harness recorded
+`structuredContent` on every call and never compared it.
+
+The general form: a replay harness answers "do the two servers agree", and a
+client assumption is not a disagreement between servers. Only a client exercised
+against the real response can find one, which is what `tests/hooks/` now is.
 
 Two error channels exist for the same reason and both are read: a JSON-RPC
 `error`, and a successful response whose result carries `isError: true`. A tool

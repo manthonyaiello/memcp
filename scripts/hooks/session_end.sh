@@ -121,7 +121,6 @@ fi
 
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
-headers="$tmpdir/headers"
 body="$tmpdir/body"
 
 # Write base64 to a file rather than a shell var: on Linux a single argv
@@ -137,38 +136,22 @@ init_body=$(jq -nc \
         protocolVersion:$proto,capabilities:{},
         clientInfo:{name:"memcp-session-end",version:$version}}}')
 
-if ! curl -sS --max-time 10 -D "$headers" -o "$body" \
+if ! curl -sS --max-time 10 -o "$body" \
         -X POST "$MEMCP_URL" \
         -H 'Content-Type: application/json' \
-        -H 'Accept: application/json, text/event-stream' \
+        -H 'Accept: application/json' \
         -H "MCP-Protocol-Version: ${PROTO_VER}" \
         -d "$init_body"; then
     log "initialize failed (server down at $MEMCP_URL?)"
     exit 0
 fi
 
-if ! memcp_is_rpc "$(memcp_rpc_payload "$(cat "$body")")"; then
+# memcp assigns no session, so initialize is the whole handshake: there is no
+# id to carry, and `notifications/initialized` is discarded unread.
+if ! memcp_is_rpc "$(cat "$body")"; then
     log "initialize did not answer with an MCP response"
     exit 0
 fi
-
-# The session id is optional in Streamable HTTP: it is echoed on later requests
-# only when the server assigned one.
-sid=$(grep -i '^mcp-session-id:' "$headers" | tr -d '\r' | awk '{print $2}')
-sid_args=()
-if [[ -n "$sid" ]]; then
-    sid_args=(-H "Mcp-Session-Id: ${sid}")
-fi
-
-curl -sS --max-time 10 -X POST "$MEMCP_URL" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -H "MCP-Protocol-Version: ${PROTO_VER}" \
-    "${sid_args[@]+"${sid_args[@]}"}" \
-    -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || {
-    log "notifications/initialized failed"
-    exit 0
-}
 
 # Stream the assembled body through a file so the base64 payload never has
 # to fit in an argv slot — same MAX_ARG_STRLEN reason as the b64 file above.
@@ -181,19 +164,17 @@ jq -nc \
         arguments:{project:$project,session_id:$session_id,transcript_b64:$b64}}}' \
     > "$tmpdir/req"
 
-response=$(curl -sS --max-time 60 -X POST "$MEMCP_URL" \
+data=$(curl -sS --max-time 60 -X POST "$MEMCP_URL" \
     -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
+    -H 'Accept: application/json' \
     -H "MCP-Protocol-Version: ${PROTO_VER}" \
-    "${sid_args[@]+"${sid_args[@]}"}" \
     --data-binary @"$tmpdir/req") || {
     log "upload_session call failed"
     exit 0
 }
 
-data=$(memcp_rpc_payload "$response")
 if ! memcp_is_rpc "$data"; then
-    log "upload_session did not answer with an MCP response: $response"
+    log "upload_session did not answer with an MCP response: $data"
     exit 0
 fi
 

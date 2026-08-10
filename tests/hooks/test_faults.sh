@@ -102,10 +102,6 @@ run_start initialize-rejected
 assert_eq       "initialize refused: exit 0" 0 "$STATUS"
 assert_contains "initialize refused: names the fault" 'fault="initialize-rejected"' "$OUT"
 
-run_start handshake-failed
-assert_eq       "handshake refused: exit 0" 0 "$STATUS"
-assert_contains "handshake refused: names the fault" 'fault="handshake-failed"' "$OUT"
-
 run_start malformed
 assert_eq       "malformed body: exit 0" 0 "$STATUS"
 assert_contains "malformed body: names the fault" 'fault="malformed-response"' "$OUT"
@@ -167,45 +163,24 @@ assert_contains "compact: the key is still injected" \
     '<memcp-session id="S1" project="widget"' "$OUT"
 assert_not_contains "compact: no diary listing" '<memcp-prior-sessions' "$OUT"
 
-# --- the framing the shipped server answers with ----------------------------
-# Plain JSON, no session id assigned, and the result carried as a text content
-# block instead of structuredContent. All three are permitted, all three are
-# what memcp does, and a hook that insists on the other choice does nothing at
-# all against it.
+# --- what the hooks must not send -------------------------------------------
+# The two are co-designed: memcp assigns no session and reads no notification,
+# so a hook that sends either has drifted from the server it is paired with.
 
-export MEMCP_TEST_FRAMING=json
-export MEMCP_TEST_BODY_LOG="$TEST_TMP/bodies.json"
-
-run_start healthy
-assert_eq       "plain JSON: exit 0"     0 "$STATUS"
-assert_not_contains "plain JSON: no fault block" '<memcp-hook-error' "$OUT"
-assert_contains "plain JSON: session block is injected" \
-    '<memcp-session id="S1" project="widget"' "$OUT"
-assert_contains "plain JSON: prior sessions are listed" \
-    '<memcp-prior-sessions project="widget" count="2">' "$OUT"
-assert_contains "plain JSON: headlines are surfaced" \
-    'kind=diary] first headline' "$OUT"
+ARGV_LOG="$TEST_TMP/argv"
+: >"$ARGV_LOG"
+MEMCP_TEST_SCENARIO=healthy MEMCP_TEST_ARGV_LOG="$ARGV_LOG" \
+    MEMCP_CONFIG="$CONFIG" PATH="$SANDBOX" \
+    bash "$HOOKS_DIR/session_start.sh" <<<"$PAYLOAD" >/dev/null 2>&1
+SENT=$(cat "$ARGV_LOG")
+assert_not_contains "no session header is echoed" "Mcp-Session-Id" "$SENT"
+assert_not_contains "no notification is sent"     "notifications/initialized" "$SENT"
+assert_not_contains "no event stream is accepted" "text/event-stream" "$SENT"
+assert_eq "the handshake is one round trip plus the tool call" \
+    2 "$(grep -c . "$ARGV_LOG")"
 
 run_start no-entries
-assert_not_contains "plain JSON, empty result: no fault block" \
-    '<memcp-hook-error' "$OUT"
-assert_not_contains "plain JSON, empty result: no listing" \
-    '<memcp-prior-sessions' "$OUT"
-
-run_start tool-is-error
-assert_contains "plain JSON: an isError result is still a fault" \
-    'fault="tool-error"' "$OUT"
-
-END_OUT=$(MEMCP_TEST_SCENARIO=healthy MEMCP_TEST_FRAMING=json \
-          MEMCP_TEST_BODY_LOG="$TEST_TMP/bodies.json.end" \
-          MEMCP_CONFIG="$CONFIG" MEMCP_HOOK_DETACHED=1 PATH="$SANDBOX" \
-          bash "$HOOKS_DIR/session_end.sh" <<<"$END_PAYLOAD" 2>&1)
-assert_eq "plain JSON: session_end exits 0" 0 "$?"
-assert_contains "plain JSON: session_end reports the upload" \
-    "uploaded project=widget" "$END_OUT"
-assert_contains "plain JSON: session_end sends the transcript" \
-    '"project":"widget"' "$(cat "$TEST_TMP/bodies.json.end")"
-
-unset MEMCP_TEST_FRAMING MEMCP_TEST_BODY_LOG
+assert_not_contains "empty result: no fault block" '<memcp-hook-error' "$OUT"
+assert_not_contains "empty result: no listing"     '<memcp-prior-sessions' "$OUT"
 
 finish
