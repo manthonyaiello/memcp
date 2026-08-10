@@ -78,7 +78,8 @@ server's instructions string, so it's available to subagents that connect to
 automatically (Alire pre-build actions) — you never run either by hand.
 
 ***Important:*** You must install the two hooks (see [Hooks](#hooks)) for
-`memcp` to work correctly.
+`memcp` to work correctly — run `scripts/hooks/install.sh` and wire what it
+prints into `settings.json`.
 
 ### Building
 
@@ -120,11 +121,19 @@ or add it by hand to `~/.claude.json` (MCP servers live there, **not** in
 
 The hooks live in `scripts/hooks/` and are pure bash + curl + jq — they talk to
 the server over the HTTP MCP surface, so they are independent of how the server
-is built. All failures are logged to stderr and the script exits 0 — a memcp
-outage will never block Claude Code startup or shutdown.
+is built. Both exit 0 on every path — a memcp outage will never block Claude
+Code startup or shutdown — and SessionStart prints a block naming any fault it
+hit (see [below](#when-a-hook-cannot-do-its-job)).
 
-Add to `~/.claude/settings.json` (or per-project `.claude/settings.json`),
-substituting the absolute path to your checkout:
+Run the installer once per machine, then paste what it prints into
+`~/.claude/settings.json` (or per-project `.claude/settings.json`):
+
+```sh
+scripts/hooks/install.sh
+```
+
+It writes `~/.memcp/hooks.env` — the shell-sourceable config both hooks read —
+and prints the `settings.json` block with the absolute paths filled in:
 
 ```json
 {
@@ -141,10 +150,15 @@ substituting the absolute path to your checkout:
 }
 ```
 
-**SessionStart** reads the most recent diary entries for the current project
-and prints them inside a `<memcp-prior-sessions>` block, which Claude picks up
-as first-turn context. It only fires on `source=startup` or `source=clear`;
-`resume` and `compact` skip, because the model already has prior context.
+Re-run `install.sh` after every pull: it re-records the hook digests, and it
+never re-rolls the surface identity it minted the first time.
+
+**SessionStart** derives the project key, emits it in a `<memcp-session>` block
+for the model to use verbatim, and prints the most recent diary entries for
+that project inside a `<memcp-prior-sessions>` block, which Claude picks up as
+first-turn context. On `source=resume` and `source=compact` the diary listing
+is skipped — the model already has that context — but the key is still injected,
+because a compaction can drop it.
 
 **SessionEnd** base64-encodes the transcript at `transcript_path` and uploads
 it via the `upload_session` tool. The server writes the raw transcript to
@@ -157,8 +171,52 @@ a `kind="autorecap"` Header so the session is at least anchored in
 autorecap never overwrites a diary entry. Idempotent on
 `(project, session_id)`: re-runs are no-ops.
 
-Project name defaults to `basename($cwd)` from the hook payload; override per
-session with the `MEMCP_PROJECT` env var.
+### One project key per repository
+
+Both hooks derive the key the same way, and SessionStart injects the result so
+the model files its summary under exactly the key the transcript is uploaded
+with. Resolved in order:
+
+1. the upstream remote's repository name, with or without a trailing `.git`
+2. else the directory name of the **main worktree**, from
+   `git rev-parse --git-common-dir`
+3. else `basename($cwd)`
+
+So a subdirectory, a linked worktree and a detached HEAD all answer with the
+same key as the top of the repository. Override per session with
+`MEMCP_PROJECT`.
+
+### When a hook cannot do its job
+
+Every SessionStart failure path prints a block naming the fault and its remedy:
+
+```
+<memcp-hook-error hook="session_start" fault="server-unreachable">
+The memcp server did not answer at http://127.0.0.1:8786/mcp, so no
+prior-session context was injected and nothing will be recorded for this
+session.
+Remedy: Start the memcp server (make run), or point MEMCP_URL at the right endpoint.
+Tell the user memcp is not recording this session, then continue.
+</memcp-hook-error>
+```
+
+The exit status is 0 in every one of those cases. SessionEnd runs after the
+agent has exited and so has nobody to tell; it logs to `MEMCP_HOOK_LOG`.
+
+Both hooks report `0.2.0+<digest>` as their MCP `clientInfo.version`. The
+digest is over the hook and `hook_common.sh` as installed; a hook whose runtime
+digest differs from what `install.sh` recorded emits a `<memcp-hook-modified>`
+block and keeps working.
+
+### Surface identity
+
+`install.sh` mints a UUID and a label for the machine, once, and records the
+host name as of that minting. A config that later turns up on a differently
+named host was inherited — a cloned VM, a restored backup — rather than created
+there, which is what keeps two machines from reporting as one surface.
+
+The reasoning behind all of the above is in
+[`docs/design/0015`](docs/design/0015-one-project-key-and-a-named-surface.md).
 
 ## Tools
 
@@ -212,20 +270,30 @@ Vocabulary). If you genuinely need to inspect one, the files are at
 | `MEMCP_DB_PATH` | `~/.memcp/memcp.db` | server |
 | `MEMCP_PORT` | `8786` | server |
 | `MEMCP_URL` | `http://127.0.0.1:8786/mcp` | both hooks, scripts |
-| `MEMCP_PROJECT` | `basename($cwd)` | both hooks |
+| `MEMCP_CONFIG` | `~/.memcp/hooks.env` | both hooks, `install.sh` |
+| `MEMCP_PROJECT` | derived (see [above](#one-project-key-per-repository)) | both hooks |
 | `MEMCP_RECENT_N` | `5` | `session_start.sh` |
+| `MEMCP_HOOK_LOG` | `~/.claude/memcp-hook.log` | `session_end.sh` |
+| `MEMCP_SURFACE_ID` | minted at install | both hooks |
+| `MEMCP_SURFACE_LABEL` | host name at install | both hooks |
+| `MEMCP_SURFACE_HOST` | host name at install | `install.sh` |
+
+Everything below `MEMCP_URL` in that table is normally read from
+`~/.memcp/hooks.env`, whose every line is `: "${VAR:=value}"` — so an
+environment variable of the same name wins, with no precedence logic anywhere
+in the hooks.
 
 ## Development
 
 ### Testing
 
 ```sh
-make test          # unit drivers + self-contained smoke tests
+make test          # unit drivers + self-contained smoke tests + the hook tests
+make test-hooks    # just the hook tests: no Alire, no compiler
 ```
 
-The drivers are dependency-light (no AUnit, so they run the moment the crates
-build); `-gnata` turns the SPARK `Pre`/`Post` along each path into executable
-checks, so a contract violation fails the run.
+`-gnata` turns the SPARK `Pre`/`Post` along each path into executable checks,
+so a contract violation fails the run.
 
 | Driver | Exercises |
 | --- | --- |
@@ -234,6 +302,17 @@ checks, so a contract violation fails the run.
 | `test_tools` | the 9 tools' JSON marshalling (embedder-off paths) |
 | `test_spark_mcp` | the json-free `spark_mcp` core: Writer + Respond routing |
 | `sqlite_smoke` | the `sqlite_vec_spark` binding: open → vec0 → KNN match |
+
+The hooks are tested in the language they are written in, under `tests/hooks/`.
+The server is stubbed by a `curl` shim first on `PATH`; one case dials a closed
+port with the real `curl`.
+
+| Script | Exercises |
+| --- | --- |
+| `test_derivation` | the project key over fixture repositories: remote, subdirectory, worktree, detached HEAD, no remote, no repository |
+| `test_faults` | every SessionStart failure path — the block it emits and its exit status — and that SessionEnd uploads under the key SessionStart injected |
+| `test_config` | config file, environment, and which of the two wins |
+| `test_digest` | identity minted once and not re-rolled; a hook edited in place detected |
 
 ### Proof
 

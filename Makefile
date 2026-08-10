@@ -13,8 +13,8 @@ ALR      ?= alr
 GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
 
-.PHONY: all build run model test prove prove-deps prove-check docs docs-check \
-        docs-placement trust trust-check clean help
+.PHONY: all build run model test test-hooks prove prove-deps prove-check docs \
+        docs-check docs-placement trust trust-check clean help
 
 all: build
 
@@ -27,7 +27,7 @@ run: build ## Serve POST /mcp on 127.0.0.1:8786 (blocking)
 model: ## Provision the embedding weights into ~/.memcp/models (needs curl)
 	$(MODEL)
 
-test: build ## Build + run the unit drivers and the self-contained smoke tests
+test: build test-hooks ## Build + run the unit drivers and the self-contained smoke tests
 	$(GPRBUILD) -P tests/memcp_tests.gpr
 	./tests/bin/test_dispatch
 	./tests/bin/test_store
@@ -36,6 +36,11 @@ test: build ## Build + run the unit drivers and the self-contained smoke tests
 	./crates/spark_mcp/tests/bin/test_spark_mcp
 	$(GPRBUILD) -P crates/sqlite_vec_spark/tests/sqlite_smoke.gpr
 	./crates/sqlite_vec_spark/tests/sqlite_smoke
+
+# No Alire, no compiler: the hooks are bash + curl + jq and so is their harness,
+# which is why this is separable from `test` and runs on a bare checkout.
+test-hooks: ## Run the SessionStart / SessionEnd hook tests
+	./tests/hooks/run_tests.sh
 
 prove: ## Prove memcp to SPARK Silver — AoRTE (--level=2)
 	$(ALR) gnatprove -P memcp.gpr -j0 --level=2
