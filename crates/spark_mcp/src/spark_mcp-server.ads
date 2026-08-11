@@ -29,8 +29,8 @@
 --    Return "" to add none, otherwise a JSON object of at most Max_Field
 --    characters; the text is embedded verbatim, on the same footing as
 --    Input_Schema. A version string means nothing to this crate, so deciding
---    what to say about one is the application's; defaults to
---    Requests.No_Client_Meta, which says nothing.
+--    what to say about one is the application's, and there is no default: an
+--    instantiation with nothing to say supplies a function returning "".
 
 with Spark_Mcp.Requests;
 with Spark_Mcp.Tools;
@@ -55,8 +55,7 @@ generic
      (Request : String) return Requests.Envelope is Requests.No_Parser;
 
    with function Client_Meta
-     (Client_Name, Client_Version : String) return String
-     is Requests.No_Client_Meta;
+     (Client_Name, Client_Version : String) return String;
 
 package Spark_Mcp.Server with SPARK_Mode => On is
 

@@ -1,9 +1,7 @@
 --  Vocabulary of the inbound JSON-RPC 2.0 envelope seam: the neutral record a
---  Parse_Envelope function decodes request text into, and the defaults for the
---  two formals that would otherwise force a dependency -- a parser that decodes
---  nothing and a client note that says nothing. Non-generic, because
---  Spark_Mcp.Server's formals name these and so must be able to before
---  instantiation.
+--  Parse_Envelope function decodes request text into, and the default parser
+--  that decodes nothing. Non-generic, because Spark_Mcp.Server's formal returns
+--  the type and so must be able to name it before instantiation.
 
 package Spark_Mcp.Requests with SPARK_Mode => On is
 
@@ -74,14 +72,5 @@ package Spark_Mcp.Requests with SPARK_Mode => On is
    --  can be built, proved and tested with no JSON library at all.
    --  @param Request The raw request text (ignored; no decoding is attempted).
    --  @return An Envelope with Kind => Unimplemented and every *_Len => 0.
-
-   function No_Client_Meta (Client_Name, Client_Version : String) return String
-   with Post => No_Client_Meta'Result'Length = 0;
-   --  The default Client_Meta: says nothing about any client, so `initialize`
-   --  carries no `_meta` and the crate stays ignorant of what a client version
-   --  means.
-   --  @param Client_Name params.clientInfo.name (ignored).
-   --  @param Client_Version params.clientInfo.version (ignored).
-   --  @return The empty string.
 
 end Spark_Mcp.Requests;
