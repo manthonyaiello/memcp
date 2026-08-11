@@ -113,7 +113,7 @@ make_worktree() {
 # out so their absence can be tested.
 SANDBOX_BINS=(bash cat mktemp rm ln grep awk sed tr head basename dirname env
               git shasum sha256sum base64 hostname uname od uuidgen mkdir chmod
-              jq)
+              jq tar cp mv)
 
 make_sandbox() {
     local dir="$1"; shift
@@ -125,6 +125,8 @@ make_sandbox() {
         ln -sf "$path" "$dir/$bin"
     done
     make_stub_curl "$dir"
+    [[ "$excluded" == *" ssh "* ]] || make_stub_ssh "$dir"
+    [[ "$excluded" == *" claude "* ]] || make_stub_claude "$dir"
 }
 
 # The stub server: MEMCP_TEST_SCENARIO picks the fault, MEMCP_TEST_BODY_LOG
@@ -196,4 +198,79 @@ esac
 exit 0
 STUB
     chmod +x "$1/curl"
+}
+
+# The ssh stub: joins its command words and runs the result through a shell,
+# which is what ssh does. An argument that needed quoting for the far side
+# therefore fails here the way it fails against a real host. Set
+# MEMCP_TEST_SSH_FAIL to a host name to make that host unreachable.
+make_stub_ssh() {
+    cat >"$1/ssh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+host="$1"; shift
+
+if [[ -n "${MEMCP_TEST_SSH_LOG:-}" ]]; then
+    printf '%s\n' "$host" >>"$MEMCP_TEST_SSH_LOG"
+fi
+
+if [[ "${MEMCP_TEST_SSH_FAIL:-}" == "$host" ]]; then
+    echo "ssh: connect to host $host port 22: Connection refused" >&2
+    exit 255
+fi
+
+bash -c "$*"
+STUB
+    chmod +x "$1/ssh"
+}
+
+# The claude stub: `mcp get` and `mcp add` over a registry file, so
+# registration is observable without a real CLI and without any risk to a real
+# ~/.claude.json. `get` on an unknown name exits 0 and says so in prose, which
+# is the CLI behaviour deploy.sh depends on.
+make_stub_claude() {
+    cat >"$1/claude" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+reg="${MEMCP_TEST_MCP_REGISTRY:-$HOME/.mcp-registry}"
+
+[[ "${1:-}" == mcp ]] || exit 2
+
+case "${2:-}" in
+    get)
+        name="${3:-}"
+        url=""
+        [[ ! -f "$reg" ]] || url=$(sed -n "s/^$name //p" "$reg")
+        if [[ -n "$url" ]]; then
+            printf '%s:\n  Scope: User config\n  Type: http\n  URL: %s\n' \
+                "$name" "$url"
+        else
+            printf 'No MCP server named "%s".\n' "$name"
+        fi
+        ;;
+    add)
+        shift 2
+        name=""; url=""
+        while (( $# )); do
+            case "$1" in
+                -s|--scope|-t|--transport) shift 2 ;;
+                -*) shift ;;
+                *) if [[ -z "$name" ]]; then name="$1"; else url="$1"; fi; shift ;;
+            esac
+        done
+        [[ -n "$name" && -n "$url" ]] || exit 2
+        [[ "${MEMCP_TEST_MCP_ADD_FAILS:-}" != 1 ]] || exit 1
+        #  Replaces rather than appends, so one name holds one URL the way the
+        #  real registry does.
+        tmp="$reg.tmp"
+        : >"$tmp"
+        [[ ! -f "$reg" ]] || grep -v "^$name " "$reg" >"$tmp" || :
+        printf '%s %s\n' "$name" "$url" >>"$tmp"
+        mv "$tmp" "$reg"
+        ;;
+    *) exit 2 ;;
+esac
+exit 0
+STUB
+    chmod +x "$1/claude"
 }
