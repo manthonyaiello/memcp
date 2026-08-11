@@ -233,32 +233,10 @@ block and keeps working.
 ### When a surface falls behind
 
 The digest above compares a hook against what was installed on that surface.
-Whether *that* is what the repository ships is a comparison neither side can
-make alone, so the server makes it: it shipped from the same repository as the
-hooks, and it receives their release on every `initialize`. When the two differ
-it says so, and SessionStart turns the verdict into a block:
-
-```
-<memcp-hook-stale hook="session_start" surface="workshop" running="0.2.0" expected="0.3.0">
-This surface runs memcp hooks at 0.2.0, and the memcp server shipped with
-0.3.0, so the hooks here are behind the repository the corpus is served from.
-Remedy: from a memcp checkout, run `scripts/hooks/deploy.sh workshop` -- the
-argument is an ssh destination, so it may not be the surface name above; use
-`--local` when the checkout is on this surface.
-Tell the user, then continue.
-</memcp-hook-stale>
-```
-
-Reported, never acted on: a stale hook still works, the surface holds no
-checkout to update itself from, and nothing on the server serves or runs a
-script body. SessionEnd logs the same verdict to `MEMCP_HOOK_LOG` instead of
-emitting it. A server too old to carry the note says nothing, and absence is
-read as silence rather than as confirmation.
-
-Only the release is compared — the digest is build metadata here, since the
-server knows nothing of the files on another machine — and only clients whose
-`clientInfo.name` starts with `memcp-` are compared at all, so Claude Code's own
-connection is never called a stale hook.
+The server compares the release each hook reports on `initialize` against the
+one it shipped with, and on a mismatch SessionStart emits a block that prompts
+the agent to alert the user that the hooks are stale and how to resolve the
+problem. SessionEnd logs the same verdict to `MEMCP_HOOK_LOG`.
 
 ### Surface identity
 
@@ -266,11 +244,6 @@ connection is never called a stale hook.
 host name as of that minting. A config that later turns up on a differently
 named host was inherited — a cloned VM, a restored backup — rather than created
 there, which is what keeps two machines from reporting as one surface.
-
-The reasoning behind all of the above is in
-[`docs/design/0015`](docs/design/0015-one-project-key-and-a-named-surface.md),
-and behind the staleness report in
-[`docs/design/0016`](docs/design/0016-telling-a-surface-it-is-behind.md).
 
 ## Tools
 
