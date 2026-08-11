@@ -14,6 +14,7 @@ with Spark_Mcp.Server;
 with Spark_Mcp.Http;
 with Spark_Mcp.Http.Serve;
 
+with Memcp.Hooks;
 with Memcp.Log;
 with Memcp.Resources;
 with Memcp.Tools;
@@ -216,7 +217,8 @@ procedure Main with SPARK_Mode => On is
          Description     => Memcp.Tools.Description,
          Input_Schema    => Memcp.Tools.Input_Schema,
          Invoke          => Invoke_Tool,
-         Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
+         Parse_Envelope  => Memcp.Envelope.Parse_Envelope,
+         Client_Meta     => Memcp.Hooks.Client_Meta);
 
       procedure Dispatch_Owned
         (Request : String; Response : out Spark_Mcp.Http.Message_Ptr);

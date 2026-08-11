@@ -48,13 +48,19 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
    --  Per-method result payloads
    -----------------------------------------------------------------------------
 
-   function Initialize_Result return String is
+   function Initialize_Result (Meta : String) return String is
      ("{""protocolVersion"":" & Writer.Quoted (MCP_Protocol_Version)
       & ",""capabilities"":{""tools"":{}}"
       & ",""serverInfo"":{""name"":" & Writer.Quoted (Server_Name)
       & ",""version"":" & Writer.Quoted (Server_Version) & "}"
-      & ",""instructions"":" & Writer.Quoted (Instructions) & "}");
-   --  The `result` object for `initialize`.
+      & (if Meta'Length = 0 then "" else ",""_meta"":" & Meta)
+      & ",""instructions"":" & Writer.Quoted (Instructions) & "}")
+   with Pre => Meta'Length <= Max_Field;
+   --  The `result` object for `initialize`, carrying Meta -- a JSON object, or
+   --  "" for none -- as `_meta`. Meta arrives computed rather than being fetched
+   --  here so this stays an expression function: response lengths are bounded
+   --  from each instantiation's actuals, and no bound on what Client_Meta
+   --  returns is statable from inside the generic.
 
    function Item_Len_Bound (T : Tool_Id) return Natural is
      (43 + 6 * Name (T)'Length + 6 * Description (T)'Length
@@ -121,7 +127,9 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
       Id              : String;
       Response        : out Response_Ptr;
       Tool_Name       : String := "";
-      Arguments       : String := "{}") is
+      Arguments       : String := "{}";
+      Client_Name     : String := "";
+      Client_Version  : String := "") is
    begin
       --  A notification is owed no response, whatever its method.
       if Is_Notification then
@@ -130,7 +138,11 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
       end if;
 
       if Method = "initialize" then
-         Response := new String'(Result_Response (Id, Initialize_Result));
+         Response := new String'
+           (Result_Response
+              (Id,
+               Initialize_Result
+                 (Client_Meta (Client_Name, Client_Version))));
 
       elsif Method = "ping" then
          Response := new String'(Result_Response (Id, "{}"));
@@ -205,7 +217,9 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
                Id              => Env.Id,
                Response        => Response,
                Tool_Name       => Env.Tool_Name,
-               Arguments       => Env.Arguments);
+               Arguments       => Env.Arguments,
+               Client_Name     => Env.Client_Name,
+               Client_Version  => Env.Client_Version);
          --  The id is undetermined on every error Kind, which JSON-RPC frames
          --  as a null id.
          when Bad_Json =>

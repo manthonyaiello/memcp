@@ -37,6 +37,15 @@ fi
 TESTS_RUN=0
 TESTS_FAILED=0
 
+# The hook release the tree under test runs, read the way the hooks read it. No
+# test hardcodes it: it moves on every change under scripts/hooks, so a literal
+# would make every such change break tests that are not about the version.
+HOOK_VERSION=$(bash -c '. "$1"/hook_common.sh; printf "%s\n" "$MEMCP_HOOK_VERSION"' \
+    _ "$HOOKS_DIR")
+
+HOOK_VERSION_RE="${HOOK_VERSION//./\\.}"
+# HOOK_VERSION with its dots escaped, for assert_match.
+
 # --- assertions -------------------------------------------------------------
 
 pass() { TESTS_RUN=$((TESTS_RUN + 1)); printf 'ok   %s\n' "$1"; }
@@ -147,6 +156,22 @@ fi
 
 ENTRIES='[{"created_at":"2026-08-01T09:00:00Z","kind":"diary","headline":"first headline"},{"created_at":"2026-08-02T09:00:00Z","kind":"autorecap","headline":"second headline"}]'
 
+# The `_meta` members memcp adds to an initialize result, given
+# MEMCP_TEST_SERVER_HOOK_VERSION as the release this stub server shipped with.
+# The comparison is made here rather than fed in as a verdict, so the hook is
+# tested against something it did not compute: it sends a version, and what
+# comes back depends on what it sent.
+hook_meta() {
+    local shipped="${MEMCP_TEST_SERVER_HOOK_VERSION:-}" name release
+    [[ -n "$shipped" ]] || return 0
+    name=$(jq -r '.params.clientInfo.name // empty' <<<"$data" 2>/dev/null) || return 0
+    [[ "$name" == memcp-* ]] || return 0
+    release=$(jq -r '.params.clientInfo.version // empty' <<<"$data" 2>/dev/null) || return 0
+    release="${release%%+*}"  #  the digest is build metadata, not the release
+    [[ "$release" != "$shipped" ]] || return 0
+    printf ',"_meta":{"memcp/hookStatus":{"stale":true,"expected":"%s"}}' "$shipped"
+}
+
 # A tool result carrying the JSON in $1, the way memcp carries one.
 tool_result() {
     local escaped
@@ -178,7 +203,8 @@ if [[ -n "$output" ]]; then
     if [[ "$scenario" == "initialize-rejected" ]]; then
         printf '<html>not an mcp server</html>\n' >"$output"
     else
-        printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stub","version":"0.0.0"}}}' >"$output"
+        printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stub","version":"0.0.0"}%s}}\n' \
+            "$(hook_meta)" >"$output"
     fi
     exit 0
 fi

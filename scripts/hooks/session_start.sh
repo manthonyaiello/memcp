@@ -16,6 +16,11 @@
 # a session with no history. Exit status is 0 on every path — a memcp outage
 # must never break Claude Code startup.
 #
+# `<memcp-hook-stale/>` is the same idea for a working-but-behind surface: the
+# server reports the release it shipped with, and the remedy is a redeploy the
+# user has to arrange, since this surface holds no checkout to update itself
+# from.
+#
 # Configure (environment overrides the config file; see install.sh):
 #   MEMCP_CONFIG   config file (default: $HOME/.memcp/hooks.env)
 #   MEMCP_URL      MCP endpoint (default: http://127.0.0.1:8786/mcp)
@@ -127,6 +132,14 @@ if ! memcp_is_rpc "$(cat "$body")"; then
     fault "initialize-rejected" \
         "The server at $MEMCP_URL answered initialize with something that is not an MCP response, so no prior-session context was injected." \
         "Check that MEMCP_URL points at memcp and not at another HTTP service."
+fi
+
+# Before the early exit below: a resumed session needs the report as much as a
+# fresh one, and nothing about it depends on the diary listing.
+expected=$(memcp_stale_expected "$body")
+if [[ -n "$expected" ]]; then
+    memcp_stale "$HOOK_NAME" "$expected"
+    log "hooks $MEMCP_HOOK_VERSION, server shipped $expected"
 fi
 
 # The handshake held, so the model can save. The key is derived once, here.

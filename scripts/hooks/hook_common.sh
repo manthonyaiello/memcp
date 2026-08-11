@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# memcp hook library: configuration, project derivation, surface identity and
-# hook self-digest.
+# memcp hook library: configuration, project derivation, surface identity,
+# hook self-digest and staleness.
 #
 # Sourced by session_start.sh, session_end.sh and install.sh. Defines functions
 # and sets MEMCP_HOOK_VERSION; runs nothing else.
 
 # Version of the hook pair, reported to the server in `clientInfo.version`
-# alongside the digest. Bumped by hand when either hook or this library changes
-# in a way a deployed surface has to pick up.
-MEMCP_HOOK_VERSION="0.2.0"
+# alongside the digest. Bumped by hand on any change to this directory: the
+# server compares it for equality against the release it shipped with, so a
+# surface that is behind by even a comment reports as behind, which is the
+# honest answer. Memcp.Hooks.Hook_Version must carry the same string --
+# scripts/check-hook-version.sh gates that, and the bump.
+MEMCP_HOOK_VERSION="0.3.0"
 
 # --- configuration ----------------------------------------------------------
 
@@ -90,6 +93,43 @@ memcp_check_digest() {
     printf 'Remedy: re-run scripts/hooks/install.sh to adopt the change, or restore the hook from the memcp checkout.\n'
     printf 'Tell the user, then continue.\n'
     printf '</memcp-hook-modified>\n'
+}
+
+# --- staleness --------------------------------------------------------------
+#
+# The digest above answers "is this hook what was installed here"; it cannot
+# answer "is what was installed here what the repository ships", because both
+# sides of that comparison live on this surface. The server is where the two
+# meet: it shipped from the same repository as the hooks and receives the
+# version on every `initialize`, so it is the only party that can tell.
+#
+# The comparison is the server's, not ours. All that arrives here is a verdict.
+
+# The release the server says it shipped with, when it reports this hook as
+# stale; empty when it reports nothing. $1 is the file holding the `initialize`
+# response. A server too old to carry the note answers without it, so absence is
+# silence -- never taken as confirmation that this hook is current.
+memcp_stale_expected() {
+    jq -r '.result._meta["memcp/hookStatus"]
+           | select(.stale == true) | .expected // empty' \
+        "$1" 2>/dev/null || printf ''
+}
+
+# Emit a staleness block on stdout: $1 hook name, $2 the release the server
+# shipped with. Reports and stops there -- stale hooks still work, the surface
+# holds no checkout to update itself from, and the party who can act is the user
+# reading this.
+memcp_stale() {
+    local name="$1" expected="$2" label
+    label=$(memcp_surface_label)
+    printf '<memcp-hook-stale hook="%s" surface="%s" running="%s" expected="%s">\n' \
+        "$name" "$label" "$MEMCP_HOOK_VERSION" "$expected"
+    printf 'This surface runs memcp hooks at %s, and the memcp server shipped with %s, so the hooks here are behind the repository the corpus is served from.\n' \
+        "$MEMCP_HOOK_VERSION" "$expected"
+    printf 'Remedy: from a memcp checkout, run `scripts/hooks/deploy.sh %s` -- the argument is an ssh destination, so it may not be the surface name above; use `--local` when the checkout is on this surface.\n' \
+        "$label"
+    printf 'Tell the user, then continue.\n'
+    printf '</memcp-hook-stale>\n'
 }
 
 # --- memcp's responses ------------------------------------------------------

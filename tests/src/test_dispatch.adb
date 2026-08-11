@@ -10,6 +10,7 @@ with Spark_Mcp;
 with Spark_Mcp.Tools;
 with Spark_Mcp.Server;
 
+with Memcp.Hooks;
 with Memcp.Tools;
 with Memcp.Envelope;
 with Memcp.Resources;
@@ -75,7 +76,8 @@ procedure Test_Dispatch with SPARK_Mode => Off is
       Description     => Memcp.Tools.Description,
       Input_Schema    => Memcp.Tools.Input_Schema,
       Invoke          => Invoke_Tool,
-      Parse_Envelope  => Memcp.Envelope.Parse_Envelope);
+      Parse_Envelope  => Memcp.Envelope.Parse_Envelope,
+      Client_Meta     => Memcp.Hooks.Client_Meta);
 
    function Dispatch_Str (Request : String) return String;
    --  Dispatch one request and return the response text, "" for a
@@ -118,6 +120,60 @@ begin
       Check_Has (R, """protocolVersion"":""2024-11-05""",
                  "initialize: protocol version");
       Check_Has (R, """serverInfo""", "initialize: serverInfo present");
+      Check_Has (R, """instructions""", "initialize: instructions present");
+   end;
+
+   -------------------------------------------------------------------------
+   --  initialize -- the hook-staleness note
+   -------------------------------------------------------------------------
+   declare
+      function Init (Client : String) return String is
+        (Dispatch_Str
+           ("{""jsonrpc"":""2.0"",""id"":1,""method"":""initialize"""
+            & ",""params"":{""clientInfo"":" & Client & "}}"));
+      --  initialize carrying the given clientInfo object.
+   begin
+      Check
+        (Ada.Strings.Fixed.Index
+           (Init ("{""name"":""memcp-session-start"",""version"":"""
+                  & Memcp.Hooks.Hook_Version & "+deadbeef""}"),
+            "_meta") = 0,
+         "hook status: the shipped release, digest and all, is not stale");
+
+      Check_Has
+        (Init ("{""name"":""memcp-session-start"",""version"":""0.1.0""}"),
+         Memcp.Hooks.Stale_Meta,
+         "hook status: an older release is answered with the note");
+
+      Check_Has
+        (Init ("{""name"":""memcp-session-end"",""version"":""0.1.0""}"),
+         Memcp.Hooks.Stale_Meta,
+         "hook status: the SessionEnd hook is checked too");
+
+      --  Every other MCP client must stay out of it: Claude Code's own
+      --  connection reports its own version, and calling that stale would put
+      --  an unactionable block in front of the user on turn one.
+      Check
+        (Ada.Strings.Fixed.Index
+           (Init ("{""name"":""claude-code"",""version"":""0.1.0""}"), "_meta")
+         = 0,
+         "hook status: a client that is not a hook is never called stale");
+
+      Check
+        (Ada.Strings.Fixed.Index (Init ("{}"), "_meta") = 0,
+         "hook status: no clientInfo, no note");
+
+      --  clientInfo is informational: a wrong shape must not fail the
+      --  handshake, only go unread. A hook that then states no version cannot
+      --  be shown current, so it is reported rather than assumed good.
+      Check_Has
+        (Init ("{""name"":""memcp-session-start"",""version"":42}"),
+         """protocolVersion""",
+         "hook status: a non-string version still completes initialize");
+      Check_Has
+        (Init ("{""name"":""memcp-session-start"",""version"":42}"),
+         Memcp.Hooks.Stale_Meta,
+         "hook status: a hook stating no version is reported, not assumed good");
    end;
 
    -------------------------------------------------------------------------

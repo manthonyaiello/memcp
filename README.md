@@ -172,7 +172,8 @@ with the absolute paths filled in, should you prefer to wire it by hand into
 Re-run after every pull — `deploy.sh` for the surfaces that hold copies,
 `install.sh` on its own if you wired this machine by hand. Either re-records the
 hook digests, and neither re-rolls the surface identity it minted the first
-time.
+time. A surface you miss says so on its next session start (see
+[below](#when-a-surface-falls-behind)).
 
 **SessionStart** derives the project key, emits it in a `<memcp-session>` block
 for the model to use verbatim, and prints the most recent diary entries for
@@ -224,10 +225,40 @@ Tell the user memcp is not recording this session, then continue.
 The exit status is 0 in every one of those cases. SessionEnd runs after the
 agent has exited and so has nobody to tell; it logs to `MEMCP_HOOK_LOG`.
 
-Both hooks report `0.2.0+<digest>` as their MCP `clientInfo.version`. The
+Both hooks report `<release>+<digest>` as their MCP `clientInfo.version`. The
 digest is over the hook and `hook_common.sh` as installed; a hook whose runtime
 digest differs from what `install.sh` recorded emits a `<memcp-hook-modified>`
 block and keeps working.
+
+### When a surface falls behind
+
+The digest above compares a hook against what was installed on that surface.
+Whether *that* is what the repository ships is a comparison neither side can
+make alone, so the server makes it: it shipped from the same repository as the
+hooks, and it receives their release on every `initialize`. When the two differ
+it says so, and SessionStart turns the verdict into a block:
+
+```
+<memcp-hook-stale hook="session_start" surface="workshop" running="0.2.0" expected="0.3.0">
+This surface runs memcp hooks at 0.2.0, and the memcp server shipped with
+0.3.0, so the hooks here are behind the repository the corpus is served from.
+Remedy: from a memcp checkout, run `scripts/hooks/deploy.sh workshop` -- the
+argument is an ssh destination, so it may not be the surface name above; use
+`--local` when the checkout is on this surface.
+Tell the user, then continue.
+</memcp-hook-stale>
+```
+
+Reported, never acted on: a stale hook still works, the surface holds no
+checkout to update itself from, and nothing on the server serves or runs a
+script body. SessionEnd logs the same verdict to `MEMCP_HOOK_LOG` instead of
+emitting it. A server too old to carry the note says nothing, and absence is
+read as silence rather than as confirmation.
+
+Only the release is compared — the digest is build metadata here, since the
+server knows nothing of the files on another machine — and only clients whose
+`clientInfo.name` starts with `memcp-` are compared at all, so Claude Code's own
+connection is never called a stale hook.
 
 ### Surface identity
 
@@ -237,7 +268,9 @@ named host was inherited — a cloned VM, a restored backup — rather than crea
 there, which is what keeps two machines from reporting as one surface.
 
 The reasoning behind all of the above is in
-[`docs/design/0015`](docs/design/0015-one-project-key-and-a-named-surface.md).
+[`docs/design/0015`](docs/design/0015-one-project-key-and-a-named-surface.md),
+and behind the staleness report in
+[`docs/design/0016`](docs/design/0016-telling-a-surface-it-is-behind.md).
 
 ## Tools
 

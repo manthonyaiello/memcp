@@ -13,8 +13,8 @@ ALR      ?= alr
 GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
 
-.PHONY: all build run model test test-hooks prove prove-deps prove-check docs \
-        docs-check docs-placement trust trust-check clean help
+.PHONY: all build run model test test-hooks hook-version prove prove-deps \
+        prove-check docs docs-check docs-placement trust trust-check clean help
 
 all: build
 
@@ -39,8 +39,13 @@ test: build test-hooks ## Build + run the unit drivers and the self-contained sm
 
 # No Alire, no compiler: the hooks are bash + curl + jq and so is their harness,
 # which is why this is separable from `test` and runs on a bare checkout.
-test-hooks: ## Run the SessionStart / SessionEnd hook tests
+test-hooks: hook-version ## Run the SessionStart / SessionEnd hook tests
 	./tests/hooks/run_tests.sh
+
+# The bump half needs a base ref to diff against, which only CI has, so it is
+# passed there rather than defaulted here.
+hook-version: ## Check the hook release string agrees across bash and Ada
+	./scripts/check-hook-version.sh
 
 prove: ## Prove memcp to SPARK Silver — AoRTE (--level=2)
 	$(ALR) gnatprove -P memcp.gpr -j0 --level=2

@@ -183,6 +183,10 @@ begin
       --  Instructions with a newline and a quote must be escaped.
       Check_Has (R, """instructions"":""line one\nline \""two\""""",
                  "initialize: instructions escaped");
+      --  This instance takes the default Client_Meta, so the crate says nothing
+      --  about any client and emits no `_meta` at all.
+      Check (Ada.Strings.Fixed.Index (R, "_meta") = 0,
+             "initialize: no _meta without a Client_Meta actual");
    end;
 
    -------------------------------------------------------------------------

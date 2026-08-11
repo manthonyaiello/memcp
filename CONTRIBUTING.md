@@ -40,11 +40,16 @@ replace.
 
 ```sh
 make               # build the whole DAG
-make test          # unit drivers + smoke tests
+make test          # unit drivers + smoke tests (hook tests and version gate included)
 make trust-check   # the trust surface is unchanged
 make prove-check   # Silver, gated on a clean proof
 make docs-check    # every entity documented, every doc block correctly placed
 ```
+
+If the change touches `scripts/hooks/`, bump `MEMCP_HOOK_VERSION` and
+`Memcp.Hooks.Hook_Version` together — CI fails the pull request otherwise, since
+without a bump the surfaces already running the old hooks are never told they are
+behind.
 
 Why the surface is budgeted rather than forbidden, and what the gate cannot see,
 are in [`docs/design/0014-the-trust-surface.md`](docs/design/0014-the-trust-surface.md).

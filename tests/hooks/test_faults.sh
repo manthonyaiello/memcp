@@ -55,7 +55,7 @@ BODIES=$(cat "$MEMCP_TEST_BODY_LOG")
 assert_contains "healthy: recent is scoped to the derived key" \
     '"projects":["widget"]' "$BODIES"
 assert_match "healthy: initialize reports version and digest" \
-    '"version":"0\.2\.0\+[0-9a-f]{8}"' "$BODIES"
+    "\"version\":\"$HOOK_VERSION_RE\\+[0-9a-f]{8}\"" "$BODIES"
 
 # The agreement the whole issue turns on: SessionEnd must upload under the key
 # SessionStart injected, without either side consulting the other.
@@ -79,7 +79,7 @@ END_BODIES=$(cat "$MEMCP_TEST_BODY_LOG")
 assert_contains "session_end: uploads under the key SessionStart injected" \
     '"project":"widget"' "$END_BODIES"
 assert_match "session_end: initialize reports version and digest" \
-    '"version":"0\.2\.0\+[0-9a-f]{8}"' "$END_BODIES"
+    "\"version\":\"$HOOK_VERSION_RE\\+[0-9a-f]{8}\"" "$END_BODIES"
 assert_contains "session_end: logs the surface" "surface=" "$END_OUT"
 
 unset MEMCP_TEST_BODY_LOG

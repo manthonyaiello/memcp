@@ -17,6 +17,7 @@ spark-mode-off   | crates/sqlite_vec_spark/src/sqlite_vec_spark.adb        | All
 warning-off      | src/main.adb                                            | Ensure_Directory_Of  | Create_Path is outside SPARK, so GNATprove must assume its Global and its termination and cannot see it raise; the three suppressions state those assumptions at the call, where no contract on Ada.Directories can.
 warning-off      | src/main.adb                                            | Main                 | Set_Exit_Status is a C import with no contract of its own, so the same pair of assumptions is stated at the one call that aborts the run.
 warning-off      | crates/spark_mcp/src/spark_mcp-requests.adb             | No_Parser            | The null parser satisfies a signature it cannot use; Request is unreferenced by construction.
+warning-off      | crates/spark_mcp/src/spark_mcp-requests.adb             | No_Client_Meta       | Same shape: the default says nothing about any client, so both parameters are unreferenced by construction.
 
 foreign-binding  | crates/candle_spark/src/candle_spark.adb                | -                    | Imports candle_ffi's entry points; their Global, Depends and Always_Terminates contracts are asserted of Rust, not proved.
 foreign-binding  | crates/spark_mcp/src/spark_mcp-http-bridge.adb          | -                    | Imports spark_mcp_http_rs's entry points, with the same asserted contracts.
