@@ -75,6 +75,17 @@ assert_eq "dest with a metacharacter: exit 2" 2 "$STATUS"
 run_deploy "$SANDBOX" healthy --url 'http://h/`id`' host
 assert_eq "url with a metacharacter: exit 2" 2 "$STATUS"
 
+# deploy.sh streams deploy_remote.sh to the far side, so a tree carrying
+# everything else is still not a working deploy and has to say so.
+ALONE="$TEST_TMP/alone"
+mkdir -p "$ALONE"
+cp "$HOOKS_DIR/deploy.sh" "$HOOKS_DIR/hook_common.sh" "$HOOKS_DIR/install.sh" \
+   "$HOOKS_DIR/session_start.sh" "$HOOKS_DIR/session_end.sh" "$ALONE/"
+OUT=$(PATH="$SANDBOX" bash "$ALONE/deploy.sh" --local 2>&1)
+STATUS=$?
+assert_eq "remote half missing: nonzero exit" 1 "$STATUS"
+assert_contains "remote half missing: names the file" "deploy_remote.sh" "$OUT"
+
 BEFORE=$(cat "$SETTINGS")
 
 run_deploy "$SANDBOX" healthy --dry-run host
