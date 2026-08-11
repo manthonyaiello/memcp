@@ -72,14 +72,14 @@ server's instructions string, so it's available to subagents that connect to
   drives the whole build and provisions the GNAT toolchain and `gnatprove`.
 - **[Rust](https://rustup.rs)** (`cargo`) — builds two staticlibs linked into
   the server: the `tiny_http` transport and the `candle` embedder.
-- **`bash`, `curl`, `jq`** — for the hooks and the model-fetch script.
+- **`bash`, `curl`, `jq`, `base64`** — for the hooks and the model-fetch script.
 
 `make` invokes `cargo` and vendors the pinned SQLite + sqlite-vec C sources
 automatically (Alire pre-build actions) — you never run either by hand.
 
 ***Important:*** You must install the two hooks (see [Hooks](#hooks)) for
-`memcp` to work correctly — run `scripts/hooks/install.sh` and wire what it
-prints into `settings.json`.
+`memcp` to work correctly — `scripts/hooks/deploy.sh --local` registers the
+server, writes the hook config and wires `settings.json` in one step.
 
 ### Building
 
@@ -100,7 +100,13 @@ location with `MEMCP_MODEL_PATH`.
 make run        # serves POST /mcp on 127.0.0.1:8786 (blocking)
 ```
 
-Register the server with Claude Code:
+Register the server and install the hooks in one step:
+
+```sh
+scripts/hooks/deploy.sh --local
+```
+
+Or register the server alone:
 
 ```sh
 claude mcp add --transport http --scope user memcp http://127.0.0.1:8786/mcp
@@ -125,15 +131,28 @@ is built. Both exit 0 on every path — a memcp outage will never block Claude
 Code startup or shutdown — and SessionStart prints a block naming any fault it
 hit (see [below](#when-a-hook-cannot-do-its-job)).
 
-Run the installer once per machine, then paste what it prints into
-`~/.claude/settings.json` (or per-project `.claude/settings.json`):
+Install on this machine, which wires straight to the checkout:
 
 ```sh
-scripts/hooks/install.sh
+scripts/hooks/deploy.sh --local
 ```
 
-It writes `~/.memcp/hooks.env` — the shell-sourceable config both hooks read —
-and prints the `settings.json` block with the absolute paths filled in:
+Install on any other surface, which needs no checkout of its own:
+
+```sh
+scripts/hooks/deploy.sh HOST [HOST...]
+```
+
+Hosts are ssh destinations: names, users, ports and keys come from your ssh
+configuration. A remote surface gets the four scripts copied into
+`~/.claude/hooks/memcp/`, mints its own identity there, and has the MCP server
+registered at the same `MEMCP_URL`. `curl`, `jq`, `base64` and `claude` must all
+be present or nothing is wired; `--dry-run` reports without changing anything.
+
+Both paths run `install.sh`, which writes `~/.memcp/hooks.env` — the
+shell-sourceable config both hooks read — and prints the `settings.json` block
+with the absolute paths filled in, should you prefer to wire it by hand into
+`~/.claude/settings.json` (or per-project `.claude/settings.json`):
 
 ```json
 {
@@ -150,8 +169,10 @@ and prints the `settings.json` block with the absolute paths filled in:
 }
 ```
 
-Re-run `install.sh` after every pull: it re-records the hook digests, and it
-never re-rolls the surface identity it minted the first time.
+Re-run after every pull — `deploy.sh` for the surfaces that hold copies,
+`install.sh` on its own if you wired this machine by hand. Either re-records the
+hook digests, and neither re-rolls the surface identity it minted the first
+time.
 
 **SessionStart** derives the project key, emits it in a `<memcp-session>` block
 for the model to use verbatim, and prints the most recent diary entries for
