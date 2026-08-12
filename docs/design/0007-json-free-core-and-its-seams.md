@@ -23,8 +23,20 @@ is where the proof effort goes.
 
 The seam is therefore **deliberately asymmetric** — a parser in, a writer out.
 It is not an oversight to be tidied up by giving the core a JSON dependency for
-symmetry's sake: `Parse_Envelope` defaults to `Requests.No_Parser`, so the core
-builds, proves and is drivable end to end with no JSON crate present at all.
+symmetry's sake: `Parse_Envelope` is a generic formal with **no default**, so no
+unit in the crate names a JSON library, and the crate builds, proves and is
+driven end to end with no JSON crate present at all.
+
+No default, specifically. `Requests` could carry a null parser reporting
+`Unimplemented` for instantiations to inherit, and the crate's own two — the
+proof harness and the test driver — are the only things that would ever inherit
+it, because both drive `Respond` directly and neither has a request to decode.
+A shipped entity whose only callers are harnesses is code no product runs, and
+this one costs more than its footprint: a parser that ignores its argument needs
+a `pragma Unreferenced`, which lands in `scripts/trust-surface.txt` and is read
+as budget the *shipped* library spends. Each harness declaring its own trivial
+expression function is more verbose at the instantiation and buys back both. The
+same reasoning is why `Client_Meta` has no default either.
 
 ## Text means the response's length is our obligation
 
@@ -96,6 +108,6 @@ than documented folklore.
 - `crates/spark_mcp/prove/proof_harness.ads`,
   `crates/spark_mcp/spark_mcp_prove.gpr` — the instantiation that gives the
   generic body its obligations when the crate is proved alone.
-- `src/main.adb`, `Connect_To_Server` — the composition root: the only unit that
-  supplies `Parse_Envelope`, joins `Dispatch` to `Serve`, and knows both
-  ownership pointer types.
+- `src/main.adb`, `Connect_To_Server` — the composition root: the only shipped
+  unit that supplies `Parse_Envelope`, joins `Dispatch` to `Serve`, and knows
+  both ownership pointer types.

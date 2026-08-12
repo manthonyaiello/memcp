@@ -8,6 +8,7 @@ with Ada.Strings.Fixed;
 with Ada.Text_IO;
 
 with Spark_Mcp;         use Spark_Mcp;
+with Spark_Mcp.Requests;
 with Spark_Mcp.Tools;
 with Spark_Mcp.Writer;
 with Spark_Mcp.Server;
@@ -95,8 +96,26 @@ procedure Test_Spark_Mcp is
    --  no `_meta`. Here rather than in the crate: nothing shipped omits the
    --  actual, so a default in the library would be code no product runs.
 
-   --  The core instantiated over the fake tool set, with the default parser:
-   --  Respond is driven directly, so no JSON library is involved.
+   function No_Parser (Request : String) return Requests.Envelope is
+     (M_Len           => 0,
+      Id_Len          => 0,
+      TN_Len          => 0,
+      Arg_Len         => 0,
+      CN_Len          => 0,
+      CV_Len          => 0,
+      Kind            => Requests.Unimplemented,
+      Is_Notification => False,
+      Method          => "",
+      Id              => "",
+      Tool_Name       => "",
+      Arguments       => "",
+      Client_Name     => "",
+      Client_Version  => "");
+   --  A Parse_Envelope that decodes nothing, so the instantiation needs no JSON
+   --  library. Same reason it lives here as No_Meta: this driver drives Respond
+   --  directly and never calls Dispatch, so nothing shipped wants it.
+
+   --  The core instantiated over the fake tool set.
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
       Server_Version => "0.1.0",
@@ -106,6 +125,7 @@ procedure Test_Spark_Mcp is
       Description     => Description,
       Input_Schema   => Input_Schema,
       Invoke         => Invoke,
+      Parse_Envelope => No_Parser,
       Client_Meta    => No_Meta);
 
    function Respond_Str
