@@ -11,10 +11,12 @@ with Ada.Streams.Stream_IO;
 with Interfaces;
 
 with Candle_Spark;
+with Sqlite_Vec_Spark;
 with Memcp.Store;
 
 procedure Test_Store with SPARK_Mode => Off is
 
+   use type Sqlite_Vec_Spark.Status;
    use type Memcp.Store.Open_Status;
    use type Memcp.Store.Op_Status;
    use type Memcp.Store.Row_Id;
@@ -91,6 +93,7 @@ begin
         (S, "demo", "a diary headline",
          "HEADLINE: my summary head" & ASCII.LF & "the body text",
          Zero_Emb, Has_Session => False, Session_Id => "",
+         Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => TS, Result => R, Status => St);
       Check (St = Memcp.Store.Success, "Save fresh -> Success");
       Check (not R.Already_Existed and not R.Replaced, "Save fresh: new row");
@@ -124,6 +127,7 @@ begin
            (S, "demo", "a diary headline",
             "HEADLINE: my summary head" & ASCII.LF & "the body text",
             Zero_Emb, Has_Session => False, Session_Id => "",
+            Surface => "", Surface_Label => "",
             Has_Created => True, Created_At => TS, Result => R2, Status => St2);
          Check (St2 = Memcp.Store.Success, "Save retry -> Success");
          Check (R2.Already_Existed and not R2.Replaced, "Save retry: dedup");
@@ -161,6 +165,7 @@ begin
       Memcp.Store.Save
         (S, "demo", "first diary", "first summary body",
          Zero_Emb, Has_Session => True, Session_Id => "sess-1",
+         Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => TS, Result => R1, Status => St1);
       Check (St1 = Memcp.Store.Success and then not R1.Already_Existed,
              "Session save: fresh");
@@ -168,6 +173,7 @@ begin
       Memcp.Store.Save
         (S, "demo", "second diary", "second summary body",
          Zero_Emb, Has_Session => True, Session_Id => "sess-1",
+         Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => TS, Result => R2, Status => St2);
       Check (St2 = Memcp.Store.Success and then R2.Replaced,
              "Session save: replaced in place");
@@ -202,16 +208,19 @@ begin
         (S, "alpha", "diary a1", "body a1", Zero_Emb,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-02-01T00:00:00+00:00",
+         Surface => "", Surface_Label => "",
          Result => R1, Status => Stx);
       Memcp.Store.Save
         (S, "beta", "diary b1", "body b1", Zero_Emb,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-02-02T00:00:00+00:00",
+         Surface => "", Surface_Label => "",
          Result => R2, Status => Stx);
       Memcp.Store.Save
         (S, "alpha", "diary a2", "body a2", Zero_Emb,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-02-03T00:00:00+00:00",
+         Surface => "", Surface_Label => "",
          Result => R3, Status => Stx);
 
       --  No projects -> empty result, still Success.
@@ -303,11 +312,13 @@ begin
         (S, "search", "diary sa", "summary sa", Emb_A,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-03-01T00:00:00+00:00",
+         Surface => "", Surface_Label => "",
          Result => Ra, Status => Sv);
       Memcp.Store.Save
         (S, "search", "diary sb", "summary sb", Emb_B,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-03-02T00:00:00+00:00",
+         Surface => "", Surface_Label => "",
          Result => Rb, Status => Sv);
       Memcp.Store.Name_Vectors.Append (Projs, (Len => 6, Value => "search"));
 
@@ -458,6 +469,7 @@ begin
 
       Memcp.Store.Save_Session
         (S, "sessapp", "se-1", "raw transcript body", CL,
+         Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => Sess_TS, Result => R, Status => St);
       Check (St = Memcp.Store.Success and then not R.Already_Existed
              and then R.Chunk_Count = 3 and then R.Session_Row_Id > 0,
@@ -560,6 +572,7 @@ begin
          Memcp.Store.Save_Session
            (S, "sessapp", "se-1", "different transcript", CL,
             Has_Created => True, Created_At => Sess_TS,
+            Surface => "", Surface_Label => "",
             Result => R2, Status => St2);
          Check (St2 = Memcp.Store.Success and then R2.Already_Existed
                 and then R2.Chunk_Count = 3
@@ -579,6 +592,7 @@ begin
       Memcp.Store.Save_Autorecap
         (S, "sessapp", "se-1", "session recap line", Hot (5),
          Has_Created => True, Created_At => TS,
+         Surface => "", Surface_Label => "",
          Result => Rec, Status => St);
       Check (St = Memcp.Store.Success and then Rec.Written
              and then Rec.Summary_Id > 0 and then Rec.Diary_Id > 0,
@@ -604,6 +618,7 @@ begin
       Memcp.Store.Save_Autorecap
         (S, "sessapp", "se-1", "a different recap", Hot (5),
          Has_Created => True, Created_At => TS,
+         Surface => "", Surface_Label => "",
          Result => Rec, Status => St);
       Check (St = Memcp.Store.Success and then not Rec.Written,
              "Save_Autorecap: existing Header -> not written");
@@ -616,10 +631,12 @@ begin
          Memcp.Store.Save
            (S, "sessapp", "diary for se-2", "summary for se-2", Zero_Emb,
             Has_Session => True, Session_Id => "se-2",
+            Surface => "", Surface_Label => "",
             Has_Created => True, Created_At => TS, Result => R, Status => Sv);
          Memcp.Store.Save_Autorecap
            (S, "sessapp", "se-2", "recap for se-2", Hot (6),
             Has_Created => True, Created_At => TS,
+            Surface => "", Surface_Label => "",
             Result => Rec, Status => St);
          Check (St = Memcp.Store.Success and then not Rec.Written,
                 "Save_Autorecap: real save() takes precedence");
@@ -712,6 +729,7 @@ begin
             Memcp.Store.Save_Session
               (FS, "fileproj", "fs-1", "hello transcript", CL,
                Has_Created => True, Created_At => TS,
+               Surface => "", Surface_Label => "",
                Result => R, Status => St);
             Check (St = Memcp.Store.Success and then not R.Already_Existed
                    and then R.Raw_Path_Set,
@@ -725,6 +743,218 @@ begin
          end;
          Memcp.Store.Close (FS);
       end if;
+
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+   end;
+
+   ------------------------------------------------------------------
+   --  Surface provenance, and the migration that adds it to a database
+   --  written before it existed. Both are asserted with raw SQL: the Store
+   --  writes provenance but exposes no read for it yet.
+   ------------------------------------------------------------------
+   declare
+      Tmp : constant String :=
+        (if Ada.Environment_Variables.Exists ("TMPDIR")
+         then Ada.Environment_Variables.Value ("TMPDIR")
+         else "/tmp");
+      Base : constant String :=
+        (if Tmp'Length > 0 and then Tmp (Tmp'Last) = '/'
+         then Tmp else Tmp & "/") & "memcp_surface_test";
+      DB_File : constant String := Base & "/store.db";
+
+      function Scalar (Path, Query : String) return String;
+      --  The first column of Query's first row, run against the database at
+      --  Path, or "" when it returns no row. "<null>" for a NULL column, so a
+      --  missing attribution is distinguishable from a missing row.
+
+      function Scalar (Path, Query : String) return String is
+         DB   : Sqlite_Vec_Spark.Database;
+         Stmt : Sqlite_Vec_Spark.Statement;
+         St   : Sqlite_Vec_Spark.Status;
+      begin
+         Sqlite_Vec_Spark.Open (DB, Path, St);
+         if St /= Sqlite_Vec_Spark.Ok then
+            return "";
+         end if;
+         Sqlite_Vec_Spark.Prepare (DB, Query, Stmt, St);
+         if St /= Sqlite_Vec_Spark.Ok then
+            Sqlite_Vec_Spark.Close (DB);
+            return "";
+         end if;
+         Sqlite_Vec_Spark.Step (Stmt, St);
+         declare
+            Got : Sqlite_Vec_Spark.Text_Ptr;
+            Out_S : constant String :=
+              (if St /= Sqlite_Vec_Spark.Row then ""
+               elsif Sqlite_Vec_Spark.Column_Is_Null (Stmt, 0) then "<null>"
+               else "");
+         begin
+            if Out_S = "" and then St = Sqlite_Vec_Spark.Row then
+               Got := Sqlite_Vec_Spark.Column_Text (Stmt, 0);
+               declare
+                  Text : constant String := Got.all;
+               begin
+                  Sqlite_Vec_Spark.Free (Got);
+                  Sqlite_Vec_Spark.Finalize (Stmt);
+                  Sqlite_Vec_Spark.Close (DB);
+                  return Text;
+               end;
+            end if;
+            Sqlite_Vec_Spark.Finalize (Stmt);
+            Sqlite_Vec_Spark.Close (DB);
+            return Out_S;
+         end;
+      end Scalar;
+
+      procedure Exec_Raw (Path, Query : String);
+      --  Run a resultless statement against the database at Path.
+
+      procedure Exec_Raw (Path, Query : String) is
+         DB : Sqlite_Vec_Spark.Database;
+         St : Sqlite_Vec_Spark.Status;
+      begin
+         Sqlite_Vec_Spark.Open (DB, Path, St);
+         if St = Sqlite_Vec_Spark.Ok then
+            Sqlite_Vec_Spark.Execute (DB, Query, St);
+            Check (St = Sqlite_Vec_Spark.Ok, "fixture SQL accepted");
+            Sqlite_Vec_Spark.Close (DB);
+         else
+            Check (False, "fixture database opened");
+         end if;
+      end Exec_Raw;
+   begin
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+      Ada.Directories.Create_Path (Base);
+
+      --  ---- a pre-provenance database, migrated in place ----
+      --  Only the tables the migration touches, shaped as they were before
+      --  surface_row_id existed, carrying one row each.
+      Exec_Raw
+        (DB_File,
+         "CREATE TABLE projects (id INTEGER PRIMARY KEY,"
+         & " name TEXT NOT NULL UNIQUE);"
+         & "CREATE TABLE summaries (id INTEGER PRIMARY KEY,"
+         & " project_id INTEGER NOT NULL REFERENCES projects(id),"
+         & " session_id TEXT, created_at TEXT NOT NULL,"
+         & " headline TEXT NOT NULL, body TEXT NOT NULL,"
+         & " dedup_hash TEXT, kind TEXT NOT NULL DEFAULT 'diary');"
+         & "CREATE TABLE sessions (id INTEGER PRIMARY KEY,"
+         & " project_id INTEGER NOT NULL REFERENCES projects(id),"
+         & " session_id TEXT NOT NULL, created_at TEXT NOT NULL,"
+         & " raw_path TEXT, UNIQUE (project_id, session_id));"
+         & "INSERT INTO projects (id, name) VALUES (1, 'old');"
+         & "INSERT INTO summaries (id, project_id, session_id, created_at,"
+         & " headline, body, dedup_hash, kind)"
+         & " VALUES (1, 1, 'old-1', '2026-01-01T00:00:00+00:00',"
+         & " 'old head', 'old body', 'oldhash', 'diary');"
+         & "INSERT INTO sessions (id, project_id, session_id, created_at,"
+         & " raw_path) VALUES (1, 1, 'old-1', '2026-01-01T00:00:00+00:00',"
+         & " '/old/path.jsonl');");
+
+      declare
+         MS      : Memcp.Store.Store;
+         Open_MS : Memcp.Store.Open_Status;
+      begin
+         Memcp.Store.Open (MS, DB_File, Open_MS);
+         Check (Open_MS = Memcp.Store.Opened,
+                "Migration: pre-provenance database still opens");
+         if Open_MS = Memcp.Store.Opened then
+            Memcp.Store.Close (MS);
+         end if;
+      end;
+
+      Check (Scalar (DB_File, "SELECT count(*) FROM summaries") = "1"
+             and then Scalar (DB_File, "SELECT count(*) FROM sessions") = "1",
+             "Migration: no row lost");
+      Check (Scalar
+               (DB_File,
+                "SELECT headline || '|' || body || '|' || dedup_hash"
+                & " || '|' || kind || '|' || created_at || '|' || session_id"
+                & " FROM summaries WHERE id = 1")
+             = "old head|old body|oldhash|diary|"
+               & "2026-01-01T00:00:00+00:00|old-1",
+             "Migration: the pre-existing summary reads back unchanged");
+      Check (Scalar (DB_File, "SELECT raw_path FROM sessions WHERE id = 1")
+             = "/old/path.jsonl",
+             "Migration: the pre-existing session reads back unchanged");
+      Check (Scalar
+               (DB_File, "SELECT surface_row_id FROM summaries WHERE id = 1")
+             = "<null>"
+             and then Scalar
+               (DB_File, "SELECT surface_row_id FROM sessions WHERE id = 1")
+             = "<null>",
+             "Migration: pre-existing rows migrate with null provenance");
+
+      --  ---- writes from a surface, into the same migrated database ----
+      declare
+         MS      : Memcp.Store.Store;
+         Open_MS : Memcp.Store.Open_Status;
+         SR      : Memcp.Store.Save_Result;
+         SeR     : Memcp.Store.Session_Save_Result;
+         St      : Memcp.Store.Op_Status;
+         CL      : Memcp.Store.Chunk_Input_List;
+      begin
+         Memcp.Store.Open (MS, DB_File, Open_MS);
+         Check (Open_MS = Memcp.Store.Opened,
+                "Migration: re-opening a migrated database is a no-op");
+         if Open_MS = Memcp.Store.Opened then
+            Memcp.Store.Save
+              (MS, "prov", "attributed diary", "attributed body", Zero_Emb,
+               Has_Session => True, Session_Id => "p-1",
+               Has_Created => True, Created_At => TS,
+               Surface => "11111111-2222-3333-4444-555555555555",
+               Surface_Label => "laptop",
+               Result => SR, Status => St);
+            Check (St = Memcp.Store.Success, "Provenance: save -> Success");
+
+            Memcp.Store.Chunk_Input_Vectors.Append
+              (CL, (Body_Len => 4, Content => "turn", Embedding => Hot (1)));
+            Memcp.Store.Save_Session
+              (MS, "prov", "p-1", "transcript", CL,
+               Has_Created => True, Created_At => TS,
+               Surface => "11111111-2222-3333-4444-555555555555",
+               Surface_Label => "laptop",
+               Result => SeR, Status => St);
+            Check (St = Memcp.Store.Success,
+                   "Provenance: session upload -> Success");
+
+            --  An unattributed write lands beside them, with no surface.
+            Memcp.Store.Save
+              (MS, "prov", "anon diary", "anon body", Zero_Emb,
+               Has_Session => True, Session_Id => "p-2",
+               Has_Created => True, Created_At => TS,
+               Surface => "", Surface_Label => "",
+               Result => SR, Status => St);
+            Check (St = Memcp.Store.Success,
+                   "Provenance: unattributed save still succeeds");
+            Memcp.Store.Close (MS);
+         end if;
+      end;
+
+      Check (Scalar (DB_File, "SELECT count(*) FROM surfaces") = "1",
+             "Provenance: both writes share one surfaces row");
+      Check (Scalar
+               (DB_File,
+                "SELECT s.label FROM surfaces s JOIN summaries m"
+                & " ON m.surface_row_id = s.id WHERE m.session_id = 'p-1'")
+             = "laptop",
+             "Provenance: the summary carries the writing surface");
+      Check (Scalar
+               (DB_File,
+                "SELECT s.surface_id FROM surfaces s JOIN sessions x"
+                & " ON x.surface_row_id = s.id WHERE x.session_id = 'p-1'")
+             = "11111111-2222-3333-4444-555555555555",
+             "Provenance: the session carries the uploading surface");
+      Check (Scalar
+               (DB_File,
+                "SELECT surface_row_id FROM summaries"
+                & " WHERE session_id = 'p-2'")
+             = "<null>",
+             "Provenance: an unattributed write stays null");
 
       if Ada.Directories.Exists (Base) then
          Ada.Directories.Delete_Tree (Base);

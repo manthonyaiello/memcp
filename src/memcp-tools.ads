@@ -61,7 +61,8 @@ package Memcp.Tools with SPARK_Mode => On is
          when Save =>
             "Save a (diary line, structured summary) pair as a "
               & "kind='diary' Header. With session_id it is a session-scoped "
-              & "upsert: a later save in the same session replaces it in place.",
+              & "upsert: a later save in the same session replaces it in "
+              & "place. Pass the surface the SessionStart hook injected.",
          when Forget =>
             "Delete a summary, its diary line, and its embedding by "
               & "summary id. Returns {""deleted"": false} if the id is unknown.",
@@ -102,6 +103,7 @@ package Memcp.Tools with SPARK_Mode => On is
               & """diary"":{""type"":""string""},"
               & """summary"":{""type"":""string""},"
               & """session_id"":{""type"":""string""},"
+              & """surface"":{""type"":""string""},"
               & """created_at"":{""type"":""string""}},"
               & """required"":[""project""]}",
          when Forget =>
@@ -124,7 +126,8 @@ package Memcp.Tools with SPARK_Mode => On is
             "{""type"":""object"",""properties"":{"
               & """project"":{""type"":""string""},"
               & """session_id"":{""type"":""string""},"
-              & """transcript_b64"":{""type"":""string""}},"
+              & """transcript_b64"":{""type"":""string""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""project"",""session_id"",""transcript_b64""]}",
          when Fetch_Chunks =>
             "{""type"":""object"",""properties"":{"
@@ -213,10 +216,11 @@ private
      & LF
      & "## Saving" & LF
      & LF
-     & "save(project, diary, summary, session_id). `diary` is a single headline"
+     & "save(project, diary, summary, session_id, surface). `diary` is a single"
      & LF
-     & "line; `summary` is the full structured body. Pass each in its own"
-     & " argument." & LF
+     & "headline line; `summary` is the full structured body. Pass each in its"
+     & " own" & LF
+     & "argument, and `surface` verbatim as SessionStart injected it." & LF
      & "Saves are session-scoped: a later save() in the same session replaces the"
      & LF
      & "prior one in place, so it is safe to save early and re-save as more lands.";

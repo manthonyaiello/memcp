@@ -969,6 +969,58 @@ package body Memcp.Tools with SPARK_Mode => On is
       end if;
    end Do_List_Projects;
 
+   function Surface_Sep (Arg : String) return Natural
+     with Post => Surface_Sep'Result = 0
+                  or else (Surface_Sep'Result > Arg'First
+                           and then Surface_Sep'Result < Arg'Last);
+   --  Index of the separator in a `label:id` surface argument, or 0 when Arg
+   --  does not carry both halves. The label is a host name, so the first colon
+   --  is the separator.
+
+   function Surface_Sep (Arg : String) return Natural is
+   begin
+      for I in Arg'Range loop
+         if Arg (I) = ':' then
+            return (if I > Arg'First and then I < Arg'Last then I else 0);
+         end if;
+      end loop;
+      return 0;
+   end Surface_Sep;
+
+   No_Surface_Warning : constant String :=
+     "unattributed write: no surface argument, so memcp cannot record which "
+     & "machine this came from. The memcp SessionStart hook did not run, or "
+     & "is too old to inject one -- tell the user.";
+   --  Warning returned alongside a successful write that carried no surface.
+   --  Refusing the write instead would turn silent data loss into loud data
+   --  loss.
+
+   Bad_Surface_Warning : constant String :=
+     "unattributed write: the surface argument is not the `label:id` the "
+     & "memcp SessionStart hook injects, so it was discarded. Pass the "
+     & "injected value verbatim.";
+   --  Warning returned alongside a successful write whose surface argument
+   --  could not be split.
+
+   function Surface_Warning (Arg : String) return String is
+     (if Arg'Length = 0 then ",""warning"":""" & No_Surface_Warning & """"
+      elsif Surface_Sep (Arg) = 0
+      then ",""warning"":""" & Bad_Surface_Warning & """"
+      else "");
+   --  The trailing `,"warning":...` member for a write whose surface argument
+   --  was Arg, or the empty string when it was usable. Neither warning carries
+   --  a character JSON would escape.
+
+   function Surface_Id (Arg : String) return String is
+     (if Surface_Sep (Arg) = 0 then ""
+      else Arg (Surface_Sep (Arg) + 1 .. Arg'Last));
+   --  The id half of a `label:id` surface argument; empty when unusable.
+
+   function Surface_Label (Arg : String) return String is
+     (if Surface_Sep (Arg) = 0 then ""
+      else Arg (Arg'First .. Surface_Sep (Arg) - 1));
+   --  The label half of a `label:id` surface argument; empty when unusable.
+
    procedure Do_Save
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
    --  save: a (diary line, structured summary) pair, plus the summary's
@@ -1034,6 +1086,7 @@ package body Memcp.Tools with SPARK_Mode => On is
                        (if Rep then Memcp.Replay.Peek_Clock
                         elsif Arg_Cre then MJ.Get_Str (D, "created_at")
                         else "");
+                     Surf    : constant String := MJ.Get_Str (D, "surface");
                   begin
                      if Rep then
                         Memcp.Replay.Advance_Clock;
@@ -1048,6 +1101,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                         Session_Id   => MJ.Get_Str (D, "session_id"),
                         Has_Created  => Has_Cre,
                         Created_At   => TS,
+                        Surface      => Surface_Id (Surf),
+                        Surface_Label => Surface_Label (Surf),
                         Result       => Res,
                         Status       => St);
                      if St = MS.Success then
@@ -1055,7 +1110,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                           ("{""summary_id"":" & N (Res.Summary_Id)
                            & ",""diary_id"":" & N (Res.Diary_Id)
                            & ",""already_existed"":" & B (Res.Already_Existed)
-                           & ",""replaced"":" & B (Res.Replaced) & "}");
+                           & ",""replaced"":" & B (Res.Replaced)
+                           & Surface_Warning (Surf) & "}");
                      else
                         Result := Err (Internal_Error, "save: store error");
                      end if;
@@ -1359,6 +1415,7 @@ package body Memcp.Tools with SPARK_Mode => On is
       Project    : String;
       Session_Id : String;
       Transcript : String;
+      Surface    : String;
       Result     : out Result_Ptr)
      with Pre => Transcript'First = 1 and then Transcript'Last < Natural'Last;
    --  upload_session once the transcript is decoded: extract turns, embed
@@ -1370,6 +1427,7 @@ package body Memcp.Tools with SPARK_Mode => On is
       Project    : String;
       Session_Id : String;
       Transcript : String;
+      Surface    : String;
       Result     : out Result_Ptr)
    is
       Turns  : constant ME.Turn_List := ME.Extract_Turns (Transcript);
@@ -1429,6 +1487,8 @@ package body Memcp.Tools with SPARK_Mode => On is
             Chunks      => Chunks,
             Has_Created => Rep,
             Created_At  => TS,
+            Surface       => Surface_Id (Surface),
+            Surface_Label => Surface_Label (Surface),
             Result      => Res,
             Status      => St);
 
@@ -1470,6 +1530,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                            Embedding   => Emb,
                            Has_Created => Rep2,
                            Created_At  => TS2,
+                           Surface       => Surface_Id (Surface),
+                           Surface_Label => Surface_Label (Surface),
                            Result      => Rec,
                            Status      => R_St);
                         if R_St = MS.Success and then Rec.Written then
@@ -1487,7 +1549,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                & N (Interfaces.Integer_64 (Res.Chunk_Count))
                & ",""already_existed"":" & B (Res.Already_Existed)
                & ",""autorecap_summary_id"":"
-               & (if Wrote then N (Recap_Id) else "null") & "}");
+               & (if Wrote then N (Recap_Id) else "null")
+               & Surface_Warning (Surface) & "}");
          end;
       end;
    end Upload_Decoded;
@@ -1507,6 +1570,7 @@ package body Memcp.Tools with SPARK_Mode => On is
          Project    : constant String := MJ.Get_Str (D, "project");
          Session_Id : constant String := MJ.Get_Str (D, "session_id");
          B64        : constant String := MJ.Get_Str (D, "transcript_b64");
+         Surf       : constant String := MJ.Get_Str (D, "surface");
          Decoded    : ME.Transcript_Ptr;
          B64_Ok     : Boolean;
       begin
@@ -1529,7 +1593,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                   "upload_session: transcript_b64 is not valid "
                   & "base64-encoded UTF-8");
             else
-               Upload_Decoded (R, Project, Session_Id, Decoded.all, Result);
+               Upload_Decoded
+                 (R, Project, Session_Id, Decoded.all, Surf, Result);
                ME.Free (Decoded);
             end if;
          end if;

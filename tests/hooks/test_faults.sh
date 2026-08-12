@@ -18,7 +18,8 @@ REPO="$TEST_TMP/repo"
 make_repo "$REPO" "https://github.com/acme/widget.git"
 
 CONFIG="$TEST_TMP/hooks.env"
-: >"$CONFIG"
+printf ': "${MEMCP_SURFACE_LABEL:=bench}"\n: "${MEMCP_SURFACE_ID:=bench-id}"\n' \
+    >"$CONFIG"
 
 PAYLOAD=$(printf '{"session_id":"S1","cwd":"%s","source":"startup"}' "$REPO")
 END_PAYLOAD=""
@@ -45,7 +46,7 @@ assert_eq       "healthy: exit 0"                    0 "$STATUS"
 assert_contains "healthy: session block carries the derived key" \
     '<memcp-session id="S1" project="widget"' "$OUT"
 assert_contains "healthy: the key is marked verbatim" \
-    'Pass project="widget" and session_id="S1" verbatim' "$OUT"
+    'Pass project="widget", session_id="S1" and surface=' "$OUT"
 assert_contains "healthy: prior sessions are listed"  '<memcp-prior-sessions project="widget" count="2">' "$OUT"
 assert_contains "healthy: headlines are surfaced"     'kind=autorecap] second headline' "$OUT"
 assert_not_contains "healthy: no fault block"         '<memcp-hook-error' "$OUT"
@@ -78,6 +79,8 @@ assert_eq "session_end: exit 0" 0 "$END_STATUS"
 END_BODIES=$(cat "$MEMCP_TEST_BODY_LOG")
 assert_contains "session_end: uploads under the key SessionStart injected" \
     '"project":"widget"' "$END_BODIES"
+assert_contains "session_end: uploads under this surface" \
+    '"surface":"bench:bench-id"' "$END_BODIES"
 assert_match "session_end: initialize reports version and digest" \
     "\"version\":\"$HOOK_VERSION_RE\\+[0-9a-f]{8}\"" "$END_BODIES"
 assert_contains "session_end: logs the surface" "surface=" "$END_OUT"

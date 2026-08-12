@@ -226,6 +226,8 @@ package body Memcp.Resources with SPARK_Mode => On is
       Session_Id   : String;
       Has_Created  : Boolean;
       Created_At   : String;
+      Surface      : String;
+      Surface_Label : String;
       Result       : out MS.Save_Result;
       Status       : out MS.Op_Status)
    is
@@ -242,7 +244,8 @@ package body Memcp.Resources with SPARK_Mode => On is
       end if;
       MS.Save
         (R.The_Store, Project, Diary_Body, Summary_Body, Embedding,
-         Has_Session, Session_Id, Has_Created, Created_At, Result, Status);
+         Has_Session, Session_Id, Has_Created, Created_At, Surface,
+         Surface_Label, Result, Status);
    end Save;
 
    --------------------
@@ -276,6 +279,8 @@ package body Memcp.Resources with SPARK_Mode => On is
       Chunks      : MS.Chunk_Input_List;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out MS.Session_Save_Result;
       Status      : out MS.Op_Status)
    is
@@ -292,7 +297,7 @@ package body Memcp.Resources with SPARK_Mode => On is
       end if;
       MS.Save_Session
         (R.The_Store, Project, Session_Id, Transcript, Chunks,
-         Has_Created, Created_At, Result, Status);
+         Has_Created, Created_At, Surface, Surface_Label, Result, Status);
    end Save_Session;
 
    --------------------
@@ -307,6 +312,8 @@ package body Memcp.Resources with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out MS.Autorecap_Result;
       Status      : out MS.Op_Status)
    is
@@ -322,7 +329,7 @@ package body Memcp.Resources with SPARK_Mode => On is
       end if;
       MS.Save_Autorecap
         (R.The_Store, Project, Session_Id, Recap_Text, Embedding,
-         Has_Created, Created_At, Result, Status);
+         Has_Created, Created_At, Surface, Surface_Label, Result, Status);
    end Save_Autorecap;
 
 end Memcp.Resources;

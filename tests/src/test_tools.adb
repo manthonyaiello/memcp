@@ -280,6 +280,8 @@ begin
          Session_Id   => "sess-1",
          Has_Created  => True,
          Created_At   => TS,
+         Surface       => "",
+         Surface_Label => "",
          Result       => R,
          Status       => St);
       Check (St = Memcp.Store.Success, "seed Save -> Success");
@@ -303,6 +305,8 @@ begin
          Chunks      => Chunks,
          Has_Created => True,
          Created_At  => TS,
+         Surface       => "",
+         Surface_Label => "",
          Result      => SR,
          Status      => St);
       Check (St = Memcp.Store.Success, "seed Save_Session -> Success");
@@ -373,6 +377,50 @@ begin
                    "{""summary_id"":" & Img (Seed_Sum_Id) & "}")
                = "No summary found for id " & Img (Seed_Sum_Id) & ".",
              "fetch_summary after forget -> message");
+   end;
+
+   ------------------------------------------------------------------
+   --  The surface argument is fail-soft: a write missing it, or carrying
+   --  something that is not `label:id`, still lands and says so. Driven
+   --  through upload_session with a turn-free transcript, the one write path
+   --  that needs no embedder.
+   ------------------------------------------------------------------
+   declare
+      function Upload (Session, Surface_Arg : String) return String is
+        (Call (Memcp.Tools.Upload_Session,
+               "{""project"":""surf"",""session_id"":""" & Session
+               & """,""transcript_b64"":""e30=""" & Surface_Arg & "}"));
+      --  upload_session for a fresh session, with Surface_Arg spliced in as a
+      --  further member (or nothing at all).
+   begin
+      declare
+         J : constant String := Upload ("u-none", "");
+      begin
+         Check (Has_Sub (J, """session_row_id"":"),
+                "upload_session: no surface -> still written");
+         Check (Has_Sub (J, """warning"":") and then Has_Sub (J, "SessionStart"),
+                "upload_session: no surface -> warning names the hook");
+      end;
+
+      declare
+         J : constant String :=
+           Upload ("u-bad", ",""surface"":""no-separator""");
+      begin
+         Check (Has_Sub (J, """session_row_id"":"),
+                "upload_session: malformed surface -> still written");
+         Check (Has_Sub (J, """warning"":")
+                and then Has_Sub (J, "label:id"),
+                "upload_session: malformed surface -> warning names the shape");
+      end;
+
+      declare
+         J : constant String :=
+           Upload ("u-ok", ",""surface"":""lab:9f3c""");
+      begin
+         Check (Has_Sub (J, """session_row_id"":")
+                and then not Has_Sub (J, """warning"":"),
+                "upload_session: a usable surface warns about nothing");
+      end;
    end;
 
    Memcp.Resources.Close (Res);
