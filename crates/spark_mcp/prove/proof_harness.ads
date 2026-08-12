@@ -3,6 +3,7 @@
 --  discharges the routing body's obligations. Not part of the shipped library.
 
 with Spark_Mcp;
+with Spark_Mcp.Requests;
 with Spark_Mcp.Tools;
 with Spark_Mcp.Server;
 
@@ -43,6 +44,36 @@ package Proof_Harness with SPARK_Mode => On is
    --  @param Arguments The raw JSON arguments object.
    --  @param Result The allocated invocation result, owned by the caller.
 
+   function No_Parser
+     (Request : String) return Spark_Mcp.Requests.Envelope
+   is
+     (M_Len           => 0,
+      Id_Len          => 0,
+      TN_Len          => 0,
+      Arg_Len         => 0,
+      CN_Len          => 0,
+      CV_Len          => 0,
+      Kind            => Spark_Mcp.Requests.Unimplemented,
+      Is_Notification => False,
+      Method          => "",
+      Id              => "",
+      Tool_Name       => "",
+      Arguments       => "",
+      Client_Name     => "",
+      Client_Version  => "");
+   --  A Parse_Envelope that decodes nothing: Dispatch's obligations are the
+   --  same whatever the parser returns, and this keeps the harness free of a
+   --  JSON dependency.
+   --  @param Request The raw request text; no decoding is attempted.
+   --  @return An Envelope with Kind => Unimplemented and every *_Len => 0.
+
+   function No_Meta (Client_Name, Client_Version : String) return String is
+     ("");
+   --  A Client_Meta that says nothing, so `initialize` carries no `_meta`.
+   --  @param Client_Name The client's reported name.
+   --  @param Client_Version The client's reported version.
+   --  @return "", adding no members.
+
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
       Server_Version => "0.1.0",
@@ -51,7 +82,9 @@ package Proof_Harness with SPARK_Mode => On is
       Name           => Name,
       Description     => Description,
       Input_Schema   => Input_Schema,
-      Invoke         => Invoke);
+      Invoke         => Invoke,
+      Parse_Envelope => No_Parser,
+      Client_Meta    => No_Meta);
    --  The instantiation under proof.
 
 end Proof_Harness;

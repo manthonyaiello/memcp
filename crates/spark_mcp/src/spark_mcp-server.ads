@@ -21,9 +21,10 @@
 --    result out as `Result := new Invocation_Result'(...)`, which Respond reads
 --    once and Frees. A conforming Invoke never returns null.
 --  @formal Parse_Envelope Decode one request's text into an Envelope. The one
---    step that needs a JSON library, which is why it is a formal. Defaults to
---    Requests.No_Parser, so the core builds and is testable with no JSON
---    dependency at all.
+--    step that needs a JSON library, which is why it is a formal and has no
+--    default: an instantiation with no parser to offer supplies one returning
+--    Kind => Unimplemented, and Respond is drivable directly, so the crate
+--    builds, proves and is tested with no JSON dependency at all.
 --  @formal Client_Meta Extra members for the `initialize` result's `_meta`,
 --    given params.clientInfo.name and .version as the client reported them.
 --    Return "" to add none, otherwise a JSON object of at most Max_Field
@@ -52,7 +53,7 @@ generic
       Result    : out Tools.Result_Ptr);
 
    with function Parse_Envelope
-     (Request : String) return Requests.Envelope is Requests.No_Parser;
+     (Request : String) return Requests.Envelope;
 
    with function Client_Meta
      (Client_Name, Client_Version : String) return String;
