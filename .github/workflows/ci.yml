@@ -11,6 +11,7 @@ name: CI
 #
 #     trust --+--> docs --> build-test (both platforms)
 #     hooks --+        --> prove
+#                      --> prove-mcp
 #
 # Neither root needs a toolchain — `trust` is grep over `git ls-files`, `hooks`
 # is bash + curl + jq over the hook scripts — so they are the cheapest signals
@@ -204,3 +205,46 @@ jobs:
     with:
       restore: true
       save: ${{ github.ref == 'refs/heads/main' }}
+
+  # Prove the reusable MCP core on its own (issue #74). Spark_Mcp.Server is
+  # generic, so the `prove` job above discharges its body's obligations only
+  # through memcp's instantiation — the one over the json parser. This job
+  # discharges them through a second, independent one (crates/spark_mcp/prove),
+  # which is what makes the crate a proved reusable component rather than a
+  # proved part of memcp.
+  #
+  # Its own job rather than a step in `prove`, because the two answer different
+  # questions and a reader wants to see which one went red; and its own job
+  # rather than a call into prove.yml, because it shares none of that workflow's
+  # shape — no cargo, no C, no library build, and no cache.
+  #
+  # No cache, deliberately. The whole run is ~300 checks off a config GPR and
+  # nothing else, so a cold prove costs less than restoring would; and a second
+  # cache would need a key outside the `gnatprove-*` prefix that
+  # proof-cache-refresh.yml purges daily, which means inventing a refresh and
+  # poison-guard story for it. Not worth it at this size — revisit if the crate
+  # grows.
+  prove-mcp:
+    name: Prove MCP core (SPARK Silver, Linux)
+    needs: docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
+
+      # Same constraint as prove.yml: sparklib 16.1.0 forbids gnatprove < 16.
+      - name: Install GNATprove
+        run: |
+          alr -n install gnatprove^16
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      # --timeout=10 for the same reason prove.yml passes it: --level timeouts
+      # are wall-clock, so a check can need more of it on the runner than on a
+      # dev machine. The Makefile appends GNATPROVE_EXTRA verbatim.
+      - name: Prove
+        env:
+          GNATPROVE_EXTRA: --timeout=10
+        run: make prove-mcp

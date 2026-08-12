@@ -12,9 +12,11 @@
 ALR      ?= alr
 GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
+MCP       = crates/spark_mcp
 
 .PHONY: all build run model test test-hooks hook-version prove prove-deps \
-        prove-check docs docs-check docs-placement trust trust-check clean help
+        prove-check prove-mcp prove-mcp-deps docs docs-check docs-placement \
+        trust trust-check clean help
 
 all: build
 
@@ -71,6 +73,29 @@ prove-deps: ## Provision proof inputs (Ada libs + C sources), no cargo, no exe l
 
 prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 	ALR="$(ALR)" ./scripts/check-proof.sh
+
+# Spark_Mcp.Server is generic, so its body is analyzed only through an
+# instantiation. memcp.gpr's closure supplies one -- the real composition root,
+# over the json parser -- and `prove` above therefore discharges the routing
+# body's obligations for that instance alone. This target discharges them for a
+# second, independent one: crates/spark_mcp/prove/, a proof-only instantiation
+# over a two-tool set and no parser, so the generic is proved as a reusable
+# component rather than as memcp's copy of it.
+#
+# No allowlist and no wrapper script: the harness has nothing unproved, so
+# gnatprove's own exit status is the whole gate -- but only with BOTH of
+# --checks-as-errors and --warnings=error, since an unproved check alone leaves
+# the status at 0. GNATPROVE_EXTRA is honoured for parity with check-proof.sh
+# (CI passes a --timeout there).
+prove-mcp: prove-mcp-deps ## Prove the reusable MCP core via its proof harness (CI gate)
+	cd $(MCP) && $(ALR) exec -- gnatprove -P spark_mcp_prove.gpr \
+	  -j0 --level=2 --checks-as-errors=on --warnings=error $(GNATPROVE_EXTRA)
+
+# spark_mcp_prove.gpr withs only the crate's generated config project, so this
+# is the whole provisioning step: no library to build, no C to vendor, and
+# --stop-after=generation is before the pre-build stage, so cargo never runs.
+prove-mcp-deps: ## Provision the MCP proof inputs (config GPR only, no cargo)
+	cd $(MCP) && $(ALR) build --stop-after=generation
 
 # GNATdoc (issue #22). The same report/gate split as prove/prove-check, and for
 # the same underlying reason: `gnatdoc --warnings` lists every undocumented
