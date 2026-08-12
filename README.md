@@ -175,12 +175,17 @@ hook digests, and neither re-rolls the surface identity it minted the first
 time. A surface you miss says so on its next session start (see
 [below](#when-a-surface-falls-behind)).
 
-**SessionStart** derives the project key, emits it in a `<memcp-session>` block
-for the model to use verbatim, and prints the most recent diary entries for
+**SessionStart** derives the project key and this surface's `label:id`, emits
+both in a `<memcp-session>` block for the model to use verbatim, and prints the
+most recent diary entries for
 that project inside a `<memcp-prior-sessions>` block, which Claude picks up as
 first-turn context. On `source=resume` and `source=compact` the diary listing
 is skipped — the model already has that context — but the key is still injected,
 because a compaction can drop it.
+
+Summaries and sessions record the surface they came from. A write that carries
+no surface, or one that is not `label:id`, still lands and comes back with a
+warning saying so.
 
 **SessionEnd** base64-encodes the transcript at `transcript_path` and uploads
 it via the `upload_session` tool. The server writes the raw transcript to

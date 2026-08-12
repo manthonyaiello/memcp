@@ -214,6 +214,8 @@ package Memcp.Resources with SPARK_Mode => On is
       Session_Id   : String;
       Has_Created  : Boolean;
       Created_At   : String;
+      Surface      : String;
+      Surface_Label : String;
       Result       : out MS.Save_Result;
       Status       : out MS.Op_Status)
      with Global => (In_Out => (Sqlite_Vec_Spark.DBMS, Ada.Text_IO.File_System));
@@ -227,6 +229,8 @@ package Memcp.Resources with SPARK_Mode => On is
    --  @param Session_Id Session id (used only when Has_Session is True).
    --  @param Has_Created Whether Created_At is supplied.
    --  @param Created_At Creation timestamp (used only when Has_Created is True).
+   --  @param Surface The writing surface's id; empty leaves the row unattributed.
+   --  @param Surface_Label The writing surface's human-readable name.
    --  @param Result Row ids written by the save.
    --  @param Status Outcome of the write (Db_Error on failure).
 
@@ -250,6 +254,8 @@ package Memcp.Resources with SPARK_Mode => On is
       Chunks      : MS.Chunk_Input_List;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out MS.Session_Save_Result;
       Status      : out MS.Op_Status)
      with Global => (In_Out => (Sqlite_Vec_Spark.DBMS, Ada.Text_IO.File_System));
@@ -261,6 +267,9 @@ package Memcp.Resources with SPARK_Mode => On is
    --  @param Chunks The per-turn chunk inputs to store.
    --  @param Has_Created Whether Created_At is supplied.
    --  @param Created_At Creation timestamp (used only when Has_Created is True).
+   --  @param Surface The uploading surface's id; empty leaves the row
+   --    unattributed.
+   --  @param Surface_Label The uploading surface's human-readable name.
    --  @param Result Row ids written by the session save.
    --  @param Status Outcome of the write (Db_Error on failure).
 
@@ -272,6 +281,8 @@ package Memcp.Resources with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out MS.Autorecap_Result;
       Status      : out MS.Op_Status)
      with Global => (In_Out => (Sqlite_Vec_Spark.DBMS, Ada.Text_IO.File_System));
@@ -283,6 +294,8 @@ package Memcp.Resources with SPARK_Mode => On is
    --  @param Embedding The recap embedding vector.
    --  @param Has_Created Whether Created_At is supplied.
    --  @param Created_At Creation timestamp (used only when Has_Created is True).
+   --  @param Surface The writing surface's id; empty leaves the row unattributed.
+   --  @param Surface_Label The writing surface's human-readable name.
    --  @param Result The rowids written and whether a write happened.
    --  @param Status Outcome of the write (Db_Error on failure).
 

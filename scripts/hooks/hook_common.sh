@@ -11,7 +11,7 @@
 # surface that is behind by even a comment reports as behind, which is the
 # honest answer. Memcp.Hooks.Hook_Version must carry the same string --
 # scripts/check-hook-version.sh gates that, and the bump.
-MEMCP_HOOK_VERSION="0.3.0"
+MEMCP_HOOK_VERSION="0.4.0"
 
 # --- configuration ----------------------------------------------------------
 
@@ -273,6 +273,19 @@ memcp_new_uuid() {
 # Human-readable name for this surface, defaulting to the current host name.
 memcp_surface_label() {
     printf '%s\n' "${MEMCP_SURFACE_LABEL:-$(memcp_hostname)}"
+}
+
+# This surface as the server wants it on a write: `label:id`. The id half is
+# the UUID install.sh minted, which is what an agent running where no hook ran
+# cannot produce; the label half is what a diagnosis can print. Empty when the
+# config carries no id, so the server sees the absence rather than a half
+# value.
+memcp_surface_ref() {
+    if [[ -z "${MEMCP_SURFACE_ID:-}" ]]; then
+        printf '\n'
+        return 0
+    fi
+    printf '%s:%s\n' "$(memcp_surface_label)" "$MEMCP_SURFACE_ID"
 }
 
 # --- emission ---------------------------------------------------------------

@@ -20,6 +20,7 @@ package body Memcp.Store with SPARK_Mode => On is
 
    package Sql renames Sqlite_Vec_Spark;
    use type Sql.Status;
+   use type Row_Id;
 
    --  Operators on the vectors' Capacity_Range, for the Length and Last_Count
    --  comparisons below.
@@ -56,6 +57,10 @@ package body Memcp.Store with SPARK_Mode => On is
      "  key TEXT PRIMARY KEY, value TEXT NOT NULL);"                  & LF &
      "CREATE TABLE IF NOT EXISTS projects ("                          & LF &
      "  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE);"          & LF &
+     "CREATE TABLE IF NOT EXISTS surfaces ("                          & LF &
+     "  id INTEGER PRIMARY KEY,"                                      & LF &
+     "  surface_id TEXT NOT NULL UNIQUE, label TEXT NOT NULL,"        & LF &
+     "  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL);"          & LF &
      "CREATE TABLE IF NOT EXISTS summaries ("                         & LF &
      "  id INTEGER PRIMARY KEY,"                                      & LF &
      "  project_id INTEGER NOT NULL REFERENCES projects(id),"         & LF &
@@ -92,9 +97,11 @@ package body Memcp.Store with SPARK_Mode => On is
      "  created_at TEXT NOT NULL);"                                   & LF &
      "CREATE INDEX IF NOT EXISTS idx_chunks_session"                  & LF &
      "  ON chunks(session_row_id);";
-   --  The relational schema: meta, projects, summaries, diary, sessions and
-   --  chunks, with their indexes. Every statement is IF NOT EXISTS, so applying
-   --  it to an existing database is a no-op.
+   --  The relational schema: meta, projects, surfaces, summaries, diary,
+   --  sessions and chunks, with their indexes. Every statement is IF NOT
+   --  EXISTS, so applying it to an existing database is a no-op. The
+   --  surface_row_id columns are added by Add_Column instead, which no CREATE
+   --  can express for a table that already exists.
 
    Vec_Summary_SQL : constant String :=
      "CREATE VIRTUAL TABLE IF NOT EXISTS summary_vec"
@@ -599,6 +606,184 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
    end Project_Id;
 
+   ----------------
+   -- Add_Column --
+   ----------------
+
+   procedure Add_Column
+     (S : Store; Table, Column, Decl : String; Ok : out Boolean)
+     with Pre => Is_Open (S)
+                 --  Bounded so the ALTER built below cannot overflow; every
+                 --  caller passes a literal well inside these.
+                 and then Table'Length in 1 .. 64
+                 and then Column'Length in 1 .. 64
+                 and then Decl'Length in 1 .. 128;
+   --  Add Column to Table when it is absent, leaving an already-migrated
+   --  database untouched. Absence is established first so that a failing ALTER
+   --  is a real error rather than the expected duplicate-column refusal.
+
+   procedure Add_Column
+     (S : Store; Table, Column, Decl : String; Ok : out Boolean)
+   is
+      Stmt    : Sql.Statement;
+      St      : Sql.Status;
+      Present : Boolean := False;
+   begin
+      Ok := False;
+
+      Sql.Prepare
+        (S.DB,
+         "SELECT 1 FROM pragma_table_info(?) WHERE name = ?", Stmt, St);
+      if St /= Sql.Ok then
+         return;
+      end if;
+      Sql.Bind_Text (Stmt, 1, Table, St);
+      if St = Sql.Ok then
+         Sql.Bind_Text (Stmt, 2, Column, St);
+      end if;
+      if St = Sql.Ok then
+         Sql.Step (Stmt, St);
+         Present := St = Sql.Row;
+      end if;
+      Sql.Finalize (Stmt);
+      if St /= Sql.Row and then St /= Sql.Done then
+         return;
+      end if;
+
+      if Present then
+         Ok := True;
+      else
+         Exec
+           (S, "ALTER TABLE " & Table & " ADD COLUMN " & Column & " " & Decl,
+            Ok);
+      end if;
+   end Add_Column;
+
+   --------------------
+   -- Surface_Row_Id --
+   --------------------
+
+   procedure Surface_Row_Id
+     (S      : Store;
+      Uuid   : String;
+      Label  : String;
+      Now    : String;
+      Id     : out Row_Id;
+      Status : out Op_Status)
+     with Pre => Is_Open (S);
+   --  The id of the surfaces row for Uuid, inserting it when new and
+   --  refreshing its label and last_seen when not. An empty Uuid is the
+   --  unattributed write: Id comes back 0, which every caller binds as NULL.
+
+   procedure Surface_Row_Id
+     (S      : Store;
+      Uuid   : String;
+      Label  : String;
+      Now    : String;
+      Id     : out Row_Id;
+      Status : out Op_Status)
+   is
+      Stmt  : Sql.Statement;
+      St    : Sql.Status;
+      Found : Boolean := False;
+   begin
+      Id     := 0;
+      Status := Success;
+
+      if Uuid'Length = 0 then
+         return;
+      end if;
+      Status := Db_Error;
+
+      Sql.Prepare
+        (S.DB, "SELECT id FROM surfaces WHERE surface_id = ?", Stmt, St);
+      if St /= Sql.Ok then
+         return;
+      end if;
+      Sql.Bind_Text (Stmt, 1, Uuid, St);
+      if St = Sql.Ok then
+         Sql.Step (Stmt, St);
+         if St = Sql.Row then
+            Found := True;
+            Id    := Sql.Column_Int64 (Stmt, 0);
+         end if;
+      end if;
+      Sql.Finalize (Stmt);
+      if St /= Sql.Row and then St /= Sql.Done then
+         Id := 0;
+         return;
+      end if;
+
+      if Found then
+         --  The label is config on the surface, so the newest write wins.
+         Sql.Prepare
+           (S.DB,
+            "UPDATE surfaces SET label = ?, last_seen = ? WHERE id = ?",
+            Stmt, St);
+         if St = Sql.Ok then
+            Sql.Bind_Text (Stmt, 1, Label, St);
+            if St = Sql.Ok then
+               Sql.Bind_Text (Stmt, 2, Now, St);
+            end if;
+            if St = Sql.Ok then
+               Sql.Bind_Int64 (Stmt, 3, Id, St);
+            end if;
+            if St = Sql.Ok then
+               Sql.Step (Stmt, St);
+            end if;
+         end if;
+      else
+         Sql.Prepare
+           (S.DB,
+            "INSERT INTO surfaces (surface_id, label, first_seen, last_seen)"
+            & " VALUES (?, ?, ?, ?)", Stmt, St);
+         if St = Sql.Ok then
+            Sql.Bind_Text (Stmt, 1, Uuid, St);
+            if St = Sql.Ok then
+               Sql.Bind_Text (Stmt, 2, Label, St);
+            end if;
+            if St = Sql.Ok then
+               Sql.Bind_Text (Stmt, 3, Now, St);
+            end if;
+            if St = Sql.Ok then
+               Sql.Bind_Text (Stmt, 4, Now, St);
+            end if;
+            if St = Sql.Ok then
+               Sql.Step (Stmt, St);
+            end if;
+         end if;
+      end if;
+      Sql.Finalize (Stmt);
+
+      if St = Sql.Done then
+         if not Found then
+            Id := Sql.Last_Insert_Rowid (S.DB);
+         end if;
+         Status := Success;
+      else
+         Id := 0;
+      end if;
+   end Surface_Row_Id;
+
+   ------------------
+   -- Bind_Surface --
+   ------------------
+
+   procedure Bind_Surface
+     (Stmt : Sql.Statement; Index : Positive; Id : Row_Id; St : out Sql.Status);
+   --  Bind the surfaces-row id at Index, or NULL for the unattributed write.
+
+   procedure Bind_Surface
+     (Stmt : Sql.Statement; Index : Positive; Id : Row_Id; St : out Sql.Status)
+   is
+   begin
+      if Id = 0 then
+         Sql.Bind_Null (Stmt, Index, St);
+      else
+         Sql.Bind_Int64 (Stmt, Index, Id, St);
+      end if;
+   end Bind_Surface;
+
    ----------
    -- Open --
    ----------
@@ -680,6 +865,16 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
       if Ok then
          Exec (S, Vec_Chunk_SQL, Ok);
+      end if;
+      if Ok then
+         Add_Column
+           (S, "summaries", "surface_row_id",
+            "INTEGER REFERENCES surfaces(id)", Ok);
+      end if;
+      if Ok then
+         Add_Column
+           (S, "sessions", "surface_row_id",
+            "INTEGER REFERENCES surfaces(id)", Ok);
       end if;
       if not Ok then
          Sql.Close (S.DB);
@@ -1504,10 +1699,13 @@ package body Memcp.Store with SPARK_Mode => On is
       Session_Id   : String;
       Has_Created  : Boolean;
       Created_At   : String;
+      Surface      : String;
+      Surface_Label : String;
       Result       : out Save_Result;
       Status       : out Op_Status)
    is
       Proj_Id : Row_Id;
+      Surf_Id : Row_Id;
       TS      : constant String := (if Has_Created then Created_At else Now_Iso);
       Head    : constant String := Parse_Headline (Summary_Body);
       DH      : constant String := Dedup_Hash (Project, Diary_Body, Summary_Body);
@@ -1554,6 +1752,10 @@ package body Memcp.Store with SPARK_Mode => On is
                  Already_Existed => False, Replaced => False);
 
       Project_Id (S, Project, Proj_Id, Status);
+      if Status /= Success then
+         return;
+      end if;
+      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id, Status);
       if Status /= Success then
          return;
       end if;
@@ -1622,7 +1824,8 @@ package body Memcp.Store with SPARK_Mode => On is
                   Sql.Prepare
                     (S.DB,
                      "UPDATE summaries SET created_at = ?, headline = ?,"
-                     & " body = ?, dedup_hash = ?, kind = ? WHERE id = ?",
+                     & " body = ?, dedup_hash = ?, kind = ?,"
+                     & " surface_row_id = ? WHERE id = ?",
                      US, St2);
                   if St2 = Sql.Ok then
                      Sql.Bind_Text (US, 1, TS, St2);
@@ -1639,7 +1842,13 @@ package body Memcp.Store with SPARK_Mode => On is
                         Sql.Bind_Text (US, 5, Kind_Diary, St2);
                      end if;
                      if St2 = Sql.Ok then
-                        Sql.Bind_Int64 (US, 6, Ex_Summary, St2);
+                        --  The replacing write owns the row, so an unattributed
+                        --  replace clears an attribution rather than keeping a
+                        --  stale one.
+                        Bind_Surface (US, 6, Surf_Id, St2);
+                     end if;
+                     if St2 = Sql.Ok then
+                        Sql.Bind_Int64 (US, 7, Ex_Summary, St2);
                      end if;
                      if St2 = Sql.Ok then
                         Sql.Step (US, St2);
@@ -1746,8 +1955,8 @@ package body Memcp.Store with SPARK_Mode => On is
          Sql.Prepare
            (S.DB,
             "INSERT INTO summaries (project_id, session_id, created_at,"
-            & " headline, body, dedup_hash, kind)"
-            & " VALUES (?, ?, ?, ?, ?, ?, ?)", Ins, St2);
+            & " headline, body, dedup_hash, kind, surface_row_id)"
+            & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins, St2);
          if St2 = Sql.Ok then
             Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
             if St2 = Sql.Ok then
@@ -1771,6 +1980,9 @@ package body Memcp.Store with SPARK_Mode => On is
             end if;
             if St2 = Sql.Ok then
                Sql.Bind_Text (Ins, 7, Kind_Diary, St2);
+            end if;
+            if St2 = Sql.Ok then
+               Bind_Surface (Ins, 8, Surf_Id, St2);
             end if;
             if St2 = Sql.Ok then
                Sql.Step (Ins, St2);
@@ -1835,10 +2047,13 @@ package body Memcp.Store with SPARK_Mode => On is
       Chunks      : Chunk_Input_List;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out Session_Save_Result;
       Status      : out Op_Status)
    is
       Proj_Id : Row_Id;
+      Surf_Id : Row_Id;
       TS      : constant String :=
         (if Has_Created then Created_At else Now_Iso);
    begin
@@ -1846,6 +2061,10 @@ package body Memcp.Store with SPARK_Mode => On is
                  Already_Existed => False, Raw_Path_Set => False);
 
       Project_Id (S, Project, Proj_Id, Status);
+      if Status /= Success then
+         return;
+      end if;
+      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id, Status);
       if Status /= Success then
          return;
       end if;
@@ -1938,7 +2157,8 @@ package body Memcp.Store with SPARK_Mode => On is
             Sql.Prepare
               (S.DB,
                "INSERT INTO sessions (project_id, session_id, created_at,"
-               & " raw_path) VALUES (?, ?, ?, ?)", Ins, St2);
+               & " raw_path, surface_row_id) VALUES (?, ?, ?, ?, ?)",
+               Ins, St2);
             if St2 = Sql.Ok then
                Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
                if St2 = Sql.Ok then
@@ -1953,6 +2173,9 @@ package body Memcp.Store with SPARK_Mode => On is
                   else
                      Sql.Bind_Null (Ins, 4, St2);
                   end if;
+               end if;
+               if St2 = Sql.Ok then
+                  Bind_Surface (Ins, 5, Surf_Id, St2);
                end if;
                if St2 = Sql.Ok then
                   Sql.Step (Ins, St2);
@@ -2000,10 +2223,13 @@ package body Memcp.Store with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out Autorecap_Result;
       Status      : out Op_Status)
    is
       Proj_Id : Row_Id;
+      Surf_Id : Row_Id;
       TS   : constant String := (if Has_Created then Created_At else Now_Iso);
       Head : constant String := Recap_Headline (Recap_Text);
       DH   : constant String := Dedup_Hash (Project, Recap_Text, Recap_Text);
@@ -2012,6 +2238,10 @@ package body Memcp.Store with SPARK_Mode => On is
       Result := (Summary_Id => 0, Diary_Id => 0, Written => False);
 
       Project_Id (S, Project, Proj_Id, Status);
+      if Status /= Success then
+         return;
+      end if;
+      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id, Status);
       if Status /= Success then
          return;
       end if;
@@ -2065,8 +2295,8 @@ package body Memcp.Store with SPARK_Mode => On is
          Sql.Prepare
            (S.DB,
             "INSERT INTO summaries (project_id, session_id, created_at,"
-            & " headline, body, dedup_hash, kind)"
-            & " VALUES (?, ?, ?, ?, ?, ?, ?)", Ins, St2);
+            & " headline, body, dedup_hash, kind, surface_row_id)"
+            & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins, St2);
          if St2 = Sql.Ok then
             Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
          end if;
@@ -2087,6 +2317,9 @@ package body Memcp.Store with SPARK_Mode => On is
          end if;
          if St2 = Sql.Ok then
             Sql.Bind_Text (Ins, 7, Kind_Autorecap, St2);
+         end if;
+         if St2 = Sql.Ok then
+            Bind_Surface (Ins, 8, Surf_Id, St2);
          end if;
          if St2 = Sql.Ok then
             Sql.Step (Ins, St2);

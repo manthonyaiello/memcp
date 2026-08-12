@@ -144,10 +144,12 @@ fi
 
 # The handshake held, so the model can save. The key is derived once, here.
 emit_session_block() {
+    local surface
+    surface=$(memcp_surface_ref)
     printf '<memcp-session id="%s" project="%s" surface="%s">\n' \
-        "$session_id" "$project" "$(memcp_surface_label)"
-    printf 'Pass project="%s" and session_id="%s" verbatim to every memcp tool call in this session. Do not derive or abbreviate the project name.\n' \
-        "$project" "$session_id"
+        "$session_id" "$project" "$surface"
+    printf 'Pass project="%s", session_id="%s" and surface="%s" verbatim to every memcp tool call in this session. Do not derive or abbreviate any of them.\n' \
+        "$project" "$session_id" "$surface"
     printf '</memcp-session>\n'
 }
 

@@ -23,6 +23,7 @@ CONFIG="$TEST_TMP/hooks.env"
 cat >"$CONFIG" <<EOF
 : "\${MEMCP_URL:=$FROM_FILE}"
 : "\${MEMCP_SURFACE_LABEL:=fixture-surface}"
+: "\${MEMCP_SURFACE_ID:=fixture-id}"
 EOF
 
 # MEMCP_URL as the loader leaves it, with the environment as given in "$@".
@@ -57,8 +58,20 @@ OUT=$(MEMCP_TEST_SCENARIO=healthy MEMCP_TEST_ARGV_LOG="$ARGV_LOG" \
       bash "$HOOKS_DIR/session_start.sh" <<<"$PAYLOAD" 2>/dev/null)
 assert_contains "hook run: the file's URL is the one dialled" \
     "$FROM_FILE" "$(cat "$ARGV_LOG")"
-assert_contains "hook run: the file's surface label is injected" \
-    'surface="fixture-surface"' "$OUT"
+assert_contains "hook run: the file's surface is injected as label:id" \
+    'surface="fixture-surface:fixture-id"' "$OUT"
+
+# A config with no minted id must inject an empty surface rather than a label
+# with nothing behind it: the server reads absence, and a bare label is not
+# something an agent could not have guessed.
+NO_ID_CONFIG="$TEST_TMP/hooks-no-id.env"
+printf ': "${MEMCP_URL:=%s}"\n: "${MEMCP_SURFACE_LABEL:=fixture-surface}"\n' \
+    "$FROM_FILE" >"$NO_ID_CONFIG"
+NO_ID_OUT=$(MEMCP_TEST_SCENARIO=healthy MEMCP_TEST_ARGV_LOG="$ARGV_LOG" \
+      MEMCP_TEST_BODY_LOG="$BODY_LOG" MEMCP_CONFIG="$NO_ID_CONFIG" \
+      PATH="$SANDBOX" bash "$HOOKS_DIR/session_start.sh" <<<"$PAYLOAD" 2>/dev/null)
+assert_contains "no minted id: the surface is injected empty" \
+    'surface=""' "$NO_ID_OUT"
 
 : >"$ARGV_LOG"
 MEMCP_TEST_SCENARIO=healthy MEMCP_TEST_ARGV_LOG="$ARGV_LOG" \

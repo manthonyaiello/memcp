@@ -165,10 +165,12 @@ expected=$(memcp_stale_expected "$body")
 jq -nc \
     --arg project "$project" \
     --arg session_id "$session_id" \
+    --arg surface "$(memcp_surface_ref)" \
     --rawfile b64 "$tmpdir/b64" \
     '{jsonrpc:"2.0",id:2,method:"tools/call",params:{
         name:"upload_session",
-        arguments:{project:$project,session_id:$session_id,transcript_b64:$b64}}}' \
+        arguments:{project:$project,session_id:$session_id,
+                   surface:$surface,transcript_b64:$b64}}}' \
     > "$tmpdir/req"
 
 data=$(curl -sS --max-time 60 -X POST "$MEMCP_URL" \

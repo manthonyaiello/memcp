@@ -322,6 +322,8 @@ package Memcp.Store with SPARK_Mode => On is
       Session_Id   : String;
       Has_Created  : Boolean;
       Created_At   : String;
+      Surface      : String;
+      Surface_Label : String;
       Result       : out Save_Result;
       Status       : out Op_Status)
      with Pre => Is_Open (S)
@@ -349,6 +351,9 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Session_Id The session id (ignored when Has_Session is False).
    --  @param Has_Created Whether Created_At overrides the "now" timestamp.
    --  @param Created_At The ISO-8601 timestamp to use when Has_Created.
+   --  @param Surface The writing surface's id; empty leaves the row
+   --    unattributed.
+   --  @param Surface_Label The writing surface's human-readable name.
    --  @param Result The rowids and dedup/replace flags of the save.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
@@ -370,6 +375,8 @@ package Memcp.Store with SPARK_Mode => On is
       Chunks      : Chunk_Input_List;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out Session_Save_Result;
       Status      : out Op_Status)
      with Pre => Is_Open (S)
@@ -396,6 +403,9 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Chunks The turns to store, each with its embedding.
    --  @param Has_Created Whether Created_At overrides the "now" timestamp.
    --  @param Created_At The ISO-8601 timestamp to use when Has_Created.
+   --  @param Surface The uploading surface's id; empty leaves the row
+   --    unattributed.
+   --  @param Surface_Label The uploading surface's human-readable name.
    --  @param Result The session id, chunk count, and idempotency/write flags.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
@@ -414,6 +424,8 @@ package Memcp.Store with SPARK_Mode => On is
       Embedding   : Candle_Spark.Embedding;
       Has_Created : Boolean;
       Created_At  : String;
+      Surface       : String;
+      Surface_Label : String;
       Result      : out Autorecap_Result;
       Status      : out Op_Status)
      with Pre => Is_Open (S)
@@ -433,6 +445,9 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Embedding The recap's [384] embedding.
    --  @param Has_Created Whether Created_At overrides the "now" timestamp.
    --  @param Created_At The ISO-8601 timestamp to use when Has_Created.
+   --  @param Surface The writing surface's id; empty leaves the row
+   --    unattributed.
+   --  @param Surface_Label The writing surface's human-readable name.
    --  @param Result The rowids written and whether a write happened.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
