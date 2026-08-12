@@ -24,6 +24,13 @@
 --    step that needs a JSON library, which is why it is a formal. Defaults to
 --    Requests.No_Parser, so the core builds and is testable with no JSON
 --    dependency at all.
+--  @formal Client_Meta Extra members for the `initialize` result's `_meta`,
+--    given params.clientInfo.name and .version as the client reported them.
+--    Return "" to add none, otherwise a JSON object of at most Max_Field
+--    characters; the text is embedded verbatim, on the same footing as
+--    Input_Schema. A version string means nothing to this crate, so deciding
+--    what to say about one is the application's, and there is no default: an
+--    instantiation with nothing to say supplies a function returning "".
 
 with Spark_Mcp.Requests;
 with Spark_Mcp.Tools;
@@ -47,6 +54,9 @@ generic
    with function Parse_Envelope
      (Request : String) return Requests.Envelope is Requests.No_Parser;
 
+   with function Client_Meta
+     (Client_Name, Client_Version : String) return String;
+
 package Spark_Mcp.Server with SPARK_Mode => On is
 
    procedure Dispatch (Request : String; Response : out Response_Ptr);
@@ -63,12 +73,16 @@ package Spark_Mcp.Server with SPARK_Mode => On is
       Id              : String;
       Response        : out Response_Ptr;
       Tool_Name       : String := "";
-      Arguments       : String := "{}")
+      Arguments       : String := "{}";
+      Client_Name     : String := "";
+      Client_Version  : String := "")
    with
      Pre => Method'Length <= Max_Field
             and then Id'Length <= Max_Field
             and then Tool_Name'Length <= Max_Field
-            and then Arguments'Length <= Max_Field;
+            and then Arguments'Length <= Max_Field
+            and then Client_Name'Length <= Max_Field
+            and then Client_Version'Length <= Max_Field;
    --  Route an already-decoded JSON-RPC request and build the response text.
    --  Exposed so the whole routing and response layer can be driven without a
    --  JSON parser.
@@ -82,5 +96,9 @@ package Spark_Mcp.Server with SPARK_Mode => On is
    --  @param Tool_Name For method "tools/call", params.name ("" otherwise).
    --  @param Arguments For method "tools/call", params.arguments as JSON text
    --    ("{}" when absent); ignored for other methods.
+   --  @param Client_Name For method "initialize", params.clientInfo.name ("" when
+   --    absent); ignored for other methods.
+   --  @param Client_Version For method "initialize", params.clientInfo.version
+   --    ("" when absent); ignored for other methods.
 
 end Spark_Mcp.Server;

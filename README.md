@@ -172,7 +172,8 @@ with the absolute paths filled in, should you prefer to wire it by hand into
 Re-run after every pull — `deploy.sh` for the surfaces that hold copies,
 `install.sh` on its own if you wired this machine by hand. Either re-records the
 hook digests, and neither re-rolls the surface identity it minted the first
-time.
+time. A surface you miss says so on its next session start (see
+[below](#when-a-surface-falls-behind)).
 
 **SessionStart** derives the project key, emits it in a `<memcp-session>` block
 for the model to use verbatim, and prints the most recent diary entries for
@@ -224,10 +225,18 @@ Tell the user memcp is not recording this session, then continue.
 The exit status is 0 in every one of those cases. SessionEnd runs after the
 agent has exited and so has nobody to tell; it logs to `MEMCP_HOOK_LOG`.
 
-Both hooks report `0.2.0+<digest>` as their MCP `clientInfo.version`. The
+Both hooks report `<release>+<digest>` as their MCP `clientInfo.version`. The
 digest is over the hook and `hook_common.sh` as installed; a hook whose runtime
 digest differs from what `install.sh` recorded emits a `<memcp-hook-modified>`
 block and keeps working.
+
+### When a surface falls behind
+
+The digest above compares a hook against what was installed on that surface.
+The server compares the release each hook reports on `initialize` against the
+one it shipped with, and on a mismatch SessionStart emits a block that prompts
+the agent to alert the user that the hooks are stale and how to resolve the
+problem. SessionEnd logs the same verdict to `MEMCP_HOOK_LOG`.
 
 ### Surface identity
 
@@ -235,9 +244,6 @@ block and keeps working.
 host name as of that minting. A config that later turns up on a differently
 named host was inherited — a cloned VM, a restored backup — rather than created
 there, which is what keeps two machines from reporting as one surface.
-
-The reasoning behind all of the above is in
-[`docs/design/0015`](docs/design/0015-one-project-key-and-a-named-surface.md).
 
 ## Tools
 

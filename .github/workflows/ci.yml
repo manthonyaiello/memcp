@@ -81,8 +81,22 @@ jobs:
     name: Hooks (gate)
     runs-on: ubuntu-latest
     steps:
+      # Full history: the version gate below diffs against the PR's base.
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # `make test-hooks` already runs the agreement half. This adds the half
+      # that needs a base ref: a change under scripts/hooks must come with a
+      # bump, or deployed surfaces are never told they are behind. Only on a PR
+      # — a push to main has no base to diff against, and the PR that produced
+      # it was already gated.
+      - name: Check the hook version bumped
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          ./scripts/check-hook-version.sh --since "origin/$GITHUB_BASE_REF"
 
       - name: Run hook tests
         run: make test-hooks

@@ -153,6 +153,13 @@ if ! memcp_is_rpc "$(cat "$body")"; then
     exit 0
 fi
 
+# Logged, not emitted: nobody is left to read a block by the time this runs. The
+# SessionStart hook reports the same verdict where it can be acted on, and this
+# line is what `doctor` reads when diagnosing this surface specifically.
+expected=$(memcp_stale_expected "$body")
+[[ -z "$expected" ]] || \
+    log "hooks $MEMCP_HOOK_VERSION, server shipped $expected; redeploy this surface"
+
 # Stream the assembled body through a file so the base64 payload never has
 # to fit in an argv slot — same MAX_ARG_STRLEN reason as the b64 file above.
 jq -nc \

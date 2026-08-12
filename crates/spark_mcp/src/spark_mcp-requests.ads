@@ -22,7 +22,9 @@ package Spark_Mcp.Requests with SPARK_Mode => On is
      (M_Len   : Natural;   --  length of Method
       Id_Len  : Natural;   --  length of Id
       TN_Len  : Natural;   --  length of Tool_Name
-      Arg_Len : Natural)   --  length of Arguments
+      Arg_Len : Natural;   --  length of Arguments
+      CN_Len  : Natural;   --  length of Client_Name
+      CV_Len  : Natural)   --  length of Client_Version
    is record
       Kind            : Parse_Result_Kind := Unimplemented;
       --  How decoding turned out; the fields below are meaningful only when
@@ -45,12 +47,22 @@ package Spark_Mcp.Requests with SPARK_Mode => On is
       Arguments       : String (1 .. Arg_Len);
       --  For method "tools/call": params.arguments as raw JSON text ("{}" when
       --  absent, supplied by the parser); handed opaquely to the tool's Invoke.
+
+      Client_Name     : String (1 .. CN_Len);
+      --  For method "initialize": params.clientInfo.name ("" otherwise, and ""
+      --  when the client sent none).
+
+      Client_Version  : String (1 .. CV_Len);
+      --  For method "initialize": params.clientInfo.version, verbatim ("" when
+      --  the client sent none). Uninterpreted here: what a version string means
+      --  is the application's business, reached through Server's Client_Meta.
    end record
    with Dynamic_Predicate =>
      --  A conforming Parse_Envelope must stay within the bound. The all-zero
      --  lengths of No_Parser and of every non-Parsed Kind trivially do.
      M_Len <= Max_Field and then Id_Len <= Max_Field
-     and then TN_Len <= Max_Field and then Arg_Len <= Max_Field;
+     and then TN_Len <= Max_Field and then Arg_Len <= Max_Field
+     and then CN_Len <= Max_Field and then CV_Len <= Max_Field;
    --  A decoded JSON-RPC 2.0 request. A non-Parsed envelope carries every
    --  *_Len => 0, since the error is framed from Kind alone.
 

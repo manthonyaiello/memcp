@@ -68,7 +68,7 @@ BODY_LOG="$TEST_TMP/bodies"
 OUT=$(run_start "$BODY_LOG")
 assert_not_contains "unmodified: no modification block" '<memcp-hook-modified' "$OUT"
 assert_match "unmodified: reports version and digest" \
-    '"version":"0\.2\.0\+[0-9a-f]{8}"' "$(cat "$BODY_LOG")"
+    "\"version\":\"$HOOK_VERSION_RE\\+[0-9a-f]{8}\"" "$(cat "$BODY_LOG")"
 
 # --- a hook edited in place -------------------------------------------------
 

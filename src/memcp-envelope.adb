@@ -30,15 +30,19 @@ package body Memcp.Envelope with SPARK_Mode => On is
 
    Bad_Json : constant Req.Envelope :=
      (M_Len   => 0, Id_Len  => 0, TN_Len => 0, Arg_Len => 0,
+      CN_Len  => 0, CV_Len  => 0,
       Kind    => Req.Bad_Json, Is_Notification => False,
-      Method  => "", Id => "", Tool_Name => "", Arguments => "");
+      Method  => "", Id => "", Tool_Name => "", Arguments => "",
+      Client_Name => "", Client_Version => "");
    --  The envelope for text that is not valid JSON: every length zero, so the
    --  error response is framed from Kind alone.
 
    Bad_Req  : constant Req.Envelope :=
      (M_Len   => 0, Id_Len  => 0, TN_Len => 0, Arg_Len => 0,
+      CN_Len  => 0, CV_Len  => 0,
       Kind    => Req.Bad_Request, Is_Notification => False,
-      Method  => "", Id => "", Tool_Name => "", Arguments => "");
+      Method  => "", Id => "", Tool_Name => "", Arguments => "",
+      Client_Name => "", Client_Version => "");
    --  The envelope for valid JSON that is not a JSON-RPC 2.0 request.
 
    ------------------
@@ -153,6 +157,9 @@ package body Memcp.Envelope with SPARK_Mode => On is
             --  Whether this is the one method that carries params.name and
             --  params.arguments.
 
+            Is_Init   : constant Boolean := (Method = "initialize");
+            --  Whether this is the one method that carries params.clientInfo.
+
             PV        : constant access constant Types.JSON_Value :=
               Obj_Member (Doc, "params");
             --  The "params" member, or null.
@@ -163,9 +170,22 @@ package body Memcp.Envelope with SPARK_Mode => On is
 
             AV        : constant access constant Types.JSON_Value :=
               Obj_Member (PV, "arguments");
-            --  params.arguments, or null. All three are fetched
-            --  unconditionally, with the Is_Call gate applied to the values
-            --  below, so no observe sits inside a conditional expression.
+            --  params.arguments, or null.
+
+            CIV       : constant access constant Types.JSON_Value :=
+              Obj_Member (PV, "clientInfo");
+            --  params.clientInfo, or null.
+
+            CNV       : constant access constant Types.JSON_Value :=
+              Obj_Member (CIV, "name");
+            --  params.clientInfo.name, or null.
+
+            CVV       : constant access constant Types.JSON_Value :=
+              Obj_Member (CIV, "version");
+            --  params.clientInfo.version, or null. Every member is fetched
+            --  unconditionally, with the Is_Call and Is_Init gates applied to
+            --  the values below, so no observe sits inside a conditional
+            --  expression.
 
             Tool_Name : constant String :=
               (if Is_Call and then NV /= null
@@ -176,10 +196,27 @@ package body Memcp.Envelope with SPARK_Mode => On is
             Args      : constant String :=
               (if Is_Call and then AV /= null then To_Json_Text (AV) else "{}");
             --  The tool arguments as raw JSON text, "{}" when absent.
+
+            CName     : constant String :=
+              (if Is_Init and then CNV /= null
+                 and then Types.Kind (CNV) = Types.String_Kind
+               then Types.Value (CNV) else "");
+            --  The client's name, or "" for any other method.
+
+            CVersion  : constant String :=
+              (if Is_Init and then CVV /= null
+                 and then Types.Kind (CVV) = Types.String_Kind
+               then Types.Value (CVV) else "");
+            --  The client's version, or "" for any other method. A non-string
+            --  version is dropped rather than rejected: clientInfo is
+            --  informational, and refusing the handshake over it would break a
+            --  client the server can otherwise serve.
          begin
             if Method'Length > Max_Field or else Id'Length > Max_Field
               or else Tool_Name'Length > Max_Field
               or else Args'Length > Max_Field
+              or else CName'Length > Max_Field
+              or else CVersion'Length > Max_Field
             then
                return Bad_Req;
             end if;
@@ -187,9 +224,12 @@ package body Memcp.Envelope with SPARK_Mode => On is
             return
               (M_Len     => Method'Length,     Id_Len  => Id'Length,
                TN_Len    => Tool_Name'Length,  Arg_Len => Args'Length,
+               CN_Len    => CName'Length,      CV_Len  => CVersion'Length,
                Kind      => Req.Parsed,        Is_Notification => Is_Notif,
                Method    => Method,            Id => Id,
-               Tool_Name => Tool_Name,         Arguments => Args);
+               Tool_Name => Tool_Name,         Arguments => Args,
+               Client_Name    => CName,
+               Client_Version => CVersion);
          end;
       end;
    end Decode;

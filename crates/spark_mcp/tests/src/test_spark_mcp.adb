@@ -89,6 +89,12 @@ procedure Test_Spark_Mcp is
       end case;
    end Invoke;
 
+   function No_Meta (Client_Name, Client_Version : String) return String is
+     ("");
+   --  A Client_Meta that says nothing about any client, so `initialize` carries
+   --  no `_meta`. Here rather than in the crate: nothing shipped omits the
+   --  actual, so a default in the library would be code no product runs.
+
    --  The core instantiated over the fake tool set, with the default parser:
    --  Respond is driven directly, so no JSON library is involved.
    package MCP is new Spark_Mcp.Server
@@ -99,7 +105,8 @@ procedure Test_Spark_Mcp is
       Name           => Name,
       Description     => Description,
       Input_Schema   => Input_Schema,
-      Invoke         => Invoke);
+      Invoke         => Invoke,
+      Client_Meta    => No_Meta);
 
    function Respond_Str
      (Method          : String;
@@ -183,6 +190,10 @@ begin
       --  Instructions with a newline and a quote must be escaped.
       Check_Has (R, """instructions"":""line one\nline \""two\""""",
                  "initialize: instructions escaped");
+      --  A Client_Meta with nothing to say leaves `_meta` off entirely, rather
+      --  than emitting an empty object.
+      Check (Ada.Strings.Fixed.Index (R, "_meta") = 0,
+             "initialize: a silent Client_Meta emits no _meta");
    end;
 
    -------------------------------------------------------------------------
