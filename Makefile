@@ -74,26 +74,15 @@ prove-deps: ## Provision proof inputs (Ada libs + C sources), no cargo, no exe l
 prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 	ALR="$(ALR)" ./scripts/check-proof.sh
 
-# Spark_Mcp.Server is generic, so its body is analyzed only through an
-# instantiation. memcp.gpr's closure supplies one -- the real composition root,
-# over the json parser -- and `prove` above therefore discharges the routing
-# body's obligations for that instance alone. This target discharges them for a
-# second, independent one: crates/spark_mcp/prove/, a proof-only instantiation
-# over a two-tool set and no parser, so the generic is proved as a reusable
-# component rather than as memcp's copy of it.
+# Spark_Mcp.Server is generic: its body is analyzed only through an
+# instantiation, and memcp.gpr's closure supplies only memcp's own. This proves
+# it through the second, parser-free one in crates/spark_mcp/prove/.
 #
-# No allowlist and no wrapper script: the harness has nothing unproved, so
-# gnatprove's own exit status is the whole gate -- but only with BOTH of
-# --checks-as-errors and --warnings=error, since an unproved check alone leaves
-# the status at 0. GNATPROVE_EXTRA is honoured for parity with check-proof.sh
-# (CI passes a --timeout there).
+# Both --checks-as-errors and --warnings=error: an unproved check alone exits 0.
 prove-mcp: prove-mcp-deps ## Prove the reusable MCP core via its proof harness (CI gate)
 	cd $(MCP) && $(ALR) exec -- gnatprove -P spark_mcp_prove.gpr \
-	  -j0 --level=2 --checks-as-errors=on --warnings=error $(GNATPROVE_EXTRA)
+	  -j0 --level=2 --checks-as-errors=on --warnings=error
 
-# spark_mcp_prove.gpr withs only the crate's generated config project, so this
-# is the whole provisioning step: no library to build, no C to vendor, and
-# --stop-after=generation is before the pre-build stage, so cargo never runs.
 prove-mcp-deps: ## Provision the MCP proof inputs (config GPR only, no cargo)
 	cd $(MCP) && $(ALR) build --stop-after=generation
 

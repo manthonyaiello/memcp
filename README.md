@@ -351,12 +351,6 @@ make prove-mcp     # the same, for the reusable MCP core on its own
 The whole `memcp` crate is `SPARK_Mode => On` and proves to **Silver** (Absence
 of Runtime Errors) at `--level=2`, with no unproved and no justified checks.
 
-`Spark_Mcp.Server` is generic, so its body is analysed only through an
-instantiation. `make prove` reaches it through memcp's — the one over the JSON
-parser — and `make prove-mcp` through a proof-only instantiation in
-`crates/spark_mcp/prove/`, over a two-tool set and no parser. Both are CI gates,
-so the core is proved as a reusable component and not only as memcp's copy of it.
-
 ### Trust surface
 
 ```sh
