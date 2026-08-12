@@ -12,9 +12,11 @@
 ALR      ?= alr
 GPRBUILD  = $(ALR) exec -- gprbuild -p
 MODEL     = crates/candle_spark/scripts/install-model.sh
+MCP       = crates/spark_mcp
 
 .PHONY: all build run model test test-hooks hook-version prove prove-deps \
-        prove-check docs docs-check docs-placement trust trust-check clean help
+        prove-check prove-mcp prove-mcp-deps docs docs-check docs-placement \
+        trust trust-check clean help
 
 all: build
 
@@ -71,6 +73,18 @@ prove-deps: ## Provision proof inputs (Ada libs + C sources), no cargo, no exe l
 
 prove-check: ## Prove + gate against the expected-failure baseline (CI gate)
 	ALR="$(ALR)" ./scripts/check-proof.sh
+
+# Spark_Mcp.Server is generic: its body is analyzed only through an
+# instantiation, and memcp.gpr's closure supplies only memcp's own. This proves
+# it through the second, parser-free one in crates/spark_mcp/prove/.
+#
+# Both --checks-as-errors and --warnings=error: an unproved check alone exits 0.
+prove-mcp: prove-mcp-deps ## Prove the reusable MCP core via its proof harness (CI gate)
+	cd $(MCP) && $(ALR) exec -- gnatprove -P spark_mcp_prove.gpr \
+	  -j0 --level=2 --checks-as-errors=on --warnings=error
+
+prove-mcp-deps: ## Provision the MCP proof inputs (config GPR only, no cargo)
+	cd $(MCP) && $(ALR) build --stop-after=generation
 
 # GNATdoc (issue #22). The same report/gate split as prove/prove-check, and for
 # the same underlying reason: `gnatdoc --warnings` lists every undocumented

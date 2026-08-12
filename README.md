@@ -345,6 +345,7 @@ port with the real `curl`.
 
 ```sh
 make prove         # gnatprove -P memcp.gpr -j0 --level=2
+make prove-mcp     # the same, for the reusable MCP core on its own
 ```
 
 The whole `memcp` crate is `SPARK_Mode => On` and proves to **Silver** (Absence

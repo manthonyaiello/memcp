@@ -11,6 +11,7 @@ name: CI
 #
 #     trust --+--> docs --> build-test (both platforms)
 #     hooks --+        --> prove
+#                      --> prove-mcp
 #
 # Neither root needs a toolchain — `trust` is grep over `git ls-files`, `hooks`
 # is bash + curl + jq over the hook scripts — so they are the cheapest signals
@@ -204,3 +205,27 @@ jobs:
     with:
       restore: true
       save: ${{ github.ref == 'refs/heads/main' }}
+
+  # The `prove` job reaches Spark_Mcp.Server's body only through memcp's
+  # instantiation; this one reaches it through the crate's own, parser-free
+  # instantiation. Separate jobs because they answer different questions and a
+  # reader wants to see which one went red. No cache; this proof is fast.
+  prove-mcp:
+    name: Prove MCP core (SPARK Silver, Linux)
+    needs: docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Alire toolchain
+        uses: ./.github/actions/setup-alire
+
+      # sparklib 16.1.0 forbids gnatprove < 16.
+      - name: Install GNATprove
+        run: |
+          alr -n install gnatprove^16
+          echo "$HOME/.alire/bin" >> "$GITHUB_PATH"
+
+      - name: Prove
+        run: make prove-mcp

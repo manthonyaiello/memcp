@@ -60,7 +60,8 @@ package Proof_Harness with SPARK_Mode => On is
       Tool_Name       => "",
       Arguments       => "",
       Client_Name     => "",
-      Client_Version  => "");
+      Client_Version  => "")
+   with Depends => (No_Parser'Result => null, null => Request);
    --  A Parse_Envelope that decodes nothing: Dispatch's obligations are the
    --  same whatever the parser returns, and this keeps the harness free of a
    --  JSON dependency.
@@ -68,11 +69,17 @@ package Proof_Harness with SPARK_Mode => On is
    --  @return An Envelope with Kind => Unimplemented and every *_Len => 0.
 
    function No_Meta (Client_Name, Client_Version : String) return String is
-     ("");
+     ("")
+   with Depends =>
+     (No_Meta'Result => null, null => (Client_Name, Client_Version));
    --  A Client_Meta that says nothing, so `initialize` carries no `_meta`.
    --  @param Client_Name The client's reported name.
    --  @param Client_Version The client's reported version.
    --  @return "", adding no members.
+
+   pragma Warnings (Off, "unused initial value of ""Request""");
+   --  No_Parser reads nothing, so Dispatch's Request reaches no output in this
+   --  instance. The dead parameter is the harness's, not the library's.
 
    package MCP is new Spark_Mcp.Server
      (Server_Name    => "memcp",
@@ -86,5 +93,7 @@ package Proof_Harness with SPARK_Mode => On is
       Parse_Envelope => No_Parser,
       Client_Meta    => No_Meta);
    --  The instantiation under proof.
+
+   pragma Warnings (On, "unused initial value of ""Request""");
 
 end Proof_Harness;
