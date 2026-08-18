@@ -156,6 +156,17 @@ fi
 
 ENTRIES='[{"created_at":"2026-08-01T09:00:00Z","kind":"diary","headline":"first headline"},{"created_at":"2026-08-02T09:00:00Z","kind":"autorecap","headline":"second headline"}]'
 
+FINDINGS='[{"surface":"otherbox","surface_id":"u-1","sessions":20,"missing_transcript":9},{"surface":null,"surface_id":null,"sessions":6,"missing_transcript":6}]'
+
+WARNING='unattributed call: no surface argument, so memcp cannot record which machine this session runs on.'
+
+# Assembled by assignment rather than inline: an unquoted `{...,...}` in an
+# argument is a brace expansion, and the shell would hand printf two words.
+RESULT_HEALTHY="{\"entries\":$ENTRIES,\"findings\":[]}"
+RESULT_EMPTY='{"entries":[],"findings":[]}'
+RESULT_DEGRADED="{\"entries\":$ENTRIES,\"findings\":$FINDINGS}"
+RESULT_UNATTRIBUTED="{\"entries\":$ENTRIES,\"findings\":[],\"warning\":\"$WARNING\"}"
+
 # The `_meta` members memcp adds to an initialize result, given
 # MEMCP_TEST_SERVER_HOOK_VERSION as the release this stub server shipped with.
 # The comparison is made here rather than fed in as a verdict, so the hook is
@@ -217,9 +228,17 @@ case "$scenario" in
     tool-is-error)
         printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"database is locked"}],"isError":true}}' ;;
     no-entries)
-        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' "$(tool_result '[]')" ;;
+        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' \
+            "$(tool_result "$RESULT_EMPTY")" ;;
+    degraded)
+        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' \
+            "$(tool_result "$RESULT_DEGRADED")" ;;
+    unattributed)
+        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' \
+            "$(tool_result "$RESULT_UNATTRIBUTED")" ;;
     *)
-        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' "$(tool_result "$ENTRIES")" ;;
+        printf '{"jsonrpc":"2.0","id":2,"result":%s}\n' \
+            "$(tool_result "$RESULT_HEALTHY")" ;;
 esac
 exit 0
 STUB

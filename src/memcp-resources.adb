@@ -105,6 +105,43 @@ package body Memcp.Resources with SPARK_Mode => On is
       MS.List_Projects (R.The_Store, Result, Status);
    end List_Projects;
 
+   -----------------------
+   -- Degraded_Surfaces --
+   -----------------------
+
+   procedure Degraded_Surfaces
+     (R      : Resources;
+      Result : out MS.Surface_Health_List;
+      Status : out MS.Op_Status)
+   is
+   begin
+      if not Is_Open (R) then
+         Result := MS.Surface_Health_Vectors.Empty_Vector;
+         Status := MS.Db_Error;
+         return;
+      end if;
+      MS.Degraded_Surfaces
+        (R.The_Store, MS.Health_Window, MS.Health_Threshold, Result, Status);
+   end Degraded_Surfaces;
+
+   -------------------
+   -- Touch_Surface --
+   -------------------
+
+   procedure Touch_Surface
+     (R      : Resources;
+      Uuid   : String;
+      Label  : String;
+      Status : out MS.Op_Status)
+   is
+   begin
+      if not Is_Open (R) then
+         Status := MS.Db_Error;
+         return;
+      end if;
+      MS.Touch_Surface (R.The_Store, Uuid, Label, Status);
+   end Touch_Surface;
+
    -------------------
    -- Fetch_Summary --
    -------------------

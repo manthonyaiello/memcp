@@ -114,6 +114,30 @@ package Memcp.Resources with SPARK_Mode => On is
    --  @param Result The per-project information records.
    --  @param Status Outcome of the query (Db_Error on failure).
 
+   procedure Degraded_Surfaces
+     (R      : Resources;
+      Result : out MS.Surface_Health_List;
+      Status : out MS.Op_Status)
+     with Global => (In_Out => Sqlite_Vec_Spark.DBMS);
+   --  Report the surfaces whose sessions are saving summaries without
+   --  uploading transcripts, over Memcp.Store's Health_Window and
+   --  Health_Threshold.
+   --  @param R The resources holding the store.
+   --  @param Result One record per degraded surface; empty means healthy.
+   --  @param Status Outcome of the query (Db_Error on failure).
+
+   procedure Touch_Surface
+     (R      : Resources;
+      Uuid   : String;
+      Label  : String;
+      Status : out MS.Op_Status)
+     with Global => (In_Out => Sqlite_Vec_Spark.DBMS);
+   --  Record a surface as in use now, without it having written anything.
+   --  @param R The resources holding the store.
+   --  @param Uuid The surface's UUID; empty does nothing.
+   --  @param Label The surface's label.
+   --  @param Status Outcome of the write (Db_Error on failure).
+
    procedure Fetch_Summary
      (R      : Resources;
       Id     : MS.Row_Id;

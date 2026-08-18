@@ -220,9 +220,9 @@ begin
       Check_Has (R, """id"":3", "tools/call: id echoed");
       Check_Has (R, """isError"":false",
                  "tools/call: reaches the tool (success)");
-      --  An explicit empty 'projects' over an empty store yields "[]", so the
-      --  name routed to recent and its arguments parsed.
-      Check_Has (R, """text"":""[]""",
+      --  An explicit empty 'projects' over an empty store yields an empty
+      --  `entries`, so the name routed to recent and its arguments parsed.
+      Check_Has (R, "entries\"":[]",
                  "tools/call: tool NAME extracted, routed to recent");
    end;
 
@@ -245,8 +245,8 @@ begin
    end;
 
    -------------------------------------------------------------------------
-   --  tools/call, fetch_summary miss -- a benign one-line message, not a bare
-   --  "null" block. The store is empty, so any id misses.
+   --  tools/call, fetch_summary miss -- a result object whose entry is null,
+   --  not an error. The store is empty, so any id misses.
    -------------------------------------------------------------------------
    declare
       R : constant String := Dispatch_Str
@@ -255,8 +255,8 @@ begin
          & """arguments"":{""summary_id"":1}}}");
    begin
       Check_Has (R, """isError"":false", "fetch_summary miss: not an error");
-      Check_Has (R, """text"":""No summary found for id 1.""",
-                 "fetch_summary miss: one-line message, not null");
+      Check_Has (R, "entry\"":null",
+                 "fetch_summary miss: a null entry, not a bare sentence");
    end;
 
    Check_Has

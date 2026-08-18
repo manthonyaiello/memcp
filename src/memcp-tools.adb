@@ -659,20 +659,103 @@ package body Memcp.Tools with SPARK_Mode => On is
       Did := False;
    end Salvage;
 
-   ----------------------
-   -- List serializers --
-   ----------------------
+   ------------------------
+   -- The result surface --
+   ------------------------
 
-   --  Each builds its JSON array into the caller's bounded Memcp.Text builder;
-   --  OK (Buf) then emits it only if the field budget held.
+   --  What every tool's answer is made of: the surface argument it was given,
+   --  the object it is wrapped in, and the serializer for its payload. Each
+   --  serializer appends into the caller's bounded Memcp.Text builder between
+   --  Open_Result and Close_Result; OK (Buf) then emits the whole only if the
+   --  field budget held.
 
-   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp.Text.Builder);
-   --  Render the diary Headers V into Buf as a JSON array.
+   function Surface_Sep (Arg : String) return Natural
+     with Post => Surface_Sep'Result = 0
+                  or else (Surface_Sep'Result > Arg'First
+                           and then Surface_Sep'Result < Arg'Last);
+   --  Index of the separator in a `label:id` surface argument, or 0 when Arg
+   --  does not carry both halves. The label is a host name, so the first colon
+   --  is the separator.
 
-   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : out Memcp.Text.Builder)
-   is
+   function Surface_Sep (Arg : String) return Natural is
+   begin
+      for I in Arg'Range loop
+         if Arg (I) = ':' then
+            return (if I > Arg'First and then I < Arg'Last then I else 0);
+         end if;
+      end loop;
+      return 0;
+   end Surface_Sep;
+
+   No_Surface_Warning : constant String :=
+     "unattributed call: no surface argument, so memcp cannot record which "
+     & "machine this session runs on, and nothing it writes can be traced to "
+     & "one. The memcp SessionStart hook did not run here, or is too old to "
+     & "inject a surface. Diagnose with `doctor`, or reinstall the hooks from "
+     & "a memcp checkout (scripts/hooks/deploy.sh) -- and tell the user.";
+   --  Warning returned alongside a successful call that carried no surface.
+   --  Every tool warns, not only the writes: a surface whose hook never ran
+   --  may never save anything, and its first read is the earliest moment the
+   --  fault can be raised.
+
+   Bad_Surface_Warning : constant String :=
+     "unattributed call: the surface argument is not the `label:id` the memcp "
+     & "SessionStart hook injects, so it was discarded. Pass the injected "
+     & "value verbatim. Diagnose with `doctor`, or reinstall the hooks from a "
+     & "memcp checkout (scripts/hooks/deploy.sh) -- and tell the user.";
+   --  Warning returned alongside a successful call whose surface argument
+   --  could not be split.
+
+   function Surface_Warning (Arg : String) return String is
+     (if Arg'Length = 0 then ",""warning"":""" & No_Surface_Warning & """"
+      elsif Surface_Sep (Arg) = 0
+      then ",""warning"":""" & Bad_Surface_Warning & """"
+      else "");
+   --  The trailing `,"warning":...` member for a call whose surface argument
+   --  was Arg, or the empty string when it was usable. Neither warning carries
+   --  a character JSON would escape.
+
+   function Surface_Id (Arg : String) return String is
+     (if Surface_Sep (Arg) = 0 then ""
+      else Arg (Surface_Sep (Arg) + 1 .. Arg'Last));
+   --  The id half of a `label:id` surface argument; empty when unusable.
+
+   function Surface_Label (Arg : String) return String is
+     (if Surface_Sep (Arg) = 0 then ""
+      else Arg (Arg'First .. Surface_Sep (Arg) - 1));
+   --  The label half of a `label:id` surface argument; empty when unusable.
+
+   procedure Open_Result (Buf : out Memcp.Text.Builder; Key : String);
+   --  Start a result object whose payload is the single member Key, leaving
+   --  the builder positioned for that member's value. Every tool answers with
+   --  an object rather than a bare array so that a warning has somewhere to
+   --  go on a healthy result as well as a degraded one.
+
+   procedure Open_Result (Buf : out Memcp.Text.Builder; Key : String) is
    begin
       Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "{""");
+      Memcp.Text.Add (Buf, Key);
+      Memcp.Text.Add (Buf, """:");
+   end Open_Result;
+
+   procedure Close_Result (Buf : in out Memcp.Text.Builder; Surface : String);
+   --  Close a result object opened by Open_Result, appending the warning its
+   --  Surface argument earns.
+
+   procedure Close_Result (Buf : in out Memcp.Text.Builder; Surface : String)
+   is
+   begin
+      Memcp.Text.Add (Buf, Surface_Warning (Surface));
+      Memcp.Text.Add (Buf, "}");
+   end Close_Result;
+
+   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : in out Memcp.Text.Builder);
+   --  Render the diary Headers V into Buf as a JSON array.
+
+   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : in out Memcp.Text.Builder)
+   is
+   begin
       Memcp.Text.Add (Buf, "[");
       for I in MS.Diary_Vectors.First_Index (V)
                .. MS.Diary_Vectors.Last_Index (V)
@@ -705,14 +788,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Diary;
 
    procedure Ser_Projects
-     (V : MS.Project_Info_List; Buf : out Memcp.Text.Builder);
+     (V : MS.Project_Info_List; Buf : in out Memcp.Text.Builder);
    --  Render the project rows V into Buf as a JSON array.
 
    procedure Ser_Projects
-     (V : MS.Project_Info_List; Buf : out Memcp.Text.Builder)
+     (V : MS.Project_Info_List; Buf : in out Memcp.Text.Builder)
    is
    begin
-      Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
       for I in MS.Project_Vectors.First_Index (V)
                .. MS.Project_Vectors.Last_Index (V)
@@ -737,14 +819,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Projects;
 
    procedure Ser_Summary_Hits
-     (V : MS.Summary_Hit_List; Buf : out Memcp.Text.Builder);
+     (V : MS.Summary_Hit_List; Buf : in out Memcp.Text.Builder);
    --  Render the summary search hits V into Buf as a JSON array.
 
    procedure Ser_Summary_Hits
-     (V : MS.Summary_Hit_List; Buf : out Memcp.Text.Builder)
+     (V : MS.Summary_Hit_List; Buf : in out Memcp.Text.Builder)
    is
    begin
-      Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
       for I in MS.Summary_Hit_Vectors.First_Index (V)
                .. MS.Summary_Hit_Vectors.Last_Index (V)
@@ -778,14 +859,13 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Summary_Hits;
 
    procedure Ser_Chunk_Hits
-     (V : MS.Chunk_Hit_List; Buf : out Memcp.Text.Builder);
+     (V : MS.Chunk_Hit_List; Buf : in out Memcp.Text.Builder);
    --  Render the chunk search hits V into Buf as a JSON array.
 
    procedure Ser_Chunk_Hits
-     (V : MS.Chunk_Hit_List; Buf : out Memcp.Text.Builder)
+     (V : MS.Chunk_Hit_List; Buf : in out Memcp.Text.Builder)
    is
    begin
-      Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
       for I in MS.Chunk_Hit_Vectors.First_Index (V)
                .. MS.Chunk_Hit_Vectors.Last_Index (V)
@@ -819,15 +899,14 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Ser_Chunk_Hits;
 
    procedure Ser_Turns
-     (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp.Text.Builder);
+     (V : MS.Chunk_List; Session_Id : String; Buf : in out Memcp.Text.Builder);
    --  Render the turns V into Buf as a JSON array. Session_Id comes from the
    --  request, the Chunk record having no session field of its own.
 
    procedure Ser_Turns
-     (V : MS.Chunk_List; Session_Id : String; Buf : out Memcp.Text.Builder)
+     (V : MS.Chunk_List; Session_Id : String; Buf : in out Memcp.Text.Builder)
    is
    begin
-      Memcp.Text.Reset (Buf);
       Memcp.Text.Add (Buf, "[");
       for I in MS.Chunk_Vectors.First_Index (V)
                .. MS.Chunk_Vectors.Last_Index (V)
@@ -853,6 +932,60 @@ package body Memcp.Tools with SPARK_Mode => On is
       end loop;
       Memcp.Text.Add (Buf, "]");
    end Ser_Turns;
+
+   procedure Ser_Findings
+     (V : MS.Surface_Health_List; Buf : in out Memcp.Text.Builder);
+   --  Render the degraded surfaces V into Buf as a JSON array. A group whose
+   --  sessions carried no identity comes out with a null `surface`: the
+   --  sessions are real and countable, the machine that ran them is not
+   --  knowable from here.
+
+   procedure Ser_Findings
+     (V : MS.Surface_Health_List; Buf : in out Memcp.Text.Builder)
+   is
+   begin
+      Memcp.Text.Add (Buf, "[");
+      for I in MS.Surface_Health_Vectors.First_Index (V)
+               .. MS.Surface_Health_Vectors.Last_Index (V)
+      loop
+         declare
+            E : constant MS.Surface_Health :=
+              MS.Surface_Health_Vectors.Element (V, I);
+         begin
+            if I > MS.Surface_Health_Vectors.First_Index (V) then
+               Memcp.Text.Add (Buf, ",");
+            end if;
+            Memcp.Text.Add (Buf, "{""surface"":");
+            Memcp.Text.Add (Buf, (if E.Attributed then Q (E.Label) else "null"));
+            Memcp.Text.Add (Buf, ",""surface_id"":");
+            Memcp.Text.Add (Buf, (if E.Attributed then Q (E.Uuid) else "null"));
+            Memcp.Text.Add (Buf, ",""sessions"":");
+            Memcp.Text.Add (Buf, N (E.Sessions));
+            Memcp.Text.Add (Buf, ",""missing_transcript"":");
+            Memcp.Text.Add (Buf, N (E.Missing));
+            Memcp.Text.Add (Buf, "}");
+         end;
+      end loop;
+      Memcp.Text.Add (Buf, "]");
+   end Ser_Findings;
+
+   procedure Check_In (R : MR.Resources; Surface : String);
+   --  Note that Surface is in use now. Best effort: a store failure here is
+   --  logged and not returned, since recording the caller is not what the
+   --  caller asked for.
+
+   procedure Check_In (R : MR.Resources; Surface : String) is
+      St : MS.Op_Status;
+   begin
+      if Surface_Sep (Surface) = 0 then
+         return;
+      end if;
+      MR.Touch_Surface
+        (R, Surface_Id (Surface), Surface_Label (Surface), St);
+      if St /= MS.Success then
+         Memcp.Log.Error ("recent: the surface check-in was not recorded");
+      end if;
+   end Check_In;
 
    -----------
    -- Embed --
@@ -927,7 +1060,9 @@ package body Memcp.Tools with SPARK_Mode => On is
    is
       D       : MJ.Doc;
       Entries : MS.Diary_Entry_List;
+      Health  : MS.Surface_Health_List;
       St      : MS.Op_Status;
+      Hst     : MS.Op_Status;
       Buf     : Memcp.Text.Builder;
    begin
       MJ.Open (D, Arguments);
@@ -936,90 +1071,66 @@ package body Memcp.Tools with SPARK_Mode => On is
          --  silent empty result. An explicit empty array still yields [].
          Result := Err (Invalid_Params, "recent: 'projects' is required");
       else
-         MR.Recent_Diary
-           (R, MJ.Get_Names (D, "projects"), To_Nat (MJ.Get_Int (D, "n", 5)),
-            Entries, St);
-         if St = MS.Success then
-            Ser_Diary (Entries, Buf);
-            Result := OK (Buf);
-         else
-            Result := Err (Internal_Error, "recent: store error");
-         end if;
+         declare
+            Surf : constant String := MJ.Get_Str (D, "surface");
+         begin
+            MR.Recent_Diary
+              (R, MJ.Get_Names (D, "projects"),
+               To_Nat (MJ.Get_Int (D, "n", 5)), Entries, St);
+            if St = MS.Success then
+               --  The SessionStart hook calls `recent` once per session, so
+               --  this is where a surface is recorded as still working. No
+               --  other tool does it: a surface that only ever reads has not
+               --  started a session here.
+               Check_In (R, Surf);
+               MR.Degraded_Surfaces (R, Health, Hst);
+               Open_Result (Buf, "entries");
+               Ser_Diary (Entries, Buf);
+               Memcp.Text.Add (Buf, ",""findings"":");
+               if Hst = MS.Success then
+                  Ser_Findings (Health, Buf);
+               else
+                  --  An empty list and a failed query read alike from here,
+                  --  so the failure goes to the log. Failing the whole call
+                  --  over it would cost the caller its diary as well.
+                  Memcp.Text.Add (Buf, "[]");
+                  Memcp.Log.Error ("recent: degraded-surface query failed");
+               end if;
+               Close_Result (Buf, Surf);
+               Result := OK (Buf);
+            else
+               Result := Err (Internal_Error, "recent: store error");
+            end if;
+         end;
       end if;
       MJ.Close (D);
    end Do_Recent;
 
    procedure Do_List_Projects
-     (R : MR.Resources; Result : out Result_Ptr);
-   --  list_projects: every project the store has seen. Takes no arguments.
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  list_projects: every project the store has seen. Takes no arguments but
+   --  the surface every tool takes.
 
    procedure Do_List_Projects
-     (R : MR.Resources; Result : out Result_Ptr)
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
+      D     : MJ.Doc;
       Projs : MS.Project_Info_List;
       St    : MS.Op_Status;
       Buf   : Memcp.Text.Builder;
    begin
+      MJ.Open (D, Arguments);
       MR.List_Projects (R, Projs, St);
       if St = MS.Success then
+         Open_Result (Buf, "entries");
          Ser_Projects (Projs, Buf);
+         Close_Result (Buf, MJ.Get_Str (D, "surface"));
          Result := OK (Buf);
       else
          Result := Err (Internal_Error, "list_projects: store error");
       end if;
+      MJ.Close (D);
    end Do_List_Projects;
-
-   function Surface_Sep (Arg : String) return Natural
-     with Post => Surface_Sep'Result = 0
-                  or else (Surface_Sep'Result > Arg'First
-                           and then Surface_Sep'Result < Arg'Last);
-   --  Index of the separator in a `label:id` surface argument, or 0 when Arg
-   --  does not carry both halves. The label is a host name, so the first colon
-   --  is the separator.
-
-   function Surface_Sep (Arg : String) return Natural is
-   begin
-      for I in Arg'Range loop
-         if Arg (I) = ':' then
-            return (if I > Arg'First and then I < Arg'Last then I else 0);
-         end if;
-      end loop;
-      return 0;
-   end Surface_Sep;
-
-   No_Surface_Warning : constant String :=
-     "unattributed write: no surface argument, so memcp cannot record which "
-     & "machine this came from. The memcp SessionStart hook did not run, or "
-     & "is too old to inject one -- tell the user.";
-   --  Warning returned alongside a successful write that carried no surface.
-   --  Refusing the write instead would turn silent data loss into loud data
-   --  loss.
-
-   Bad_Surface_Warning : constant String :=
-     "unattributed write: the surface argument is not the `label:id` the "
-     & "memcp SessionStart hook injects, so it was discarded. Pass the "
-     & "injected value verbatim.";
-   --  Warning returned alongside a successful write whose surface argument
-   --  could not be split.
-
-   function Surface_Warning (Arg : String) return String is
-     (if Arg'Length = 0 then ",""warning"":""" & No_Surface_Warning & """"
-      elsif Surface_Sep (Arg) = 0
-      then ",""warning"":""" & Bad_Surface_Warning & """"
-      else "");
-   --  The trailing `,"warning":...` member for a write whose surface argument
-   --  was Arg, or the empty string when it was usable. Neither warning carries
-   --  a character JSON would escape.
-
-   function Surface_Id (Arg : String) return String is
-     (if Surface_Sep (Arg) = 0 then ""
-      else Arg (Surface_Sep (Arg) + 1 .. Arg'Last));
-   --  The id half of a `label:id` surface argument; empty when unusable.
-
-   function Surface_Label (Arg : String) return String is
-     (if Surface_Sep (Arg) = 0 then ""
-      else Arg (Arg'First .. Surface_Sep (Arg) - 1));
-   --  The label half of a `label:id` surface argument; empty when unusable.
 
    procedure Do_Save
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
@@ -1143,7 +1254,9 @@ package body Memcp.Tools with SPARK_Mode => On is
             MR.Forget_Summary
               (R, MS.Row_Id (MJ.Get_Int (D, "summary_id", 0)), Deleted, St);
             if St = MS.Success then
-               Result := OK ("{""deleted"":" & B (Deleted) & "}");
+               Result := OK
+                 ("{""deleted"":" & B (Deleted)
+                  & Surface_Warning (MJ.Get_Str (D, "surface")) & "}");
             else
                Result := Err (Internal_Error, "forget: store error");
             end if;
@@ -1201,7 +1314,9 @@ package body Memcp.Tools with SPARK_Mode => On is
                      Result    => Hits,
                      Status    => St);
                   if St = MS.Success then
+                     Open_Result (Buf, "entries");
                      Ser_Summary_Hits (Hits, Buf);
+                     Close_Result (Buf, MJ.Get_Str (D, "surface"));
                      Result := OK (Buf);
                   else
                      Result := Err (Internal_Error, "search: store error");
@@ -1238,14 +1353,21 @@ package body Memcp.Tools with SPARK_Mode => On is
                Result := Err (Internal_Error, "fetch_summary: store error");
             elsif Ptr = null then
                --  A miss is a valid negative answer, not a failure.
-               Result := OK ("No summary found for id " & N (Id) & ".");
+               declare
+                  Buf : Memcp.Text.Builder;
+               begin
+                  Open_Result (Buf, "entry");
+                  Memcp.Text.Add (Buf, "null");
+                  Close_Result (Buf, MJ.Get_Str (D, "surface"));
+                  Result := OK (Buf);
+               end;
             else
                --  Through the bounded builder: the body field can be large, so
                --  a raw concatenation could not be bounded.
                declare
                   Buf : Memcp.Text.Builder;
                begin
-                  Memcp.Text.Reset (Buf);
+                  Open_Result (Buf, "entry");
                   Memcp.Text.Add (Buf, "{""summary_id"":");
                   Memcp.Text.Add (Buf, N (Ptr.Id));
                   Memcp.Text.Add (Buf, ",""project"":");
@@ -1263,6 +1385,7 @@ package body Memcp.Tools with SPARK_Mode => On is
                   Memcp.Text.Add (Buf, ",""kind"":");
                   Memcp.Text.Add (Buf, Q (Ptr.Kind));
                   Memcp.Text.Add (Buf, "}");
+                  Close_Result (Buf, MJ.Get_Str (D, "surface"));
                   Result := OK (Buf);
                end;
             end if;
@@ -1323,7 +1446,9 @@ package body Memcp.Tools with SPARK_Mode => On is
                      Result      => Hits,
                      Status      => St);
                   if St = MS.Success then
+                     Open_Result (Buf, "entries");
                      Ser_Chunk_Hits (Hits, Buf);
+                     Close_Result (Buf, MJ.Get_Str (D, "surface"));
                      Result := OK (Buf);
                   else
                      Result := Err (Internal_Error, "fetch_chunks: store error");
@@ -1397,7 +1522,9 @@ package body Memcp.Tools with SPARK_Mode => On is
                   Result      => Turns,
                   Status      => St);
                if St = MS.Success then
+                  Open_Result (Buf, "entries");
                   Ser_Turns (Turns, Session, Buf);
+                  Close_Result (Buf, MJ.Get_Str (D, "surface"));
                   Result := OK (Buf);
                else
                   Result := Err (Internal_Error, "fetch_turns: store error");
@@ -1620,7 +1747,7 @@ package body Memcp.Tools with SPARK_Mode => On is
 
       case Id is
          when Recent         => Do_Recent (R, Arguments, Result);
-         when List_Projects  => Do_List_Projects (R, Result);
+         when List_Projects  => Do_List_Projects (R, Arguments, Result);
          when Save           => Do_Save (R, Arguments, Result);
          when Forget         => Do_Forget (R, Arguments, Result);
          when Search         => Do_Search (R, Arguments, Result);

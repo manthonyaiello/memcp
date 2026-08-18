@@ -183,9 +183,11 @@ first-turn context. On `source=resume` and `source=compact` the diary listing
 is skipped — the model already has that context — but the key is still injected,
 because a compaction can drop it.
 
-Summaries and sessions record the surface they came from. A write that carries
-no surface, or one that is not `label:id`, still lands and comes back with a
-warning saying so.
+Summaries and sessions record the surface they came from. Every tool takes that
+surface, reads included, and a call that arrives without one — or with one that
+is not `label:id` — is served anyway, with a warning saying so. A surface where
+SessionStart never ran cannot produce the value, so its absence is the report,
+and a read is the earliest moment in a session that can carry it.
 
 **SessionEnd** base64-encodes the transcript at `transcript_path` and uploads
 it via the `upload_session` tool. The server writes the raw transcript to
@@ -243,6 +245,15 @@ one it shipped with, and on a mismatch SessionStart emits a block that prompts
 the agent to alert the user that the hooks are stale and how to resolve the
 problem. SessionEnd logs the same verdict to `MEMCP_HOOK_LOG`.
 
+### When a surface stops uploading
+
+`recent` answers with `findings` alongside its `entries`: surfaces whose recent
+sessions saved a summary that no transcript ever followed, which is what a
+SessionEnd hook that has stopped running looks like from the corpus. They are
+fleet-wide, so a surface that cannot report on itself is reported by every
+other one, and they are computed per call and stored nowhere. SessionStart
+renders them as a `<memcp-hook-degraded>` block.
+
 ### Surface identity
 
 `install.sh` mints a UUID and a label for the machine, once, and records the
@@ -257,7 +268,7 @@ In-session tools (call from inside a Claude Code session via the MCP server):
 | Tool | Purpose |
 | --- | --- |
 | `list_projects` | Enumerate known projects with diary counts and latest activity; use to discover scopes for `recent` / `search` |
-| `recent` | N most recent Headers for the given projects (includes `kind`) |
+| `recent` | N most recent Headers for the given projects (includes `kind`), plus `findings` on surfaces whose transcripts stopped arriving |
 | `save` | Write a `(diary line, structured summary)` pair; session-scoped upsert when `session_id` is provided, otherwise content-idempotent |
 | `search` | Semantic search over saved Summaries (includes `kind` per hit) |
 | `fetch_summary` | Retrieve a full Summary by id (includes `kind`) |
@@ -282,6 +293,9 @@ In-session tools (call from inside a Claude Code session via the MCP server):
   encoding glitch drops a parameter on the first attempt.
 
 `forget` is the escape hatch for removing throwaway entries.
+
+Every tool answers with a JSON object: a list arrives in `entries`, a single
+record in `entry`, and a `warning` member may accompany either.
 
 Async capture (driven by the hooks, but callable directly):
 
