@@ -14,13 +14,19 @@
 #      server report a version nothing runs, so every surface looks stale at
 #      once -- loud, but useless.
 #
-#   2. The bump. With --since REF, any change under scripts/hooks/ since REF
-#      must come with a change to MEMCP_HOOK_VERSION. Deliberately strict: the
+#   2. The bump. With --since REF, any change since REF to a file that lands on
+#      a surface must come with a change to MEMCP_HOOK_VERSION. Strict: the
 #      digest a hook reports covers every byte of hook_common.sh and the hook,
 #      so after a comment-only change a deployed surface genuinely no longer
 #      matches the repository, and the version is the only thing that can say
 #      so. Over-reporting costs a redeploy; under-reporting is the silent drift
 #      this gate exists to prevent.
+#
+#      deploy.sh and deploy_remote.sh are excluded by name: they run on the
+#      machine holding the checkout, reach no surface and are covered by no
+#      digest, so a bump for them reports a staleness redeploying cannot
+#      resolve. Everything else under scripts/hooks/ is watched, including
+#      files added later -- under-reporting is the costlier mistake.
 #
 # Usage:
 #   scripts/check-hook-version.sh                  # agreement only
@@ -33,7 +39,9 @@ cd "$ROOT"
 
 SHELL_SRC="scripts/hooks/hook_common.sh"
 ADA_SRC="src/memcp-hooks.ads"
-HOOK_PATHSPEC="scripts/hooks"
+HOOK_PATHSPEC=(scripts/hooks
+               ':(exclude)scripts/hooks/deploy.sh'
+               ':(exclude)scripts/hooks/deploy_remote.sh')
 
 SINCE=""
 case "${1:-}" in
@@ -78,7 +86,7 @@ if ! git rev-parse --verify --quiet "$SINCE" >/dev/null; then
     fail "cannot resolve $SINCE; fetch it before running with --since"
 fi
 
-changed=$(git diff --name-only "$SINCE" -- "$HOOK_PATHSPEC")
+changed=$(git diff --name-only "$SINCE" -- "${HOOK_PATHSPEC[@]}")
 if [[ -z "$changed" ]]; then
     echo "ok: no hook changes since $SINCE"
     exit 0
