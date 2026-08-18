@@ -192,7 +192,7 @@ assert_eq "claude off PATH: SessionStart is wired" \
     "$UNRELATED
 $DEST/session_start.sh" "$(wired SessionStart)"
 
-rm -rf "$HOME/.local/bin"
+rm -f "$HOME/.local/bin/claude"
 
 # --- an unreachable host does not stop the others ---------------------------
 
