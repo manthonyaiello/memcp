@@ -171,6 +171,29 @@ assert_eq "no claude: nothing is wired" "$BEFORE" "$(cat "$SETTINGS")"
 assert_eq "no claude: no backup is written" \
     "absent" "$([[ -f "$SETTINGS.memcp-bak" ]] && echo present || echo absent)"
 
+# --- a CLI the profile's PATH does not reach --------------------------------
+#
+# An installed CLI that only an interactive shell can find, which is the stock
+# arrangement on both Linux and macOS: the far side must deploy, not report the
+# surface as having no Claude Code on it.
+
+reset_settings
+rm -f "$SETTINGS.memcp-bak" "$REGISTRY"
+mkdir -p "$HOME/.local/bin"
+make_stub_claude "$HOME/.local/bin"
+
+run_deploy "$SANDBOX_NOCLAUDE" healthy host
+assert_eq "claude off PATH: exit 0" 0 "$STATUS"
+assert_not_contains "claude off PATH: not reported missing" \
+    "missing on this surface" "$OUT"
+assert_contains "claude off PATH: the server is registered" \
+    "registered memcp" "$OUT"
+assert_eq "claude off PATH: SessionStart is wired" \
+    "$UNRELATED
+$DEST/session_start.sh" "$(wired SessionStart)"
+
+rm -f "$HOME/.local/bin/claude"
+
 # --- an unreachable host does not stop the others ---------------------------
 
 run_deploy "$SANDBOX" healthy --url "" host

@@ -23,14 +23,23 @@ rc=0
 
 fail() { echo "   !! $*" >&2; exit 1; }
 
+#  ssh runs this without a login shell, so PATH is whatever the profile sets --
+#  which on a stock Linux or macOS account excludes every directory the Claude
+#  Code installers write to. Searching them is what separates "not installed"
+#  from "not on this PATH". A PATH assembled by a node version manager is still
+#  out of reach, which is why the failure below names where it looked.
+for d in "$HOME/.local/bin" "$HOME/.claude/local" "$HOME/bin"; do
+    if [ -d "$d" ]; then PATH="$PATH:$d"; fi
+done
+export PATH
+
 #  claude is required, not optional: without the CLI the MCP server cannot be
-#  registered, and hooks without tools are a half-deployed surface. A
-#  non-interactive ssh shell may also have a shorter PATH than a login one.
+#  registered, and hooks without tools are a half-deployed surface.
 missing=""
 for bin in curl jq base64 claude; do
     command -v "$bin" >/dev/null 2>&1 || missing="$missing $bin"
 done
-[ -z "$missing" ] || fail "missing on this surface:$missing"
+[ -z "$missing" ] || fail "missing on this surface:$missing (searched PATH=$PATH)"
 
 if [ "$dry" = 1 ]; then
     echo "   deps ok; would run $dest/install.sh and rewire $settings"
