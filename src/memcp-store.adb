@@ -1159,6 +1159,117 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
    end List_Projects;
 
+   -----------------------
+   -- Degraded_Surfaces --
+   -----------------------
+
+   procedure Degraded_Surfaces
+     (S      : Store;
+      Window : Positive;
+      Least  : Positive;
+      Result : out Surface_Health_List;
+      Status : out Op_Status)
+   is
+      Query : constant String :=
+        "WITH ranked AS ("
+        & " SELECT m.surface_row_id AS srf, m.project_id AS pid,"
+        & " m.session_id AS sid,"
+        & " ROW_NUMBER() OVER (PARTITION BY m.surface_row_id"
+        & " ORDER BY m.created_at DESC) AS rn"
+        & " FROM summaries m WHERE m.session_id IS NOT NULL)"
+        & " SELECT f.label, f.surface_id, COUNT(DISTINCT r.sid),"
+        & " COUNT(DISTINCT CASE WHEN x.id IS NULL THEN r.sid END)"
+        & " FROM ranked r"
+        & " LEFT JOIN surfaces f ON f.id = r.srf"
+        & " LEFT JOIN sessions x"
+        & " ON x.project_id = r.pid AND x.session_id = r.sid"
+        & " WHERE r.rn <= ?"
+        & " GROUP BY r.srf"
+        & " HAVING COUNT(DISTINCT CASE WHEN x.id IS NULL THEN r.sid END) >= ?"
+        & " ORDER BY 4 DESC";
+      --  A summary whose session has no sessions row is a session that saved
+      --  and was never uploaded. PARTITION BY collects the rows carrying no
+      --  surface into one group, the same way GROUP BY does, so they are
+      --  windowed and reported together rather than each standing alone.
+
+      Stmt : Sql.Statement;
+      St   : Sql.Status;
+   begin
+      Result := Surface_Health_Vectors.Empty_Vector;
+      Status := Db_Error;
+
+      Sql.Prepare (S.DB, Query, Stmt, St);
+      if St /= Sql.Ok then
+         return;
+      end if;
+
+      Sql.Bind_Int64 (Stmt, 1, Row_Id (Window), St);
+      if St = Sql.Ok then
+         Sql.Bind_Int64 (Stmt, 2, Row_Id (Least), St);
+      end if;
+      if St /= Sql.Ok then
+         Sql.Finalize (Stmt);
+         return;
+      end if;
+
+      loop
+         Sql.Step (Stmt, St);
+         exit when St /= Sql.Row;
+         exit when Surface_Health_Vectors.Length (Result)
+                   = Surface_Health_Vectors.Last_Count;
+         declare
+            Sess_C : constant Row_Id := Sql.Column_Int64 (Stmt, 2);
+            Miss_C : constant Row_Id := Sql.Column_Int64 (Stmt, 3);
+            Lab    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 0);
+            Uid    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 1);
+            Null_L : constant Boolean := Sql.Column_Is_Null (Stmt, 0);
+            Attr   : constant Boolean := not Null_L;
+            --  Two steps, as in Recent_Diary: a volatile column read may not
+            --  be an operand of `not`.
+         begin
+            Surface_Health_Vectors.Append
+              (Result,
+               Surface_Health'
+                 (Label_Len  => Lab.all'Length,
+                  Uuid_Len   => Uid.all'Length,
+                  Attributed => Attr,
+                  Sessions   => Sess_C,
+                  Missing    => Miss_C,
+                  Label      => Lab.all,
+                  Uuid       => Uid.all));
+            Sql.Free (Lab);
+            Sql.Free (Uid);
+         end;
+      end loop;
+
+      Sql.Finalize (Stmt);
+      if St = Sql.Done then
+         Status := Success;
+      end if;
+   end Degraded_Surfaces;
+
+   -------------------
+   -- Touch_Surface --
+   -------------------
+
+   procedure Touch_Surface
+     (S      : Store;
+      Uuid   : String;
+      Label  : String;
+      Status : out Op_Status)
+   is
+      Id : Row_Id;
+   begin
+      Surface_Row_Id (S, Uuid, Label, Now_Iso, Id, Status);
+
+      --  Id is 0 only for the empty Uuid, which is the caller asking for
+      --  nothing. A named surface that resolved to no row means the upsert
+      --  reported a success it did not achieve.
+      if Status = Success and then Uuid'Length > 0 and then Id = 0 then
+         Status := Db_Error;
+      end if;
+   end Touch_Surface;
+
    -----------------
    -- Fetch_Turns --
    -----------------

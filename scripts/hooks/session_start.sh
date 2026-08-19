@@ -21,6 +21,11 @@
 # user has to arrange, since this surface holds no checkout to update itself
 # from.
 #
+# `recent` answers with `entries`, plus `findings` naming surfaces whose
+# sessions save summaries with no transcript behind them. Those are fleet-wide
+# and recomputed per call: a surface whose hooks have stopped cannot report
+# itself, so every other surface reports it, and nothing is written down.
+#
 # Configure (environment overrides the config file; see install.sh):
 #   MEMCP_CONFIG   config file (default: $HOME/.memcp/hooks.env)
 #   MEMCP_URL      MCP endpoint (default: http://127.0.0.1:8786/mcp)
@@ -142,10 +147,10 @@ if [[ -n "$expected" ]]; then
     log "hooks $MEMCP_HOOK_VERSION, server shipped $expected"
 fi
 
+surface=$(memcp_surface_ref)
+
 # The handshake held, so the model can save. The key is derived once, here.
 emit_session_block() {
-    local surface
-    surface=$(memcp_surface_ref)
     printf '<memcp-session id="%s" project="%s" surface="%s">\n' \
         "$session_id" "$project" "$surface"
     printf 'Pass project="%s", session_id="%s" and surface="%s" verbatim to every memcp tool call in this session. Do not derive or abbreviate any of them.\n' \
@@ -159,12 +164,15 @@ if [[ "$list_prior" == "0" ]]; then
     exit 0
 fi
 
+# The surface rides on `recent` too: it is what records this surface as still
+# working, and what the server answers a warning to when it is missing.
 recent_body=$(jq -nc \
     --arg project "$project" \
+    --arg surface "$surface" \
     --argjson n "$RECENT_N" \
     '{jsonrpc:"2.0",id:2,method:"tools/call",params:{
         name:"recent",
-        arguments:{projects:[$project],n:$n}}}')
+        arguments:{projects:[$project],n:$n,surface:$surface}}}')
 
 data=$(curl -sS --max-time 10 -X POST "$MEMCP_URL" \
     -H 'Content-Type: application/json' \
@@ -191,8 +199,13 @@ fi
 
 emit_session_block
 
-entries=$(memcp_tool_result "$data")
-[[ -n "$entries" ]] || entries="[]"
+result=$(memcp_tool_result "$data")
+[[ -n "$result" ]] || result='{}'
+
+memcp_unattributed "$HOOK_NAME" "$(jq -r '.warning // empty' <<<"$result")"
+memcp_degraded "$(jq -c '.findings // []' <<<"$result")"
+
+entries=$(jq -c '.entries // []' <<<"$result" 2>/dev/null || echo '[]')
 count=$(jq 'length' <<<"$entries" 2>/dev/null || echo 0)
 
 if [[ "$count" == "0" ]]; then

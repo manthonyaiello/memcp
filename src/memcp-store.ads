@@ -205,6 +205,39 @@ package Memcp.Store with SPARK_Mode => On is
    subtype Project_Info_List is Project_Vectors.Vector;
    --  A list of project rows, as returned by List_Projects.
 
+   type Surface_Health
+     (Label_Len : Natural;   --  Length of Label.
+      Uuid_Len  : Natural) is   --  Length of Uuid.
+      record
+         Attributed : Boolean;   --  Whether the sessions counted named a surface.
+         Sessions   : Row_Id;    --  Distinct sessions examined.
+         Missing    : Row_Id;    --  Of those, the ones with no transcript.
+         Label      : String (1 .. Label_Len);   --  Surface label ("" when unattributed).
+         Uuid       : String (1 .. Uuid_Len);    --  Surface id ("" when unattributed).
+      end record;
+   --  One surface's ingestion health: how many of its recent sessions saved a
+   --  summary, and how many of those never had a transcript uploaded. Sessions
+   --  written with no surface at all are counted together as one group, which
+   --  comes back with Attributed False and both texts empty.
+
+   package Surface_Health_Vectors is new
+     SPARK.Containers.Formal.Unbounded_Vectors
+       (Index_Type => Positive, Element_Type => Surface_Health);
+   --  SPARKlib vector instance over Surface_Health.
+
+   subtype Surface_Health_List is Surface_Health_Vectors.Vector;
+   --  A list of degraded surfaces, as returned by Degraded_Surfaces.
+
+   Health_Window : constant := 20;
+   --  How many of a surface's most recent summary-bearing sessions
+   --  Degraded_Surfaces weighs. Bounds the lookback, so a surface that has
+   --  been retired stops being reported once its last sessions age out.
+
+   Health_Threshold : constant := 3;
+   --  How many sessions in that window must lack a transcript before the
+   --  surface is reported. Absorbs sessions that are still open, whose
+   --  transcripts are not late but unwritten.
+
    type Chunk
      (Project_Len : Natural;   --  Length of Project.
       Body_Len    : Natural;   --  Length of Content.
@@ -536,6 +569,42 @@ package Memcp.Store with SPARK_Mode => On is
    --  Db_Error.
    --  @param S The open store to read.
    --  @param Result One row per known project.
+   --  @param Status Success, or Db_Error on a SQLite failure.
+
+   procedure Degraded_Surfaces
+     (S      : Store;
+      Window : Positive;
+      Least  : Positive;
+      Result : out Surface_Health_List;
+      Status : out Op_Status)
+     with Pre => Is_Open (S);
+   --  Surfaces that saved summaries without ever uploading the matching
+   --  transcript, at least Least such sessions among the last Window sessions
+   --  that surface saved. Counted per distinct session, so a session that
+   --  saves repeatedly weighs once. Fleet-wide rather than project-scoped: a
+   --  surface whose SessionEnd hook has stopped cannot report on itself, so
+   --  the answer must be the same from wherever it is asked. Result is empty
+   --  on Db_Error, and empty is the healthy answer.
+   --  @param S The open store to read.
+   --  @param Window How many of a surface's recent sessions to weigh.
+   --  @param Least How many of those must lack a transcript to be reported.
+   --  @param Result One row per degraded surface, worst first.
+   --  @param Status Success, or Db_Error on a SQLite failure.
+
+   procedure Touch_Surface
+     (S      : Store;
+      Uuid   : String;
+      Label  : String;
+      Status : out Op_Status)
+     with Pre => Is_Open (S);
+   --  Record surface Uuid as in use now, inserting it when new and refreshing
+   --  its label and last_seen when not. An empty Uuid does nothing and
+   --  succeeds. The only path that records a surface without it writing a row
+   --  of its own, which is what separates a surface that has stopped working
+   --  from one that has merely stopped saving.
+   --  @param S The open store to write.
+   --  @param Uuid The surface's UUID; empty does nothing.
+   --  @param Label The surface's label, refreshed on every call.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
    procedure Fetch_Turns

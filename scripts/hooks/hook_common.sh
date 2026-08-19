@@ -11,7 +11,7 @@
 # surface that is behind by even a comment reports as behind, which is the
 # honest answer. Memcp.Hooks.Hook_Version must carry the same string --
 # scripts/check-hook-version.sh gates that, and the bump.
-MEMCP_HOOK_VERSION="0.4.0"
+MEMCP_HOOK_VERSION="0.5.0"
 
 # --- configuration ----------------------------------------------------------
 
@@ -130,6 +130,42 @@ memcp_stale() {
         "$label"
     printf 'Tell the user, then continue.\n'
     printf '</memcp-hook-stale>\n'
+}
+
+# --- fleet health -----------------------------------------------------------
+#
+# Two faults this surface cannot see in itself. Both arrive as members of a
+# tool result, computed for that one call and stored nowhere: a finding written
+# into the corpus would be embedded, become searchable, and read later as
+# project history.
+
+# Emit the server's unattributed-call warning on stdout: $1 hook name, $2 the
+# warning text, empty for none. The text carries its own remedy, so this adds
+# no words of its own.
+memcp_unattributed() {
+    local name="$1" warning="$2"
+    [[ -n "$warning" ]] || return 0
+    printf '<memcp-hook-unattributed hook="%s">\n' "$name"
+    printf '%s\n' "$warning"
+    printf '</memcp-hook-unattributed>\n'
+}
+
+# Emit a degraded-ingestion block on stdout from $1, the `findings` array. A
+# surface reported here is saving summaries whose transcripts never arrive,
+# which is what a SessionEnd hook that has stopped running looks like from the
+# corpus. `surface` is null where the sessions carried no identity at all: the
+# machine cannot be named from here, only counted.
+memcp_degraded() {
+    local findings="${1:-[]}" count
+    count=$(jq 'length' <<<"$findings" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]] || return 0
+    printf '<memcp-hook-degraded count="%s">\n' "$count"
+    printf 'Sessions on these surfaces saved a summary that no transcript ever followed, so their SessionEnd hook is not uploading:\n'
+    jq -r '.[] | "  - \(.surface // "an unidentified surface"): \(.missing_transcript) of the last \(.sessions) sessions have no transcript"' \
+        <<<"$findings" 2>/dev/null
+    printf 'Remedy: `doctor` names the surface and the step; failing that, redeploy the hooks there from a memcp checkout (`scripts/hooks/deploy.sh HOST`).\n'
+    printf 'Tell the user, then continue.\n'
+    printf '</memcp-hook-degraded>\n'
 }
 
 # --- memcp's responses ------------------------------------------------------

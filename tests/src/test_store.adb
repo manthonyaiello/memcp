@@ -51,6 +51,50 @@ procedure Test_Store with SPARK_Mode => Off is
       return E;
    end Hot;
 
+   function Scalar (Path, Query : String) return String;
+   --  The first column of Query's first row, run against the database at
+   --  Path, or "" when it returns no row. "<null>" for a NULL column, so a
+   --  missing attribution is distinguishable from a missing row.
+
+   function Scalar (Path, Query : String) return String is
+      DB   : Sqlite_Vec_Spark.Database;
+      Stmt : Sqlite_Vec_Spark.Statement;
+      St   : Sqlite_Vec_Spark.Status;
+   begin
+      Sqlite_Vec_Spark.Open (DB, Path, St);
+      if St /= Sqlite_Vec_Spark.Ok then
+         return "";
+      end if;
+      Sqlite_Vec_Spark.Prepare (DB, Query, Stmt, St);
+      if St /= Sqlite_Vec_Spark.Ok then
+         Sqlite_Vec_Spark.Close (DB);
+         return "";
+      end if;
+      Sqlite_Vec_Spark.Step (Stmt, St);
+      declare
+         Got : Sqlite_Vec_Spark.Text_Ptr;
+         Out_S : constant String :=
+           (if St /= Sqlite_Vec_Spark.Row then ""
+            elsif Sqlite_Vec_Spark.Column_Is_Null (Stmt, 0) then "<null>"
+            else "");
+      begin
+         if Out_S = "" and then St = Sqlite_Vec_Spark.Row then
+            Got := Sqlite_Vec_Spark.Column_Text (Stmt, 0);
+            declare
+               Text : constant String := Got.all;
+            begin
+               Sqlite_Vec_Spark.Free (Got);
+               Sqlite_Vec_Spark.Finalize (Stmt);
+               Sqlite_Vec_Spark.Close (DB);
+               return Text;
+            end;
+         end if;
+         Sqlite_Vec_Spark.Finalize (Stmt);
+         Sqlite_Vec_Spark.Close (DB);
+         return Out_S;
+      end;
+   end Scalar;
+
    function Read_File (Path : String) return String;
    --  The whole file at Path, as raw bytes.
 
@@ -764,49 +808,6 @@ begin
          then Tmp else Tmp & "/") & "memcp_surface_test";
       DB_File : constant String := Base & "/store.db";
 
-      function Scalar (Path, Query : String) return String;
-      --  The first column of Query's first row, run against the database at
-      --  Path, or "" when it returns no row. "<null>" for a NULL column, so a
-      --  missing attribution is distinguishable from a missing row.
-
-      function Scalar (Path, Query : String) return String is
-         DB   : Sqlite_Vec_Spark.Database;
-         Stmt : Sqlite_Vec_Spark.Statement;
-         St   : Sqlite_Vec_Spark.Status;
-      begin
-         Sqlite_Vec_Spark.Open (DB, Path, St);
-         if St /= Sqlite_Vec_Spark.Ok then
-            return "";
-         end if;
-         Sqlite_Vec_Spark.Prepare (DB, Query, Stmt, St);
-         if St /= Sqlite_Vec_Spark.Ok then
-            Sqlite_Vec_Spark.Close (DB);
-            return "";
-         end if;
-         Sqlite_Vec_Spark.Step (Stmt, St);
-         declare
-            Got : Sqlite_Vec_Spark.Text_Ptr;
-            Out_S : constant String :=
-              (if St /= Sqlite_Vec_Spark.Row then ""
-               elsif Sqlite_Vec_Spark.Column_Is_Null (Stmt, 0) then "<null>"
-               else "");
-         begin
-            if Out_S = "" and then St = Sqlite_Vec_Spark.Row then
-               Got := Sqlite_Vec_Spark.Column_Text (Stmt, 0);
-               declare
-                  Text : constant String := Got.all;
-               begin
-                  Sqlite_Vec_Spark.Free (Got);
-                  Sqlite_Vec_Spark.Finalize (Stmt);
-                  Sqlite_Vec_Spark.Close (DB);
-                  return Text;
-               end;
-            end if;
-            Sqlite_Vec_Spark.Finalize (Stmt);
-            Sqlite_Vec_Spark.Close (DB);
-            return Out_S;
-         end;
-      end Scalar;
 
       procedure Exec_Raw (Path, Query : String);
       --  Run a resultless statement against the database at Path.
@@ -955,6 +956,178 @@ begin
                 & " WHERE session_id = 'p-2'")
              = "<null>",
              "Provenance: an unattributed write stays null");
+
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+   end;
+
+   --  Degraded surfaces: a summary whose session never had a transcript
+   --  uploaded is what a stopped SessionEnd hook looks like from the corpus.
+   declare
+      Tmp : constant String :=
+        (if Ada.Environment_Variables.Exists ("TMPDIR")
+         then Ada.Environment_Variables.Value ("TMPDIR")
+         else "/tmp");
+      Base : constant String :=
+        (if Tmp'Length > 0 and then Tmp (Tmp'Last) = '/'
+         then Tmp else Tmp & "/") & "memcp_health_test";
+      DB_File : constant String := Base & "/store.db";
+
+      HS      : Memcp.Store.Store;
+      Open_HS : Memcp.Store.Open_Status;
+      St      : Memcp.Store.Op_Status;
+      Found   : Memcp.Store.Surface_Health_List;
+
+      procedure Saved
+        (Session, Surface, Label, At_Time : String; Uploaded : Boolean);
+      --  A session on Surface that saved a summary, and uploaded a transcript
+      --  only when Uploaded. An empty Surface is the write no hook attributed.
+
+      procedure Saved
+        (Session, Surface, Label, At_Time : String; Uploaded : Boolean)
+      is
+         SR  : Memcp.Store.Save_Result;
+         SeR : Memcp.Store.Session_Save_Result;
+         CL  : Memcp.Store.Chunk_Input_List;
+         Ok  : Memcp.Store.Op_Status;
+      begin
+         Memcp.Store.Save
+           (HS, "health", "d " & Session, "b " & Session, Zero_Emb,
+            Has_Session => True, Session_Id => Session,
+            Has_Created => True, Created_At => At_Time,
+            Surface => Surface, Surface_Label => Label,
+            Result => SR, Status => Ok);
+         Check (Ok = Memcp.Store.Success, "Health: save " & Session);
+         if Uploaded then
+            Memcp.Store.Chunk_Input_Vectors.Append
+              (CL, (Body_Len => 4, Content => "turn", Embedding => Zero_Emb));
+            Memcp.Store.Save_Session
+              (HS, "health", Session, "transcript", CL,
+               Has_Created => True, Created_At => At_Time,
+               Surface => Surface, Surface_Label => Label,
+               Result => SeR, Status => Ok);
+            Check (Ok = Memcp.Store.Success, "Health: upload " & Session);
+         end if;
+      end Saved;
+
+      function Reported (Label : String) return Boolean;
+      --  Whether the last query named the surface Label, "" for the group it
+      --  could not attribute.
+
+      function Reported (Label : String) return Boolean is
+         package V renames Memcp.Store.Surface_Health_Vectors;
+      begin
+         for I in V.First_Index (Found) .. V.Last_Index (Found) loop
+            declare
+               E : constant Memcp.Store.Surface_Health :=
+                 V.Element (Found, I);
+            begin
+               if (if Label = "" then not E.Attributed
+                   else E.Attributed and then E.Label = Label)
+               then
+                  return True;
+               end if;
+            end;
+         end loop;
+         return False;
+      end Reported;
+
+      function Missing (Label : String) return Memcp.Store.Row_Id;
+      --  How many of Label's counted sessions had no transcript; 0 when the
+      --  query did not report it at all.
+
+      function Missing (Label : String) return Memcp.Store.Row_Id is
+         package V renames Memcp.Store.Surface_Health_Vectors;
+      begin
+         for I in V.First_Index (Found) .. V.Last_Index (Found) loop
+            declare
+               E : constant Memcp.Store.Surface_Health :=
+                 V.Element (Found, I);
+            begin
+               if E.Attributed and then E.Label = Label then
+                  return E.Missing;
+               end if;
+            end;
+         end loop;
+         return 0;
+      end Missing;
+   begin
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+      Ada.Directories.Create_Path (Base);
+
+      Memcp.Store.Open (HS, DB_File, Open_HS);
+      Check (Open_HS = Memcp.Store.Opened, "Health: open store");
+
+      if Open_HS = Memcp.Store.Opened then
+         --  Degraded: saves, no uploads.
+         Saved ("d-1", "uuid-a", "boxa", "2026-08-01T09:00:00Z", False);
+         Saved ("d-2", "uuid-a", "boxa", "2026-08-02T09:00:00Z", False);
+         Saved ("d-3", "uuid-a", "boxa", "2026-08-03T09:00:00Z", False);
+
+         --  Healthy: every save followed by its upload.
+         Saved ("h-1", "uuid-b", "boxb", "2026-08-01T09:00:00Z", True);
+         Saved ("h-2", "uuid-b", "boxb", "2026-08-02T09:00:00Z", True);
+         Saved ("h-3", "uuid-b", "boxb", "2026-08-03T09:00:00Z", True);
+
+         --  Below the threshold: two gaps, not three.
+         Saved ("q-1", "uuid-c", "boxc", "2026-08-01T09:00:00Z", False);
+         Saved ("q-2", "uuid-c", "boxc", "2026-08-02T09:00:00Z", False);
+
+         --  No surface at all: countable, not nameable.
+         Saved ("u-1", "", "", "2026-08-01T09:00:00Z", False);
+         Saved ("u-2", "", "", "2026-08-02T09:00:00Z", False);
+         Saved ("u-3", "", "", "2026-08-03T09:00:00Z", False);
+
+         Memcp.Store.Degraded_Surfaces
+           (HS, Memcp.Store.Health_Window, Memcp.Store.Health_Threshold,
+            Found, St);
+         Check (St = Memcp.Store.Success, "Health: query -> Success");
+         Check (Reported ("boxa"), "Health: a surface that stopped uploading");
+         Check (not Reported ("boxb"), "Health: a healthy surface is silent");
+         Check (not Reported ("boxc"), "Health: below the threshold is silent");
+         Check (Reported (""), "Health: unattributed sessions are counted");
+
+         --  The upsert the metric rests on: one session that saves five times
+         --  is one session, not five, so it cannot push a surface over on its
+         --  own.
+         for K in 1 .. 5 loop
+            Saved ("q-3", "uuid-c", "boxc", "2026-08-04T09:00:00Z", False);
+         end loop;
+         Memcp.Store.Degraded_Surfaces
+           (HS, Memcp.Store.Health_Window, Memcp.Store.Health_Threshold,
+            Found, St);
+         Check (Missing ("boxc") = 3,
+                "Health: repeated saves in one session count once");
+
+         --  The window is a lookback bound: with only the two newest sessions
+         --  weighed, a surface whose gaps have aged out falls silent.
+         Memcp.Store.Degraded_Surfaces (HS, 2, 3, Found, St);
+         Check (St = Memcp.Store.Success, "Health: narrow window -> Success");
+         Check (not Reported ("boxa"),
+                "Health: gaps outside the window are not counted");
+
+         --  A surface that has only ever read is known, and has no sessions to
+         --  report on.
+         Memcp.Store.Touch_Surface (HS, "uuid-d", "boxd", St);
+         Check (St = Memcp.Store.Success, "Health: check-in -> Success");
+         Memcp.Store.Degraded_Surfaces
+           (HS, Memcp.Store.Health_Window, Memcp.Store.Health_Threshold,
+            Found, St);
+         Check (not Reported ("boxd"),
+                "Health: a surface that only checked in is silent");
+
+         Memcp.Store.Close (HS);
+      end if;
+
+      Check (Scalar (DB_File, "SELECT label FROM surfaces"
+                     & " WHERE surface_id = 'uuid-d'") = "boxd",
+             "Health: the check-in recorded the surface");
+      Check (Scalar (DB_File, "SELECT count(*) FROM summaries"
+                     & " WHERE session_id = 'q-3'") = "1",
+             "Health: five saves left one summary row");
 
       if Ada.Directories.Exists (Base) then
          Ada.Directories.Delete_Tree (Base);

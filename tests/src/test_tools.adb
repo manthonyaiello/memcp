@@ -75,6 +75,12 @@ procedure Test_Tools with SPARK_Mode => Off is
    TS   : constant String := "2026-01-01T12:00:00+00:00";
    --  created_at for the seeded rows.
 
+   Surf_M : constant String := """surface"":""bench:bench-id""";
+   --  The surface member, spliced into an arguments object that has others.
+
+   Surf : constant String := "{" & Surf_M & "}";
+   --  An arguments object carrying nothing but the surface.
+
    Open_St     : Memcp.Resources.Status;
    Seed_Sum_Id : Memcp.Store.Row_Id := 0;
    --  Summary id of the seeded row, filled in by the seeding Save below.
@@ -87,20 +93,24 @@ begin
    ------------------------------------------------------------------
    --  Empty-store shapes
    ------------------------------------------------------------------
-   Check (Call (Memcp.Tools.List_Projects, "{}") = "[]",
-          "list_projects (empty) -> []");
-   Check (Call (Memcp.Tools.Recent, "{""projects"":[""demo""]}") = "[]",
-          "recent (empty) -> []");
-   --  A miss is a benign answer: a one-line message with isError false at the
-   --  envelope, not a null block.
-   Check (Call (Memcp.Tools.Fetch_Summary, "{""summary_id"":999}")
-            = "No summary found for id 999.",
-          "fetch_summary (miss) -> message");
-   Check (Call (Memcp.Tools.Forget, "{""summary_id"":999}")
+   --  Every shape below carries Surf, so these check the payload; the warning
+   --  a call without it earns has its own block further down.
+   Check (Call (Memcp.Tools.List_Projects, Surf) = "{""entries"":[]}",
+          "list_projects (empty) -> empty entries");
+   Check (Call (Memcp.Tools.Recent, "{""projects"":[""demo""]," & Surf_M & "}")
+            = "{""entries"":[],""findings"":[]}",
+          "recent (empty) -> empty entries, no findings");
+   --  A miss is a benign answer: a null entry with isError false at the
+   --  envelope, not an error.
+   Check (Call (Memcp.Tools.Fetch_Summary, "{""summary_id"":999," & Surf_M & "}")
+            = "{""entry"":null}",
+          "fetch_summary (miss) -> null entry");
+   Check (Call (Memcp.Tools.Forget, "{""summary_id"":999," & Surf_M & "}")
             = "{""deleted"":false}",
           "forget (miss) -> deleted:false");
-   Check (Call (Memcp.Tools.Fetch_Turns, "{""session_id"":""nope""}") = "[]",
-          "fetch_turns (unknown) -> []");
+   Check (Call (Memcp.Tools.Fetch_Turns, "{""session_id"":""nope""," & Surf_M & "}")
+            = "{""entries"":[]}",
+          "fetch_turns (unknown) -> empty entries");
 
    ------------------------------------------------------------------
    --  Argument validation / gating
@@ -111,8 +121,9 @@ begin
           "recent with malformed args -> projects required");
    Check (Has_Sub (Call (Memcp.Tools.Recent, "{""n"":5}"), "projects"),
           "recent without projects -> invalid params");
-   Check (Call (Memcp.Tools.Recent, "{""projects"":[]}") = "[]",
-          "recent with explicit empty projects -> []");
+   Check (Call (Memcp.Tools.Recent, "{""projects"":[]," & Surf_M & "}")
+            = "{""entries"":[],""findings"":[]}",
+          "recent with explicit empty projects -> empty entries");
    Check (Has_Sub (Call (Memcp.Tools.Fetch_Turns,
                    "{""session_id"":""s"",""last"":0}"), "positive"),
           "fetch_turns last=0 -> must be positive");
@@ -370,13 +381,14 @@ begin
    --  forget the seeded summary really deletes it.
    declare
       J : constant String :=
-        Call (Memcp.Tools.Forget, "{""summary_id"":" & Img (Seed_Sum_Id) & "}");
+        Call (Memcp.Tools.Forget,
+              "{""summary_id"":" & Img (Seed_Sum_Id) & "," & Surf_M & "}");
    begin
       Check (J = "{""deleted"":true}", "forget (seeded) -> deleted:true");
       Check (Call (Memcp.Tools.Fetch_Summary,
-                   "{""summary_id"":" & Img (Seed_Sum_Id) & "}")
-               = "No summary found for id " & Img (Seed_Sum_Id) & ".",
-             "fetch_summary after forget -> message");
+                   "{""summary_id"":" & Img (Seed_Sum_Id) & "," & Surf_M & "}")
+               = "{""entry"":null}",
+             "fetch_summary after forget -> null entry");
    end;
 
    ------------------------------------------------------------------
@@ -420,6 +432,116 @@ begin
          Check (Has_Sub (J, """session_row_id"":")
                 and then not Has_Sub (J, """warning"":"),
                 "upload_session: a usable surface warns about nothing");
+      end;
+   end;
+
+   ------------------------------------------------------------------
+   --  Every tool warns about a surface it did not get
+   ------------------------------------------------------------------
+   --  Gating the writes alone would leave the fault behind an event that may
+   --  never happen: a session whose diary comes from SessionEnd never calls
+   --  save. A read is the earliest moment this can be said.
+   declare
+      procedure Warns (Id : Memcp.Tools.Tool_Id; Args, Label : String);
+      --  Check that Id warns about the surface in Args, and answers anyway.
+
+      procedure Warns (Id : Memcp.Tools.Tool_Id; Args, Label : String) is
+         J : constant String := Call (Id, Args);
+      begin
+         Check (Has_Sub (J, """warning"":") and then Has_Sub (J, "`doctor`"),
+                Label & ": warns, and names the remedy");
+         Check (not Has_Sub (J, "ERR["), Label & ": served anyway");
+      end Warns;
+   begin
+      Warns (Memcp.Tools.Recent, "{""projects"":[""demo""]}", "recent");
+      Warns (Memcp.Tools.List_Projects, "{}", "list_projects");
+      Warns (Memcp.Tools.Fetch_Summary, "{""summary_id"":999}",
+             "fetch_summary");
+      Warns (Memcp.Tools.Forget, "{""summary_id"":999}", "forget");
+      Warns (Memcp.Tools.Fetch_Turns, "{""session_id"":""nope""}",
+             "fetch_turns");
+      --  search and fetch_chunks warn through the same seam, but stop at the
+      --  embedder gate before reaching it with no model loaded.
+
+      --  A surface that arrives in the wrong shape is discarded, and says so
+      --  differently: the hook ran, the value did not survive the trip.
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Recent,
+                 "{""projects"":[""demo""],""surface"":""no-separator""}");
+      begin
+         Check (Has_Sub (J, "label:id"),
+                "recent: a malformed surface names the shape expected");
+      end;
+   end;
+
+   ------------------------------------------------------------------
+   --  Findings: reported by recent, written nowhere
+   ------------------------------------------------------------------
+   declare
+      Before : constant String :=
+        Call (Memcp.Tools.Recent, "{""projects"":[""dark""]," & Surf_M & "}");
+
+      procedure Seed_Gap (Session : String);
+      --  A session that saved a summary and never uploaded a transcript.
+
+      procedure Seed_Gap (Session : String) is
+         R  : Memcp.Store.Save_Result;
+         St : Memcp.Store.Op_Status;
+      begin
+         Memcp.Resources.Save
+           (Res,
+            Project      => "dark",
+            Diary_Body   => "d " & Session,
+            Summary_Body => "b " & Session,
+            Embedding    => Zero,
+            Has_Session  => True,
+            Session_Id   => Session,
+            Has_Created  => True,
+            Created_At   => TS,
+            Surface       => "9f3c",
+            Surface_Label => "otherbox",
+            Result       => R,
+            Status       => St);
+         Check (St = Memcp.Store.Success, "findings: seed " & Session);
+      end Seed_Gap;
+   begin
+      Check (Has_Sub (Before, """findings"":[]"),
+             "findings: a healthy fleet reports none");
+
+      Seed_Gap ("g-1");
+      Seed_Gap ("g-2");
+      Seed_Gap ("g-3");
+
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Recent,
+                 "{""projects"":[""dark""]," & Surf_M & "}");
+      begin
+         Check (Has_Sub (J, """surface"":""otherbox"""),
+                "findings: the degraded surface is named");
+         Check (Has_Sub (J, """missing_transcript"":3"),
+                "findings: the sessions with no transcript are counted");
+
+         --  The finding must not become project history. It is rendered into
+         --  a member of this one answer; nothing about the corpus changed, so
+         --  a later read sees the same three Headers and no fourth.
+         declare
+            K : constant String :=
+              Call (Memcp.Tools.Recent,
+                    "{""projects"":[""dark""],""n"":50," & Surf_M & "}");
+            Hits : Natural := 0;
+            Pos  : Natural := K'First;
+         begin
+            loop
+               Pos := Ada.Strings.Fixed.Index
+                 (K (Pos .. K'Last), """diary_id"":");
+               exit when Pos = 0;
+               Hits := Hits + 1;
+               Pos := Pos + 1;
+            end loop;
+            Check (Hits = 3, "findings: no finding was filed as a Header");
+         end;
       end;
    end;
 

@@ -52,9 +52,11 @@ package Memcp.Tools with SPARK_Mode => On is
    function Description (Id : Tool_Id) return String is
      (case Id is
          when Recent =>
-            "Return Headers for the N most recent diary entries. "
-              & "Headers only -- use fetch_summary(summary_id) for the full "
-              & "body, unless kind == 'autorecap' (Header text already is it).",
+            "Return Headers for the N most recent diary entries, in "
+              & "`entries`. Headers only -- use fetch_summary(summary_id) for "
+              & "the full body, unless kind == 'autorecap' (Header text "
+              & "already is it). `findings` reports surfaces whose sessions "
+              & "are saving summaries with no transcript behind them.",
          when List_Projects =>
             "List every project memcp has seen, newest activity first. "
               & "Each entry carries project, diary_count, and latest_at.",
@@ -70,7 +72,7 @@ package Memcp.Tools with SPARK_Mode => On is
             "Semantic search over Summaries. projects=null searches all "
               & "projects; pass projects=['memcp'] to scope. Hits carry kind.",
          when Fetch_Summary =>
-            "Fetch a full Summary by id; returns null if missing. "
+            "Fetch a full Summary by id, in `entry`; null if missing. "
               & "Includes body; for kind='autorecap' body equals the Header.",
          when Upload_Session =>
             "Persist a session transcript (base64) plus embeddable "
@@ -93,10 +95,12 @@ package Memcp.Tools with SPARK_Mode => On is
          when Recent =>
             "{""type"":""object"",""properties"":{"
               & """projects"":{""type"":""array"",""items"":{""type"":"
-              & """string""}},""n"":{""type"":""integer""}},"
+              & """string""}},""n"":{""type"":""integer""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""projects""]}",
          when List_Projects =>
-            "{""type"":""object"",""properties"":{}}",
+            "{""type"":""object"",""properties"":{"
+              & """surface"":{""type"":""string""}}}",
          when Save =>
             "{""type"":""object"",""properties"":{"
               & """project"":{""type"":""string""},"
@@ -108,7 +112,8 @@ package Memcp.Tools with SPARK_Mode => On is
               & """required"":[""project""]}",
          when Forget =>
             "{""type"":""object"",""properties"":{"
-              & """summary_id"":{""type"":""integer""}},"
+              & """summary_id"":{""type"":""integer""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""summary_id""]}",
          when Search =>
             "{""type"":""object"",""properties"":{"
@@ -116,11 +121,13 @@ package Memcp.Tools with SPARK_Mode => On is
               & """projects"":{""type"":""array"",""items"":{""type"":"
               & """string""}},""limit"":{""type"":""integer""},"
               & """since"":{""type"":""string""},"
-              & """until"":{""type"":""string""}},"
+              & """until"":{""type"":""string""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""query""]}",
          when Fetch_Summary =>
             "{""type"":""object"",""properties"":{"
-              & """summary_id"":{""type"":""integer""}},"
+              & """summary_id"":{""type"":""integer""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""summary_id""]}",
          when Upload_Session =>
             "{""type"":""object"",""properties"":{"
@@ -137,7 +144,8 @@ package Memcp.Tools with SPARK_Mode => On is
               & """session_ids"":{""type"":""array"",""items"":{""type"":"
               & """string""}},""limit"":{""type"":""integer""},"
               & """since"":{""type"":""string""},"
-              & """until"":{""type"":""string""}},"
+              & """until"":{""type"":""string""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""query""]}",
          when Fetch_Turns =>
             "{""type"":""object"",""properties"":{"
@@ -145,7 +153,8 @@ package Memcp.Tools with SPARK_Mode => On is
               & """project"":{""type"":""string""},"
               & """last"":{""type"":""integer""},"
               & """start"":{""type"":""integer""},"
-              & """end"":{""type"":""integer""}},"
+              & """end"":{""type"":""integer""},"
+              & """surface"":{""type"":""string""}},"
               & """required"":[""session_id""]}");
    --  The JSON Schema for a tool's `arguments` object.
    --  @param Id The tool whose input schema is requested.
@@ -213,6 +222,18 @@ private
      & LF
      & "Use search for Summary recall beyond the Headers given at session start."
      & LF
+     & LF
+     & "## Every call" & LF
+     & LF
+     & "Pass `surface` verbatim as SessionStart injected it, on every tool, not"
+     & LF
+     & "only the writes. Every result is an object: a list arrives in `entries`,"
+     & LF
+     & "one record in `entry`, and a `warning` member may accompany either. A"
+     & LF
+     & "warning is served with the result, never instead of it -- read it, act on"
+     & LF
+     & "it, and tell the user." & LF
      & LF
      & "## Saving" & LF
      & LF
