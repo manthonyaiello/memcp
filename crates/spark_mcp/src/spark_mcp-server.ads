@@ -12,7 +12,8 @@
 --  @formal Description Returns the human-readable description of the given
 --    tool.
 --  @formal Input_Schema Returns the tool's JSON Schema for `inputSchema`, as
---    JSON text (an object).
+--    JSON text (an object). This, the name and the description are jointly
+--    bounded by Max_Tool_Item once escaped.
 --  @formal Invoke Executes a tools/call. `Arguments` is params.arguments as raw
 --    JSON text ("{}" when the client sent none), which the tool parses itself.
 --    Respond calls it only with Arguments'Length <= Max_Field, so a tool may
@@ -59,6 +60,24 @@ generic
      (Client_Name, Client_Version : String) return String;
 
 package Spark_Mcp.Server with SPARK_Mode => On is
+
+   Max_Tool_Item : constant := 65_536;
+   --  Upper bound on one tools/list item: the tool's name and description at
+   --  worst-case 6x escaping, its inputSchema verbatim, and the enclosing
+   --  object's framing. A tool whose metadata exceeds it leaves an unproved
+   --  check at the instantiation.
+
+   Max_Tools : constant := 256;
+   --  Upper bound on the number of tools in Tool_Id. With Max_Tool_Item it
+   --  bounds the whole listing by a static figure, so proving that bound costs
+   --  the same whatever the tool set.
+
+   pragma Compile_Time_Error
+     (Tool_Id'Pos (Tool_Id'Last) - Tool_Id'Pos (Tool_Id'First) + 1 > Max_Tools,
+      "tool set exceeds Spark_Mcp.Server.Max_Tools");
+   --  Rejects an oversized tool set where it is written, since Tool_Id is a
+   --  formal discrete type and nothing else stops an instantiation handing it
+   --  one whose positions run to Integer'Last.
 
    procedure Dispatch (Request : String; Response : out Response_Ptr);
    --  Handle one JSON-RPC 2.0 message: Parse_Envelope, then Respond. Total --

@@ -31,11 +31,9 @@
 #                   the default "--timeout=10". --level timeouts are wall-clock,
 #                   not step-bounded, so a check can clear on one machine and
 #                   time out on another; the extra wall-clock removes that
-#                   without weakening --level. The tools/list length bound needs
-#                   it outright — it is proved by unfolding the accumulation
-#                   once per tool, so its cost grows with the tool set. A
-#                   replacement value must therefore carry a --timeout of its
-#                   own; CI's does, alongside its cache flag.
+#                   without weakening --level. A replacement value should
+#                   therefore carry a --timeout of its own; CI's does, alongside
+#                   its cache flag.
 #
 set -euo pipefail
 
@@ -55,9 +53,7 @@ case "${1:-}" in
 esac
 
 # Unquoted on the command line below so it word-splits into flags. Defaulted
-# rather than empty: without a --timeout the tools/list bound goes unproved and
-# the gate fails, so the default is what makes a bare run of this script agree
-# with CI.
+# rather than empty, so that a bare run of this script agrees with CI.
 EXTRA="${GNATPROVE_EXTRA:---timeout=10}"
 
 echo ">> alr gnatprove -P memcp.gpr -j0 --level=2 --warnings=error $EXTRA"

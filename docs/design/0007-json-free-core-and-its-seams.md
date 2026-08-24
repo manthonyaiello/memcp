@@ -42,24 +42,41 @@ same reasoning is why `Client_Meta` has no default either.
 
 A serializer would own overflow; concatenation into unconstrained `String`s
 hands that back to us, and `tools/list` is the one response whose size grows
-with the application. Its bound is carried on the recursive builder by two ghost
-functions: `Item_Len_Bound`, one item, taking `Writer.Quoted`'s worst-case 6x
-expansion from that function's own `Post`; and `Items_Len_Bound`, that summed
-over the remaining tools with one comma per gap.
+with the application. Two static caps in `Spark_Mcp.Server` carry its bound:
+`Max_Tool_Item`, the length of one item — the name and description at
+`Writer.Quoted`'s worst-case 6x expansion, the `inputSchema` verbatim, and the
+object's framing — and `Max_Tools`, the size of `Tool_Id`.
 
-Neither carries a per-item cap, and that is the point. The bound is generic over
-the tool set: it says the catalog fits *if* the sum fits `Result_Response`'s
-precondition, and GNATprove discharges that concretely **at each
-instantiation** — `crates/spark_mcp/prove/proof_harness.ads` for the crate's own
-two-tool proof, and memcp's ten-tool instantiation in `src/main.adb` under
-`make prove`. A tool with an enormous `inputSchema` therefore fails in the
-application's proof run; the fix is that schema or `Max_Field`, never a cap
-invented inside the core.
+The per-item cap is where an application's tool set is actually checked, and it
+is checked **at each instantiation** — `crates/spark_mcp/prove/proof_harness.ads`
+for the crate's own two-tool proof, and memcp's instantiation in `src/main.adb`
+under `make prove`. GNATprove unfolds that tool's `Name`, `Description` and
+`Input_Schema` and discharges `Item`'s postcondition against the ceiling, one
+tool at a time. A tool with an enormous `inputSchema` therefore still fails in
+the application's proof run; the fix is that schema, or `Max_Tool_Item`.
 
-`Add_Sat` saturates purely so the ghost recursion is itself provable over an
-arbitrarily large `Tool_Id`. It loosens nothing: for any catalog within
-`Max_Field` it never saturates, so the concrete bound is identical to a plain
-sum with only the unprovable overflow on `+` removed.
+What the caps buy is that the *listing's* bound does not depend on what any
+accessor returns. `Items_Len_Bound` is `Remaining (T) * (Max_Tool_Item + 1)`, so
+the recursive builder's postcondition is an induction with one step — the
+ceiling, a comma, the tail's bound — and the response's own range check follows
+from a static figure. Neither cost grows with the tool set.
+
+`Item` is a plain function and not an expression function for the same reason:
+an expression function's text is visible wherever it is called, so the recursion
+would drag the accessors' case expressions into every obligation of its own. Its
+postcondition states `'First` as well as the length, `Item` being the left
+operand of a concatenation, which takes its lower bound from there.
+
+A bound stated as the sum of the items does grow, and that is why this one is
+not: each further tool adds a level of the accumulation to unfold and a concrete
+length to add in, all inside a single obligation, so the catalog reaches a size
+past which no timeout helps.
+
+`Max_Tools` is what makes the product safe to state at all, `Tool_Id` being a
+formal discrete type an instantiation could satisfy with one whose positions run
+to `Integer'Last`. A `pragma Compile_Time_Error` on the generic rejects an
+oversized tool set, so that limit is a build failure naming the cap rather than
+an unproved check.
 
 ## Both seams are formal procedures
 
@@ -103,8 +120,10 @@ than documented folklore.
 
 - `crates/spark_mcp/src/spark_mcp-writer.ads` — the whole outbound JSON
   dependency, such as it is.
+- `crates/spark_mcp/src/spark_mcp-server.ads` — `Max_Tool_Item`, `Max_Tools`,
+  and the `Compile_Time_Error` that enforces the second.
 - `crates/spark_mcp/src/spark_mcp-server.adb` — the envelope and result
-  builders; `Item_Len_Bound`, `Add_Sat`, `Items_Len_Bound`.
+  builders; `Item`'s ceiling, `Remaining` and `Items_Len_Bound`.
 - `crates/spark_mcp/prove/proof_harness.ads`,
   `crates/spark_mcp/spark_mcp_prove.gpr` — the instantiation that gives the
   generic body its obligations when the crate is proved alone.
