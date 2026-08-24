@@ -62,25 +62,20 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
    --  from each instantiation's actuals, and no bound on what Client_Meta
    --  returns is statable from inside the generic.
 
-   function Item_Len_Bound (T : Tool_Id) return Natural is
-     (43 + 6 * Name (T)'Length + 6 * Description (T)'Length
-      + Input_Schema (T)'Length)
+   function Remaining (T : Tool_Id) return Positive is
+     (Tool_Id'Pos (Tool_Id'Last) - Tool_Id'Pos (T) + 1)
    with Ghost;
-   --  Length bound on one tools/list item: 39 chars of framing, Writer.Quoted's
-   --  worst case (6x + 2) on the name and description, and the schema verbatim.
-
-   function Add_Sat (A, B : Natural) return Natural is
-     (if A > Natural'Last - B then Natural'Last else A + B)
-   with Ghost;
-   --  Saturating sum, so the ghost accumulation cannot overflow over an
-   --  arbitrarily large tool set. A real catalog never saturates.
+   --  The tools from T to Tool_Id'Last inclusive. A difference of positions,
+   --  never a position itself: Tool_Id may be instantiated with a discrete type
+   --  whose positions run to Integer'Last.
 
    function Items_Len_Bound (T : Tool_Id) return Natural is
-     (if T = Tool_Id'Last then Item_Len_Bound (T)
-      else Add_Sat (Add_Sat (Item_Len_Bound (T), 1),
-                    Items_Len_Bound (Tool_Id'Succ (T))))
-   with Ghost, Subprogram_Variant => (Increases => Tool_Id'Pos (T));
-   --  Length bound on the items from T to Tool_Id'Last, one comma per gap.
+     (Remaining (T) * (Max_Tool_Item + 1))
+   with Ghost;
+   --  Length bound on the items from T to Tool_Id'Last: the per-item ceiling
+   --  and one comma per gap. Independent of what the accessors return, so the
+   --  listing's bound follows from Max_Tool_Item rather than from a sum the
+   --  prover has to accumulate tool by tool.
 
    function Tools_List_Result return String
    with Post =>
@@ -89,12 +84,18 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
    --  for every tool in Tool_Id, the schema text embedded verbatim.
 
    function Tools_List_Result return String is
-      function Item (T : Tool_Id) return String is
-        ("{""name"":" & Writer.Quoted (Name (T))
-         & ",""description"":" & Writer.Quoted (Description (T))
-         & ",""inputSchema"":" & Input_Schema (T) & "}")
-      with Post => Item'Result'Length <= Item_Len_Bound (T);
-      --  One tool's {name, description, inputSchema} object.
+      function Item (T : Tool_Id) return String
+      with
+        --  'First as well as the length: Item is the left operand of a
+        --  concatenation, which takes its lower bound from there.
+        Post => Item'Result'First = 1
+                and then Item'Result'Length <= Max_Tool_Item;
+      --  One tool's {name, description, inputSchema} object. The ceiling is
+      --  what an oversized name, description or schema fails against: 39 chars
+      --  of framing, Writer.Quoted's worst case (6x + 2) on the name and the
+      --  description, and the schema verbatim must fit it, tool by tool. Not an
+      --  expression function, so that a caller works from the ceiling rather
+      --  than from the accessors' text.
 
       function Items_From (T : Tool_Id) return String is
         (if T = Tool_Id'Last then Item (T)
@@ -105,6 +106,14 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
       --  The comma-separated items from T to Tool_Id'Last. Recursing over the
       --  finite enumeration builds the array with no mutable accumulator, so no
       --  bounded or controlled string type is needed.
+
+      function Item (T : Tool_Id) return String is
+      begin
+         return
+           "{""name"":" & Writer.Quoted (Name (T))
+           & ",""description"":" & Writer.Quoted (Description (T))
+           & ",""inputSchema"":" & Input_Schema (T) & "}";
+      end Item;
    begin
       return "{""tools"":[" & Items_From (Tool_Id'First) & "]}";
    end Tools_List_Result;
