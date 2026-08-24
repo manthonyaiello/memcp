@@ -1,7 +1,9 @@
 --  Driver for Memcp.Store: exercises the write, read, list, search, session and
 --  reindex operations against an in-memory database, then the on-disk
---  transcript path against a file-backed one. Built with -gnata, so the Store's
---  and the binding's contracts are checked as it runs.
+--  transcript path against a file-backed one. The closing section covers the
+--  failure paths, breaking the schema behind an open store to reach them.
+--  Built with -gnata, so the Store's and the binding's contracts are checked as
+--  it runs.
 
 with Ada.Command_Line;
 with Ada.Text_IO;
@@ -1180,6 +1182,250 @@ begin
       Check (Scalar (DB_File, "SELECT count(*) FROM summaries"
                      & " WHERE session_id = 'q-3'") = "1",
              "Health: five saves left one summary row");
+
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+   end;
+
+   ------------------------------------------------------------------
+   --  The failure paths. A second connection drops a table out from under an
+   --  open store: nothing the Store's own API accepts can make a statement
+   --  fail, so Db_Error is otherwise unreachable from a test. Each case
+   --  asserts both halves -- that the failure is reported rather than
+   --  swallowed, and that a transaction interrupted part-way left the rows it
+   --  had already touched alone.
+   ------------------------------------------------------------------
+   declare
+      Tmp : constant String :=
+        (if Ada.Environment_Variables.Exists ("TMPDIR")
+         then Ada.Environment_Variables.Value ("TMPDIR")
+         else "/tmp");
+      Base : constant String :=
+        (if Tmp'Length > 0 and then Tmp (Tmp'Last) = '/'
+         then Tmp else Tmp & "/") & "memcp_fault_test";
+      Meta_DB    : constant String := Base & "/meta.db";
+      Summary_DB : constant String := Base & "/summary.db";
+      Chunk_DB   : constant String := Base & "/chunk.db";
+
+      procedure Exec_Raw (Path, Query : String);
+      --  Run a resultless statement against the database at Path, on a
+      --  connection of its own.
+
+      procedure Exec_Raw (Path, Query : String) is
+         DB : Sqlite_Vec_Spark.Database;
+         St : Sqlite_Vec_Spark.Status;
+      begin
+         Sqlite_Vec_Spark.Open (DB, Path, St);
+         if St = Sqlite_Vec_Spark.Ok then
+            Sqlite_Vec_Spark.Execute (DB, Query, St);
+            Check (St = Sqlite_Vec_Spark.Ok, "fixture SQL accepted");
+            Sqlite_Vec_Spark.Close (DB);
+         else
+            Check (False, "fixture database opened");
+         end if;
+      end Exec_Raw;
+   begin
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+      Ada.Directories.Create_Path (Base);
+
+      --  ---- a path SQLite cannot create ----
+      declare
+         FS      : Memcp.Store.Store;
+         Open_FS : Memcp.Store.Open_Status;
+      begin
+         Memcp.Store.Open (FS, Base & "/nonesuch/store.db", Open_FS);
+         Check (Open_FS = Memcp.Store.Cannot_Open,
+                "Open: a path under a missing directory -> Cannot_Open");
+      end;
+
+      --  ---- a database stamped by a different schema version ----
+      Exec_Raw
+        (Meta_DB,
+         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+         & "INSERT INTO meta (key, value) VALUES ('schema_version', '0');");
+      declare
+         MS      : Memcp.Store.Store;
+         Open_MS : Memcp.Store.Open_Status;
+      begin
+         Memcp.Store.Open (MS, Meta_DB, Open_MS);
+         Check (Open_MS = Memcp.Store.Meta_Mismatch,
+                "Open: a foreign schema_version -> Meta_Mismatch");
+         Check (Scalar (Meta_DB, "SELECT value FROM meta"
+                        & " WHERE key = 'schema_version'") = "0",
+                "Open: a refused open rewrites nothing");
+      end;
+
+      --  ---- the summary write path, with its vec0 table gone ----
+      declare
+         S1      : Memcp.Store.Store;
+         Open_S1 : Memcp.Store.Open_Status;
+         R       : Memcp.Store.Save_Result;
+         St      : Memcp.Store.Op_Status;
+         Id      : Memcp.Store.Row_Id := 0;
+      begin
+         Memcp.Store.Open (S1, Summary_DB, Open_S1);
+         Check (Open_S1 = Memcp.Store.Opened, "Fault: the summary store opens");
+
+         if Open_S1 = Memcp.Store.Opened then
+            Memcp.Store.Save
+              (S1, "faults", "diary one", "summary one", Hot (1),
+               Has_Session => False, Session_Id => "",
+               Has_Created => True, Created_At => "2026-06-01T00:00:00+00:00",
+               Surface => "", Surface_Label => "",
+               Result => R, Status => St);
+            Check (St = Memcp.Store.Success, "Fault: the seed row saved");
+            Id := R.Summary_Id;
+
+            Exec_Raw (Summary_DB, "DROP TABLE summary_vec;");
+
+            Memcp.Store.Save
+              (S1, "faults", "diary two", "summary two", Hot (2),
+               Has_Session => False, Session_Id => "",
+               Has_Created => True, Created_At => "2026-06-02T00:00:00+00:00",
+               Surface => "", Surface_Label => "",
+               Result => R, Status => St);
+            Check (St = Memcp.Store.Db_Error,
+                   "Save: a failing embedding write -> Db_Error");
+            Check (Scalar (Summary_DB, "SELECT count(*) FROM summaries") = "1",
+                   "Save: the failed save left no summary row behind");
+            Check (Scalar (Summary_DB, "SELECT count(*) FROM diary") = "1",
+                   "Save: nor a diary line");
+
+            declare
+               Projs : Memcp.Store.Name_List;
+               Hits  : Memcp.Store.Summary_Hit_List;
+               SS    : Memcp.Store.Op_Status;
+            begin
+               Memcp.Store.Search_Summaries
+                 (S1, Hot (1), Projs, 5, Has_Since => False, Since => "",
+                  Has_Until => False, Until_At => "", Result => Hits,
+                  Status => SS);
+               Check (SS = Memcp.Store.Db_Error,
+                      "Search_Summaries: a missing vec0 table -> Db_Error");
+            end;
+
+            --  A forget deletes the embedding first, so this one fails with
+            --  the summary and its diary line already inside the transaction.
+            declare
+               Del   : Boolean;
+               FG_St : Memcp.Store.Op_Status;
+            begin
+               Memcp.Store.Forget_Summary (S1, Id, Del, FG_St);
+               Check (FG_St = Memcp.Store.Db_Error and then not Del,
+                      "Forget_Summary: a failing embedding delete -> Db_Error");
+            end;
+            Check (Scalar (Summary_DB, "SELECT count(*) FROM summaries") = "1",
+                   "Forget_Summary: the interrupted delete kept the summary");
+            Check (Scalar (Summary_DB, "SELECT count(*) FROM diary") = "1",
+                   "Forget_Summary: and the diary line it would have cascaded");
+
+            --  A read that never reaches the missing table is unaffected.
+            declare
+               P    : Memcp.Store.Summary_Ptr;
+               F_St : Memcp.Store.Op_Status;
+            begin
+               Memcp.Store.Fetch_Summary (S1, Id, P, F_St);
+               Check (F_St = Memcp.Store.Success and then P /= null,
+                      "Fetch_Summary: unaffected by the broken table");
+               if P /= null then
+                  Memcp.Store.Free (P);
+               end if;
+            end;
+
+            Memcp.Store.Close (S1);
+         end if;
+      end;
+
+      --  ---- the session write path, with its vec0 table gone ----
+      declare
+         S2      : Memcp.Store.Store;
+         Open_S2 : Memcp.Store.Open_Status;
+         CL      : Memcp.Store.Chunk_Input_List;
+         R       : Memcp.Store.Session_Save_Result;
+         St      : Memcp.Store.Op_Status;
+      begin
+         Memcp.Store.Chunk_Input_Vectors.Append
+           (CL, (Body_Len => 6, Content => "turn 0", Embedding => Hot (1)));
+         Memcp.Store.Chunk_Input_Vectors.Append
+           (CL, (Body_Len => 6, Content => "turn 1", Embedding => Hot (2)));
+
+         Memcp.Store.Open (S2, Chunk_DB, Open_S2);
+         Check (Open_S2 = Memcp.Store.Opened, "Fault: the session store opens");
+
+         if Open_S2 = Memcp.Store.Opened then
+            Memcp.Store.Save_Session
+              (S2, "faults", "se-ok", "raw transcript", CL,
+               Has_Created => True, Created_At => "2026-06-01T00:00:00+00:00",
+               Surface => "", Surface_Label => "",
+               Result => R, Status => St);
+            Check (St = Memcp.Store.Success and then R.Chunk_Count = 2,
+                   "Fault: the seed session saved");
+
+            Exec_Raw (Chunk_DB, "DROP TABLE chunk_vec;");
+
+            Memcp.Store.Save_Session
+              (S2, "faults", "se-bad", "raw transcript", CL,
+               Has_Created => True, Created_At => "2026-06-02T00:00:00+00:00",
+               Surface => "", Surface_Label => "",
+               Result => R, Status => St);
+            Check (St = Memcp.Store.Db_Error,
+                   "Save_Session: a failing chunk embedding -> Db_Error");
+            Check (Scalar (Chunk_DB, "SELECT count(*) FROM sessions") = "1",
+                   "Save_Session: the failed save left no session row");
+            Check (Scalar (Chunk_DB, "SELECT count(*) FROM chunks") = "2",
+                   "Save_Session: nor any orphan chunk");
+
+            --  A reindex deletes the old chunks before inserting the new ones,
+            --  so an interrupted swap is the case that would lose rows.
+            declare
+               Found        : Boolean;
+               Old_C, New_C : Natural;
+               RI_St        : Memcp.Store.Op_Status;
+            begin
+               Memcp.Store.Reindex_Session
+                 (S2, "faults", "se-ok", CL, Found, Old_C, New_C, RI_St);
+               Check (RI_St = Memcp.Store.Db_Error,
+                      "Reindex_Session: a failing re-embed -> Db_Error");
+            end;
+            Check (Scalar (Chunk_DB, "SELECT count(*) FROM chunks") = "2",
+                   "Reindex_Session: the interrupted swap kept the old chunks");
+
+            declare
+               use type Memcp.Store.Chunk_Vectors.Capacity_Range;
+               Turns : Memcp.Store.Chunk_List;
+               FT_St : Memcp.Store.Op_Status;
+            begin
+               Memcp.Store.Fetch_Turns
+                 (S2, "se-ok", Has_Project => False, Project => "",
+                  Has_Start => False, Start_Ord => 0,
+                  Has_End => False, End_Ord => 0,
+                  Has_Tail => False, Tail => 1,
+                  Result => Turns, Status => FT_St);
+               Check (FT_St = Memcp.Store.Success
+                      and then Memcp.Store.Chunk_Vectors.Length (Turns) = 2,
+                      "Fetch_Turns: unaffected by the broken table");
+            end;
+
+            declare
+               Projs, Sess : Memcp.Store.Name_List;
+               Hits        : Memcp.Store.Chunk_Hit_List;
+               SC_St       : Memcp.Store.Op_Status;
+            begin
+               Memcp.Store.Search_Chunks
+                 (S2, Hot (1), Projs, Sess, 5,
+                  Has_Since => False, Since => "",
+                  Has_Until => False, Until_At => "",
+                  Result => Hits, Status => SC_St);
+               Check (SC_St = Memcp.Store.Db_Error,
+                      "Search_Chunks: a missing vec0 table -> Db_Error");
+            end;
+
+            Memcp.Store.Close (S2);
+         end if;
+      end;
 
       if Ada.Directories.Exists (Base) then
          Ada.Directories.Delete_Tree (Base);
