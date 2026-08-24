@@ -17,7 +17,7 @@ REPO="$TEST_TMP/repo"
 make_repo "$REPO" "https://github.com/acme/widget.git"
 
 CONFIG="$TEST_TMP/hooks.env"
-printf ': "${MEMCP_SURFACE_LABEL:=bench}"\n: "${MEMCP_SURFACE_ID:=bench-id}"\n' \
+printf ': "${MEMCP_SURFACE_LABEL:=bench}"\n: "${MEMCP_SURFACE_ID:=bench-id}"\n: "${MEMCP_SURFACE_HOST:=minted-on}"\n' \
     >"$CONFIG"
 
 PAYLOAD=$(printf '{"session_id":"S1","cwd":"%s","source":"startup"}' "$REPO")
@@ -43,6 +43,15 @@ run_start healthy
 BODIES=$(cat "$MEMCP_TEST_BODY_LOG")
 assert_contains "recent carries the surface" \
     '"surface":"bench:bench-id"' "$BODIES"
+
+# The check-in is the only call that can carry these: they are facts about the
+# surface, and the model's calls know none of them.
+assert_contains "recent reports the hook release" \
+    "\"hook_version\":\"$HOOK_VERSION\"" "$BODIES"
+assert_contains "recent reports the host it is running on" \
+    "\"host\":\"$(hostname -s 2>/dev/null || hostname)\"" "$BODIES"
+assert_contains "recent reports the host the identity was minted on" \
+    '"install_host":"minted-on"' "$BODIES"
 
 # --- a healthy fleet says nothing -------------------------------------------
 

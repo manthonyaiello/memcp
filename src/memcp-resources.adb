@@ -124,22 +124,44 @@ package body Memcp.Resources with SPARK_Mode => On is
         (R.The_Store, MS.Health_Window, MS.Health_Threshold, Result, Status);
    end Degraded_Surfaces;
 
+   ------------------
+   -- Fleet_Health --
+   ------------------
+
+   procedure Fleet_Health
+     (R      : Resources;
+      Result : out MS.Surface_Health_List;
+      Status : out MS.Op_Status)
+   is
+   begin
+      if not Is_Open (R) then
+         Result := MS.Surface_Health_Vectors.Empty_Vector;
+         Status := MS.Db_Error;
+         return;
+      end if;
+      MS.Fleet_Health (R.The_Store, MS.Health_Window, Result, Status);
+   end Fleet_Health;
+
    -------------------
    -- Touch_Surface --
    -------------------
 
    procedure Touch_Surface
-     (R      : Resources;
-      Uuid   : String;
-      Label  : String;
-      Status : out MS.Op_Status)
+     (R            : Resources;
+      Uuid         : String;
+      Label        : String;
+      Hook_Version : String;
+      Host         : String;
+      Install_Host : String;
+      Status       : out MS.Op_Status)
    is
    begin
       if not Is_Open (R) then
          Status := MS.Db_Error;
          return;
       end if;
-      MS.Touch_Surface (R.The_Store, Uuid, Label, Status);
+      MS.Touch_Surface
+        (R.The_Store, Uuid, Label, Hook_Version, Host, Install_Host, Status);
    end Touch_Surface;
 
    -------------------

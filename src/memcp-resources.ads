@@ -126,16 +126,33 @@ package Memcp.Resources with SPARK_Mode => On is
    --  @param Result One record per degraded surface; empty means healthy.
    --  @param Status Outcome of the query (Db_Error on failure).
 
-   procedure Touch_Surface
+   procedure Fleet_Health
      (R      : Resources;
-      Uuid   : String;
-      Label  : String;
+      Result : out MS.Surface_Health_List;
       Status : out MS.Op_Status)
+     with Global => (In_Out => Sqlite_Vec_Spark.DBMS);
+   --  Report every known surface over Memcp.Store's Health_Window, degraded
+   --  or not, which is what a diagnosis reads.
+   --  @param R The resources holding the store.
+   --  @param Result One record per known surface, worst gap first.
+   --  @param Status Outcome of the query (Db_Error on failure).
+
+   procedure Touch_Surface
+     (R            : Resources;
+      Uuid         : String;
+      Label        : String;
+      Hook_Version : String;
+      Host         : String;
+      Install_Host : String;
+      Status       : out MS.Op_Status)
      with Global => (In_Out => Sqlite_Vec_Spark.DBMS);
    --  Record a surface as in use now, without it having written anything.
    --  @param R The resources holding the store.
    --  @param Uuid The surface's UUID; empty does nothing.
    --  @param Label The surface's label.
+   --  @param Hook_Version The hook release the surface reports running.
+   --  @param Host The surface's host name now.
+   --  @param Install_Host The host name when the surface's identity was minted.
    --  @param Status Outcome of the write (Db_Error on failure).
 
    procedure Fetch_Summary

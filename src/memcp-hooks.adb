@@ -32,6 +32,13 @@ package body Memcp.Hooks with SPARK_Mode => On is
       return Version;
    end Release;
 
+   ----------------
+   -- Is_Current --
+   ----------------
+
+   function Is_Current (Reported_Version : String) return Boolean is
+     (Release (Reported_Version) = Hook_Version);
+
    -----------------
    -- Client_Meta --
    -----------------
@@ -39,7 +46,7 @@ package body Memcp.Hooks with SPARK_Mode => On is
    function Client_Meta (Client_Name, Client_Version : String) return String is
    begin
       if Is_Hook (Client_Name)
-        and then Release (Client_Version) /= Hook_Version
+        and then not Is_Current (Client_Version)
       then
          return Stale_Meta;
       end if;

@@ -1052,6 +1052,26 @@ begin
          end loop;
          return 0;
       end Missing;
+
+      function Uploaded (Label : String) return String;
+      --  The newest transcript time the last query reports for Label, "" when
+      --  it reports none or does not name Label at all.
+
+      function Uploaded (Label : String) return String is
+         package V renames Memcp.Store.Surface_Health_Vectors;
+      begin
+         for I in V.First_Index (Found) .. V.Last_Index (Found) loop
+            declare
+               E : constant Memcp.Store.Surface_Health :=
+                 V.Element (Found, I);
+            begin
+               if E.Attributed and then E.Label = Label then
+                  return E.Last_Uploaded;
+               end if;
+            end;
+         end loop;
+         return "";
+      end Uploaded;
    begin
       if Ada.Directories.Exists (Base) then
          Ada.Directories.Delete_Tree (Base);
@@ -1111,7 +1131,8 @@ begin
 
          --  A surface that has only ever read is known, and has no sessions to
          --  report on.
-         Memcp.Store.Touch_Surface (HS, "uuid-d", "boxd", St);
+         Memcp.Store.Touch_Surface
+           (HS, "uuid-d", "boxd", "0.6.0", "boxd", "boxd", St);
          Check (St = Memcp.Store.Success, "Health: check-in -> Success");
          Memcp.Store.Degraded_Surfaces
            (HS, Memcp.Store.Health_Window, Memcp.Store.Health_Threshold,
@@ -1119,12 +1140,43 @@ begin
          Check (not Reported ("boxd"),
                 "Health: a surface that only checked in is silent");
 
+         --  A caller that knows less than the last one erases nothing: only
+         --  the label and last_seen are unconditional.
+         Memcp.Store.Touch_Surface (HS, "uuid-d", "boxd", "", "", "", St);
+         Check (St = Memcp.Store.Success, "Health: bare check-in -> Success");
+
+         --  The roster is the same window read without the threshold, so
+         --  everything the metric hides is in it.
+         Memcp.Store.Fleet_Health
+           (HS, Memcp.Store.Health_Window, Found, St);
+         Check (St = Memcp.Store.Success, "Fleet: query -> Success");
+         Check (Reported ("boxa"), "Fleet: a degraded surface");
+         Check (Reported ("boxb"), "Fleet: a healthy surface too");
+         Check (Reported ("boxc"), "Fleet: one below the threshold too");
+         Check (Reported ("boxd"), "Fleet: one that has only checked in");
+         Check (Reported (""), "Fleet: the unattributed group");
+         Check (Missing ("boxb") = 0, "Fleet: a healthy surface has no gap");
+         Check (Uploaded ("boxb") = "2026-08-03T09:00:00Z",
+                "Fleet: the newest transcript per surface");
+         Check (Uploaded ("boxa") = "",
+                "Fleet: a surface that never uploaded reports none");
+
          Memcp.Store.Close (HS);
       end if;
 
       Check (Scalar (DB_File, "SELECT label FROM surfaces"
                      & " WHERE surface_id = 'uuid-d'") = "boxd",
              "Health: the check-in recorded the surface");
+      Check (Scalar (DB_File, "SELECT hook_version FROM surfaces"
+                     & " WHERE surface_id = 'uuid-d'") = "0.6.0",
+             "Health: the check-in recorded the hook version");
+      Check (Scalar (DB_File, "SELECT install_host FROM surfaces"
+                     & " WHERE surface_id = 'uuid-d'") = "boxd",
+             "Health: a later bare check-in kept it");
+      Check (Scalar (DB_File, "SELECT count(*) FROM surfaces"
+                     & " WHERE surface_id = 'uuid-a'"
+                     & " AND hook_version IS NULL") = "1",
+             "Health: a surface that never reported one has none");
       Check (Scalar (DB_File, "SELECT count(*) FROM summaries"
                      & " WHERE session_id = 'q-3'") = "1",
              "Health: five saves left one summary row");

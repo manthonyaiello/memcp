@@ -12,7 +12,7 @@ directly. The reusable library crates live under `crates/`.
 ```
 memcp/
 ├── alire.toml  memcp.gpr  gnat.adc     the memcp bin crate, at the root
-├── src/                                the 9 concrete tools + Store + main
+├── src/                                the 10 concrete tools + Store + main
 ├── scripts/hooks/                      the SessionStart / SessionEnd hooks + installer
 ├── tests/                              memcp_tests.gpr + unit drivers
 │   └── hooks/                          the hooks' own tests (bash, no toolchain)
@@ -30,7 +30,7 @@ memcp/
 
 | Crate | Role |
 |---|---|
-| `memcp` (root) | Composition root: wires the 9 concrete tools into the core and the core into the transport; owns the Store + Embedder singletons and `main`. The only crate that depends on `json`. |
+| `memcp` (root) | Composition root: wires the 10 concrete tools into the core and the core into the transport; owns the Store + Embedder singletons and `main`. The only crate that depends on `json`. |
 | `crates/spark_mcp` | Reusable MCP server. `Spark_Mcp.Server` is the transport-agnostic, json-free, provable core; the frozen seam is `Spark_Mcp.Server.Dispatch (String → Response_Ptr)`. `Spark_Mcp.Http` is the concrete HTTP transport it ships with — MCP-shaped (one route, `POST /mcp`), so it lives here rather than as a peer crate. |
 | `crates/sqlite_vec_spark` | Binding to SQLite3 + sqlite-vec (vendored C amalgamations). Storage + vector-search primitives. |
 | `crates/candle_spark` | Binding to candle (Rust staticlib). Single-embed path: `Embed(text) → [384]`. |

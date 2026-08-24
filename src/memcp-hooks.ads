@@ -9,7 +9,7 @@
 
 package Memcp.Hooks with SPARK_Mode => On is
 
-   Hook_Version : constant String := "0.5.0";
+   Hook_Version : constant String := "0.6.0";
    --  The hook release this server shipped with. Must equal
    --  MEMCP_HOOK_VERSION in scripts/hooks/hook_common.sh, which
    --  scripts/check-hook-version.sh gates.
@@ -21,6 +21,16 @@ package Memcp.Hooks with SPARK_Mode => On is
    --  whole signal: a current hook, a client that is not a hook, and a server
    --  too old to know about any of this all answer without it, so the hook
    --  treats absence as "nothing to report" rather than as "current".
+
+   function Is_Current (Reported_Version : String) return Boolean;
+   --  Whether Reported_Version names the hook release this server shipped
+   --  with. The release part alone is compared: the digest a hook appends as
+   --  build metadata describes files on a machine this server knows nothing
+   --  about. An empty Reported_Version is not current -- a surface with
+   --  nothing on record is not a surface known to be up to date.
+   --  @param Reported_Version A hook release, with optional `+digest` build
+   --    metadata.
+   --  @return True iff its release part equals Hook_Version.
 
    function Client_Meta (Client_Name, Client_Version : String) return String
    with Post => Client_Meta'Result'Length <= Stale_Meta'Length;

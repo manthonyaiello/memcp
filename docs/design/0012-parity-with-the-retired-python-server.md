@@ -44,7 +44,8 @@ divergences** that must not be "fixed" back. Nothing below is a free choice.
 The nine tool names, their descriptions, their `inputSchema` objects and the
 `initialize` instructions text were transcribed from the Python server rather
 than designed here, and each tool's rendered reply matches — field for field —
-what the tool of the same name returned. `MEMCP_DB_PATH`, `MEMCP_PORT` and
+what the tool of the same name returned. A tool added since has no counterpart
+to match and no obligation here: the frozen set is the nine that were inherited. `MEMCP_DB_PATH`, `MEMCP_PORT` and
 `MEMCP_MODEL_PATH` are the same kind of inherited surface: renaming one breaks
 deployed hook scripts and client configuration, not just a test.
 

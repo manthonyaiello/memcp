@@ -11,7 +11,7 @@
 # surface that is behind by even a comment reports as behind, which is the
 # honest answer. Memcp.Hooks.Hook_Version must carry the same string --
 # scripts/check-hook-version.sh gates that, and the bump.
-MEMCP_HOOK_VERSION="0.5.0"
+MEMCP_HOOK_VERSION="0.6.0"
 
 # --- configuration ----------------------------------------------------------
 
@@ -309,6 +309,12 @@ memcp_new_uuid() {
 # Human-readable name for this surface, defaulting to the current host name.
 memcp_surface_label() {
     printf '%s\n' "${MEMCP_SURFACE_LABEL:-$(memcp_hostname)}"
+}
+
+# The host name recorded when this surface's identity was minted. Empty when
+# the installer predates it, which the server reads as nothing to compare.
+memcp_install_host() {
+    printf '%s\n' "${MEMCP_SURFACE_HOST:-}"
 }
 
 # This surface as the server wants it on a write: `label:id`. The id half is

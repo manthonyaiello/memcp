@@ -51,7 +51,7 @@ Neither carries a per-item cap, and that is the point. The bound is generic over
 the tool set: it says the catalog fits *if* the sum fits `Result_Response`'s
 precondition, and GNATprove discharges that concretely **at each
 instantiation** — `crates/spark_mcp/prove/proof_harness.ads` for the crate's own
-two-tool proof, and memcp's nine-tool instantiation in `src/main.adb` under
+two-tool proof, and memcp's ten-tool instantiation in `src/main.adb` under
 `make prove`. A tool with an enormous `inputSchema` therefore fails in the
 application's proof run; the fix is that schema or `Max_Field`, never a cap
 invented inside the core.

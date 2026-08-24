@@ -100,8 +100,9 @@ package body Memcp.Store with SPARK_Mode => On is
    --  The relational schema: meta, projects, surfaces, summaries, diary,
    --  sessions and chunks, with their indexes. Every statement is IF NOT
    --  EXISTS, so applying it to an existing database is a no-op. The
-   --  surface_row_id columns are added by Add_Column instead, which no CREATE
-   --  can express for a table that already exists.
+   --  surface_row_id columns and what a surface reports about itself are added
+   --  by Add_Column instead, which no CREATE can express for a table that
+   --  already exists.
 
    Vec_Summary_SQL : constant String :=
      "CREATE VIRTUAL TABLE IF NOT EXISTS summary_vec"
@@ -876,6 +877,18 @@ package body Memcp.Store with SPARK_Mode => On is
            (S, "sessions", "surface_row_id",
             "INTEGER REFERENCES surfaces(id)", Ok);
       end if;
+
+      --  What a surface says about itself, all nullable: a row predating them
+      --  is a surface that has not checked in since, not a surface at fault.
+      if Ok then
+         Add_Column (S, "surfaces", "hook_version", "TEXT", Ok);
+      end if;
+      if Ok then
+         Add_Column (S, "surfaces", "host", "TEXT", Ok);
+      end if;
+      if Ok then
+         Add_Column (S, "surfaces", "install_host", "TEXT", Ok);
+      end if;
       if not Ok then
          Sql.Close (S.DB);
          Result := Schema_Error;
@@ -1159,14 +1172,13 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
    end List_Projects;
 
-   -----------------------
-   -- Degraded_Surfaces --
-   -----------------------
+   ------------------
+   -- Fleet_Health --
+   ------------------
 
-   procedure Degraded_Surfaces
+   procedure Fleet_Health
      (S      : Store;
       Window : Positive;
-      Least  : Positive;
       Result : out Surface_Health_List;
       Status : out Op_Status)
    is
@@ -1176,21 +1188,37 @@ package body Memcp.Store with SPARK_Mode => On is
         & " m.session_id AS sid,"
         & " ROW_NUMBER() OVER (PARTITION BY m.surface_row_id"
         & " ORDER BY m.created_at DESC) AS rn"
-        & " FROM summaries m WHERE m.session_id IS NOT NULL)"
-        & " SELECT f.label, f.surface_id, COUNT(DISTINCT r.sid),"
-        & " COUNT(DISTINCT CASE WHEN x.id IS NULL THEN r.sid END)"
+        & " FROM summaries m WHERE m.session_id IS NOT NULL),"
+        & " win AS ("
+        & " SELECT r.srf AS srf, COUNT(DISTINCT r.sid) AS sessions,"
+        & " COUNT(DISTINCT CASE WHEN x.id IS NULL THEN r.sid END) AS missing"
         & " FROM ranked r"
-        & " LEFT JOIN surfaces f ON f.id = r.srf"
         & " LEFT JOIN sessions x"
         & " ON x.project_id = r.pid AND x.session_id = r.sid"
         & " WHERE r.rn <= ?"
-        & " GROUP BY r.srf"
-        & " HAVING COUNT(DISTINCT CASE WHEN x.id IS NULL THEN r.sid END) >= ?"
-        & " ORDER BY 4 DESC";
+        & " GROUP BY r.srf)"
+        & " SELECT f.label, f.surface_id, f.last_seen, f.hook_version,"
+        & " f.host, f.install_host,"
+        & " COALESCE (w.sessions, 0), COALESCE (w.missing, 0),"
+        & " (SELECT MAX (m.created_at) FROM summaries m"
+        & "  WHERE m.surface_row_id = f.id),"
+        & " (SELECT MAX (x.created_at) FROM sessions x"
+        & "  WHERE x.surface_row_id = f.id)"
+        & " FROM surfaces f LEFT JOIN win w ON w.srf = f.id"
+        & " UNION ALL"
+        & " SELECT NULL, NULL, NULL, NULL, NULL, NULL,"
+        & " w.sessions, w.missing,"
+        & " (SELECT MAX (m.created_at) FROM summaries m"
+        & "  WHERE m.surface_row_id IS NULL),"
+        & " (SELECT MAX (x.created_at) FROM sessions x"
+        & "  WHERE x.surface_row_id IS NULL)"
+        & " FROM win w WHERE w.srf IS NULL"
+        & " ORDER BY 8 DESC, 3 DESC";
       --  A summary whose session has no sessions row is a session that saved
-      --  and was never uploaded. PARTITION BY collects the rows carrying no
-      --  surface into one group, the same way GROUP BY does, so they are
-      --  windowed and reported together rather than each standing alone.
+      --  and was never uploaded. The roster is driven from surfaces, so a
+      --  surface that has checked in and written nothing still appears; the
+      --  second branch adds the sessions that named no surface, windowed
+      --  together as one group because no row can tell them apart.
 
       Stmt : Sql.Statement;
       St   : Sql.Status;
@@ -1204,9 +1232,6 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
 
       Sql.Bind_Int64 (Stmt, 1, Row_Id (Window), St);
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (Stmt, 2, Row_Id (Least), St);
-      end if;
       if St /= Sql.Ok then
          Sql.Finalize (Stmt);
          return;
@@ -1218,10 +1243,16 @@ package body Memcp.Store with SPARK_Mode => On is
          exit when Surface_Health_Vectors.Length (Result)
                    = Surface_Health_Vectors.Last_Count;
          declare
-            Sess_C : constant Row_Id := Sql.Column_Int64 (Stmt, 2);
-            Miss_C : constant Row_Id := Sql.Column_Int64 (Stmt, 3);
+            Sess_C : constant Row_Id := Sql.Column_Int64 (Stmt, 6);
+            Miss_C : constant Row_Id := Sql.Column_Int64 (Stmt, 7);
             Lab    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 0);
             Uid    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 1);
+            Seen   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 2);
+            Ver    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 3);
+            Hst    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 4);
+            Inst   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
+            Saved  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 8);
+            Upl    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 9);
             Null_L : constant Boolean := Sql.Column_Is_Null (Stmt, 0);
             Attr   : constant Boolean := not Null_L;
             --  Two steps, as in Recent_Diary: a volatile column read may not
@@ -1230,15 +1261,33 @@ package body Memcp.Store with SPARK_Mode => On is
             Surface_Health_Vectors.Append
               (Result,
                Surface_Health'
-                 (Label_Len  => Lab.all'Length,
-                  Uuid_Len   => Uid.all'Length,
-                  Attributed => Attr,
-                  Sessions   => Sess_C,
-                  Missing    => Miss_C,
-                  Label      => Lab.all,
-                  Uuid       => Uid.all));
+                 (Label_Len     => Lab.all'Length,
+                  Uuid_Len      => Uid.all'Length,
+                  Seen_Len      => Seen.all'Length,
+                  Version_Len   => Ver.all'Length,
+                  Host_Len      => Hst.all'Length,
+                  Install_Len   => Inst.all'Length,
+                  Saved_Len     => Saved.all'Length,
+                  Uploaded_Len  => Upl.all'Length,
+                  Attributed    => Attr,
+                  Sessions      => Sess_C,
+                  Missing       => Miss_C,
+                  Label         => Lab.all,
+                  Uuid          => Uid.all,
+                  Last_Seen     => Seen.all,
+                  Hook_Version  => Ver.all,
+                  Host          => Hst.all,
+                  Install_Host  => Inst.all,
+                  Last_Saved    => Saved.all,
+                  Last_Uploaded => Upl.all));
             Sql.Free (Lab);
             Sql.Free (Uid);
+            Sql.Free (Seen);
+            Sql.Free (Ver);
+            Sql.Free (Hst);
+            Sql.Free (Inst);
+            Sql.Free (Saved);
+            Sql.Free (Upl);
          end;
       end loop;
 
@@ -1246,6 +1295,41 @@ package body Memcp.Store with SPARK_Mode => On is
       if St = Sql.Done then
          Status := Success;
       end if;
+   end Fleet_Health;
+
+   -----------------------
+   -- Degraded_Surfaces --
+   -----------------------
+
+   procedure Degraded_Surfaces
+     (S      : Store;
+      Window : Positive;
+      Least  : Positive;
+      Result : out Surface_Health_List;
+      Status : out Op_Status)
+   is
+      Fleet : Surface_Health_List;
+   begin
+      Result := Surface_Health_Vectors.Empty_Vector;
+      Fleet_Health (S, Window, Fleet, Status);
+      if Status /= Success then
+         return;
+      end if;
+
+      for I in Surface_Health_Vectors.First_Index (Fleet)
+               .. Surface_Health_Vectors.Last_Index (Fleet)
+      loop
+         exit when Surface_Health_Vectors.Length (Result)
+                   = Surface_Health_Vectors.Last_Count;
+         declare
+            E : constant Surface_Health :=
+              Surface_Health_Vectors.Element (Fleet, I);
+         begin
+            if E.Missing >= Row_Id (Least) then
+               Surface_Health_Vectors.Append (Result, E);
+            end if;
+         end;
+      end loop;
    end Degraded_Surfaces;
 
    -------------------
@@ -1253,12 +1337,27 @@ package body Memcp.Store with SPARK_Mode => On is
    -------------------
 
    procedure Touch_Surface
-     (S      : Store;
-      Uuid   : String;
-      Label  : String;
-      Status : out Op_Status)
+     (S            : Store;
+      Uuid         : String;
+      Label        : String;
+      Hook_Version : String;
+      Host         : String;
+      Install_Host : String;
+      Status       : out Op_Status)
    is
-      Id : Row_Id;
+      Report : constant String :=
+        "UPDATE surfaces SET"
+        & " hook_version = COALESCE (NULLIF (?, ''), hook_version),"
+        & " host = COALESCE (NULLIF (?, ''), host),"
+        & " install_host = COALESCE (NULLIF (?, ''), install_host)"
+        & " WHERE id = ?";
+      --  NULLIF ahead of COALESCE is what makes a field the caller does not
+      --  know keep the value already on record: only Surface_Row_Id's own
+      --  columns are unconditional.
+
+      Id   : Row_Id;
+      Stmt : Sql.Statement;
+      St   : Sql.Status;
    begin
       Surface_Row_Id (S, Uuid, Label, Now_Iso, Id, Status);
 
@@ -1267,6 +1366,33 @@ package body Memcp.Store with SPARK_Mode => On is
       --  reported a success it did not achieve.
       if Status = Success and then Uuid'Length > 0 and then Id = 0 then
          Status := Db_Error;
+      end if;
+
+      if Status /= Success or else Id = 0 then
+         return;
+      end if;
+
+      Status := Db_Error;
+      Sql.Prepare (S.DB, Report, Stmt, St);
+      if St /= Sql.Ok then
+         return;
+      end if;
+      Sql.Bind_Text (Stmt, 1, Hook_Version, St);
+      if St = Sql.Ok then
+         Sql.Bind_Text (Stmt, 2, Host, St);
+      end if;
+      if St = Sql.Ok then
+         Sql.Bind_Text (Stmt, 3, Install_Host, St);
+      end if;
+      if St = Sql.Ok then
+         Sql.Bind_Int64 (Stmt, 4, Id, St);
+      end if;
+      if St = Sql.Ok then
+         Sql.Step (Stmt, St);
+      end if;
+      Sql.Finalize (Stmt);
+      if St = Sql.Done then
+         Status := Success;
       end if;
    end Touch_Surface;
 

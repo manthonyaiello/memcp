@@ -101,9 +101,11 @@ package Memcp.Json with SPARK_Mode => On is
    --  @return A quoted, escaped JSON string literal for S.
 
    function N (V : Interfaces.Integer_64) return String
-     with Post => N'Result'Length <= 21;
+     with Post => N'Result'First = 1 and then N'Result'Length <= 21;
    --  A JSON integer literal, with no leading blank. Bounded at 20 digits plus a
-   --  sign, so callers may concatenate it directly.
+   --  sign, and 1-based, so callers may concatenate it directly -- a bound on
+   --  the length alone leaves the index of a concatenation starting with it
+   --  unbounded.
    --  @param V The integer value to render.
    --  @return The decimal JSON literal for V (at most 21 characters).
 
