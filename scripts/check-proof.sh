@@ -27,11 +27,15 @@
 #
 # Env:
 #   ALR             path to the alr binary (default: alr)
-#   GNATPROVE_EXTRA extra flags appended to the gnatprove invocation (default
-#                   none). CI sets this to "--timeout=10": --level timeouts are
-#                   wall-clock, not step-bounded, so checks that clear on a fast
-#                   dev machine can time out on the slower CI runner. The extra
-#                   wall-clock reduces that flakiness without weakening --level.
+#   GNATPROVE_EXTRA extra flags appended to the gnatprove invocation, replacing
+#                   the default "--timeout=10". --level timeouts are wall-clock,
+#                   not step-bounded, so a check can clear on one machine and
+#                   time out on another; the extra wall-clock removes that
+#                   without weakening --level. The tools/list length bound needs
+#                   it outright — it is proved by unfolding the accumulation
+#                   once per tool, so its cost grows with the tool set. A
+#                   replacement value must therefore carry a --timeout of its
+#                   own; CI's does, alongside its cache flag.
 #
 set -euo pipefail
 
@@ -50,9 +54,11 @@ case "${1:-}" in
   --list|--update) LIST=1 ;;
 esac
 
-# Unquoted on the command line below so it word-splits into flags when set and
-# expands to nothing when empty (safe under `set -u`).
-EXTRA="${GNATPROVE_EXTRA:-}"
+# Unquoted on the command line below so it word-splits into flags. Defaulted
+# rather than empty: without a --timeout the tools/list bound goes unproved and
+# the gate fails, so the default is what makes a bare run of this script agree
+# with CI.
+EXTRA="${GNATPROVE_EXTRA:---timeout=10}"
 
 echo ">> alr gnatprove -P memcp.gpr -j0 --level=2 --warnings=error $EXTRA"
 # GNATprove exits non-zero when checks are unproved. We do our own gating from

@@ -166,13 +166,24 @@ fi
 
 # The surface rides on `recent` too: it is what records this surface as still
 # working, and what the server answers a warning to when it is missing.
+#
+# The three facts alongside it are this surface's report on itself, and this is
+# the only call that can carry them: the model's calls know none of them, and
+# `initialize` carries a version with no surface to attach it to. Recorded,
+# they stay readable once this surface stops calling, which is when a diagnosis
+# needs them most.
 recent_body=$(jq -nc \
     --arg project "$project" \
     --arg surface "$surface" \
+    --arg hook_version "$MEMCP_HOOK_VERSION" \
+    --arg host "$(memcp_hostname)" \
+    --arg install_host "$(memcp_install_host)" \
     --argjson n "$RECENT_N" \
     '{jsonrpc:"2.0",id:2,method:"tools/call",params:{
         name:"recent",
-        arguments:{projects:[$project],n:$n,surface:$surface}}}')
+        arguments:{projects:[$project],n:$n,surface:$surface,
+                   hook_version:$hook_version,host:$host,
+                   install_host:$install_host}}}')
 
 data=$(curl -sS --max-time 10 -X POST "$MEMCP_URL" \
     -H 'Content-Type: application/json' \

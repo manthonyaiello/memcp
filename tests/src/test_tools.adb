@@ -1,4 +1,4 @@
---  Drives all nine Memcp.Tools entry points in process, with no socket: seeds
+--  Drives all ten Memcp.Tools entry points in process, with no socket: seeds
 --  Memcp.Resources directly, then calls each tool through Invoke and checks the
 --  rendered JSON. No model is loaded, so save, search and fetch_chunks are
 --  checked on their "embedder unavailable" path and the read/list tools against
@@ -15,6 +15,7 @@ with Memcp.Store;
 with Memcp.Resources;
 with Memcp.Tools;
 with Memcp.Extractor;
+with Memcp.Hooks;
 
 procedure Test_Tools with SPARK_Mode => Off is
 
@@ -542,6 +543,162 @@ begin
             end loop;
             Check (Hits = 3, "findings: no finding was filed as a Header");
          end;
+      end;
+   end;
+
+   ------------------------------------------------------------------
+   --  doctor: a remedy per fault, on a fleet seeded one fault at a time
+   ------------------------------------------------------------------
+   --  Every assertion is on the remedy, not the diagnosis: a check that only
+   --  read "unhealthy" would pass while emitting something nobody can act on.
+   --  Driven on a fresh store, because a healthy answer is one of the cases.
+   Memcp.Resources.Close (Res);
+   Memcp.Resources.Open (Res, ":memory:", "", Open_St);
+   Check (Open_St = Memcp.Resources.Ready, "doctor: fresh store -> Ready");
+
+   declare
+      procedure Check_In (Surface, Version, Host, Install : String);
+      --  One SessionStart check-in from Surface, reporting the three facts
+      --  only a hook on that surface can know.
+
+      procedure Check_In (Surface, Version, Host, Install : String) is
+         J : constant String :=
+           Call (Memcp.Tools.Recent,
+                 "{""projects"":[""doc""],""surface"":""" & Surface
+                 & """,""hook_version"":""" & Version
+                 & """,""host"":""" & Host
+                 & """,""install_host"":""" & Install & """}");
+      begin
+         Check (not Has_Sub (J, "ERR["), "doctor: check-in from " & Surface);
+      end Check_In;
+
+      procedure Seed_Gap (Session, Surface, Label : String);
+      --  A session on Surface that saved a summary no transcript followed.
+
+      procedure Seed_Gap (Session, Surface, Label : String) is
+         R  : Memcp.Store.Save_Result;
+         St : Memcp.Store.Op_Status;
+      begin
+         Memcp.Resources.Save
+           (Res,
+            Project       => "doc",
+            Diary_Body    => "d " & Session,
+            Summary_Body  => "b " & Session,
+            Embedding     => Zero,
+            Has_Session   => True,
+            Session_Id    => Session,
+            Has_Created   => True,
+            Created_At    => TS,
+            Surface       => Surface,
+            Surface_Label => Label,
+            Result        => R,
+            Status        => St);
+         Check (St = Memcp.Store.Success, "doctor: seed " & Session);
+      end Seed_Gap;
+
+      Current : constant String := Memcp.Hooks.Hook_Version;
+      --  The release this server shipped with, so the test does not go stale
+      --  on the next bump.
+   begin
+      --  Asked by a caller with no surface, about a fleet it knows nothing
+      --  about: the least context doctor is ever invoked with, and the fault
+      --  that sent the caller here.
+      declare
+         J : constant String := Call (Memcp.Tools.Doctor, "{}");
+      begin
+         Check (Has_Sub (J, """calling_surface"":null"),
+                "doctor: no surface -> says whose call it cannot place");
+         Check (Has_Sub (J, """fault"":""no-surface"""),
+                "doctor: no surface -> a fault of its own");
+         Check (Has_Sub (J, "install.sh"),
+                "doctor: no surface -> remedy names the install step");
+         Check (Has_Sub (J, """surfaces"":[]"),
+                "doctor: an empty fleet is still an answer");
+      end;
+
+      --  One surface, current, writing nothing: the healthy answer.
+      Check_In ("one:one-id", Current, "hostone", "hostone");
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Doctor, "{""surface"":""one:one-id""}");
+      begin
+         Check (Has_Sub (J, """healthy"":true")
+                and then Has_Sub (J, """faults"":[]"),
+                "doctor: a healthy fleet reports healthy, with no remedy");
+         Check (Has_Sub (J, """calling_surface"":""one"""),
+                "doctor: names the surface asking");
+         Check (Has_Sub (J, """hook_version"":""" & Current & """"),
+                "doctor: the roster carries what the surface reported");
+      end;
+
+      --  A surface running hooks older than this server shipped with.
+      Check_In ("two:two-id", "0.4.0", "hosttwo", "hosttwo");
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Doctor, "{""surface"":""one:one-id""}");
+      begin
+         Check (Has_Sub (J, """fault"":""hook-stale"""),
+                "doctor: stale hooks -> a fault");
+         Check (Has_Sub (J, "0.4.0") and then Has_Sub (J, Current),
+                "doctor: stale hooks -> names the version gap");
+         Check (Has_Sub (J, "deploy.sh two"),
+                "doctor: stale hooks -> names the update step and the surface");
+      end;
+
+      --  A surface whose hooks are too old to report a version at all, which
+      --  reads the same as one that has not checked in since memcp recorded
+      --  them -- and takes the same remedy.
+      Check_In ("three:three-id", "", "", "");
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Doctor, "{""surface"":""one:one-id""}");
+      begin
+         Check (Has_Sub (J, """fault"":""hook-version-unknown"""),
+                "doctor: no version on record -> a fault");
+         Check (Has_Sub (J, "deploy.sh three"),
+                "doctor: no version on record -> names the surface and step");
+      end;
+
+      --  A config that turned up on a host it was not minted on: two machines
+      --  writing under one surface id.
+      Check_In ("four:four-id", Current, "clone", "original");
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Doctor, "{""surface"":""one:one-id""}");
+      begin
+         Check (Has_Sub (J, """fault"":""inherited-config"""),
+                "doctor: an inherited config -> a fault");
+         Check (Has_Sub (J, "original") and then Has_Sub (J, "clone"),
+                "doctor: an inherited config -> names both hosts");
+         Check (Has_Sub (J, "MEMCP_SURFACE_ID"),
+                "doctor: an inherited config -> remedy offers the re-roll");
+         Check (Has_Sub (J, "MEMCP_SURFACE_HOST"),
+                "doctor: a rename is not a clone, and takes the other branch");
+      end;
+
+      --  Summaries with no transcripts behind them, on the surface asking:
+      --  the remedy it can run without an ssh destination, plus the log that
+      --  says why.
+      Seed_Gap ("g-1", "one-id", "one");
+      Seed_Gap ("g-2", "one-id", "one");
+      Seed_Gap ("g-3", "one-id", "one");
+
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Doctor, "{""surface"":""one:one-id""}");
+      begin
+         Check (Has_Sub (J, """fault"":""transcripts-missing"""),
+                "doctor: transcripts not arriving -> a fault");
+         Check (Has_Sub (J, """surface"":""one"""),
+                "doctor: transcripts not arriving -> names the surface");
+         Check (Has_Sub (J, "deploy.sh --local"),
+                "doctor: the surface asking gets the local remedy");
+         Check (Has_Sub (J, "memcp-hook.log"),
+                "doctor: and where to look when the remedy does not take");
+         Check (Has_Sub (J, """latest"":""" & TS & """"),
+                "doctor: every fault dates its newest evidence");
+         Check (Has_Sub (J, """missing_transcript"":3"),
+                "doctor: the roster carries the counts behind the fault");
       end;
    end;
 

@@ -261,6 +261,20 @@ host name as of that minting. A config that later turns up on a differently
 named host was inherited — a cloned VM, a restored backup — rather than created
 there, which is what keeps two machines from reporting as one surface.
 
+### Diagnosing a fault
+
+`doctor` answers with one entry per fault, each naming the surface, what is
+wrong, and the command to run: hooks that never checked in or are behind the
+release the server shipped with, transcripts that stopped arriving, a config
+inherited from another host, and a call that carried no surface at all. The
+commands are for the agent to run, since the server may not be on the surface
+being diagnosed. Alongside them is every surface on record with its counts and
+what it last reported — including the surfaces that trip nothing.
+
+The SessionStart check-in reports the hook release, the surface's host name, and
+the host its identity was minted on. Those are recorded per surface, so they
+stay readable after a surface stops calling.
+
 ## Tools
 
 In-session tools (call from inside a Claude Code session via the MCP server):
@@ -273,6 +287,7 @@ In-session tools (call from inside a Claude Code session via the MCP server):
 | `search` | Semantic search over saved Summaries (includes `kind` per hit) |
 | `fetch_summary` | Retrieve a full Summary by id (includes `kind`) |
 | `forget` | Delete a Summary, its diary line, and its embedding by summary id |
+| `doctor` | Diagnose the fleet: one entry per fault naming the surface, what is wrong, and the command that fixes it, plus every surface on record |
 
 `save` has two modes:
 
@@ -345,7 +360,7 @@ so a contract violation fails the run.
 | --- | --- |
 | `test_dispatch` | end-to-end `Dispatch`: the real json `Parse_Envelope` → routing |
 | `test_store` | `Memcp.Store` write/read/list against an in-memory DB |
-| `test_tools` | the 9 tools' JSON marshalling (embedder-off paths) |
+| `test_tools` | the 10 tools' JSON marshalling (embedder-off paths) |
 | `test_spark_mcp` | the json-free `spark_mcp` core: Writer + Respond routing |
 | `sqlite_smoke` | the `sqlite_vec_spark` binding: open → vec0 → KNN match |
 
@@ -359,16 +374,22 @@ port with the real `curl`.
 | `test_faults` | every SessionStart failure path — the block it emits and its exit status — and that SessionEnd uploads under the key SessionStart injected |
 | `test_config` | config file, environment, and which of the two wins |
 | `test_digest` | identity minted once and not re-rolled; a hook edited in place detected |
+| `test_stale` | the staleness verdict: reported where it can be acted on, absence not taken as confirmation |
+| `test_health` | the check-in a surface makes about itself, and the two fleet faults it renders from the answer |
+| `test_deploy` | `deploy.sh` over a stubbed ssh: what is copied, what is wired, and what a missing dependency stops |
 
 ### Proof
 
 ```sh
-make prove         # gnatprove -P memcp.gpr -j0 --level=2
+make prove         # gnatprove -P memcp.gpr -j0 --level=2 --timeout=10
 make prove-mcp     # the same, for the reusable MCP core on its own
 ```
 
 The whole `memcp` crate is `SPARK_Mode => On` and proves to **Silver** (Absence
 of Runtime Errors) at `--level=2`, with no unproved and no justified checks.
+`--level` timeouts are wall-clock, so the run carries a `--timeout` of its own;
+one check — the `tools/list` length bound, proved by unfolding its accumulation
+once per tool — needs it outright.
 
 ### Trust surface
 

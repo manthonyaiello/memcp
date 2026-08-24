@@ -17,7 +17,8 @@ package Memcp.Tools with SPARK_Mode => On is
       Fetch_Summary,
       Upload_Session,
       Fetch_Chunks,
-      Fetch_Turns);
+      Fetch_Turns,
+      Doctor);
    --  memcp's tool set. The enumeration literals are the identifiers; the
    --  lowercase wire names come from Name below.
    --  @enum Recent The N most recent diary Headers.
@@ -30,6 +31,7 @@ package Memcp.Tools with SPARK_Mode => On is
    --    chunks.
    --  @enum Fetch_Chunks Semantic search over session chunks (the Details).
    --  @enum Fetch_Turns Fetch verbatim conversation turns by position.
+   --  @enum Doctor Diagnose the fleet and return a remedy per fault.
 
    function Name (Id : Tool_Id) return String is
      (case Id is
@@ -41,7 +43,8 @@ package Memcp.Tools with SPARK_Mode => On is
          when Fetch_Summary  => "fetch_summary",
          when Upload_Session => "upload_session",
          when Fetch_Chunks   => "fetch_chunks",
-         when Fetch_Turns    => "fetch_turns");
+         when Fetch_Turns    => "fetch_turns",
+         when Doctor         => "doctor");
    --  The wire name (lowercase) of a tool. An expression function in the spec
    --  rather than the body: the generic Server's tools/list length bound is
    --  proved at the instantiation, which can only see each result's length if
@@ -56,7 +59,9 @@ package Memcp.Tools with SPARK_Mode => On is
               & "`entries`. Headers only -- use fetch_summary(summary_id) for "
               & "the full body, unless kind == 'autorecap' (Header text "
               & "already is it). `findings` reports surfaces whose sessions "
-              & "are saving summaries with no transcript behind them.",
+              & "are saving summaries with no transcript behind them. "
+              & "`hook_version`, `host` and `install_host` are the "
+              & "SessionStart hook's report on itself: omit them.",
          when List_Projects =>
             "List every project memcp has seen, newest activity first. "
               & "Each entry carries project, diary_count, and latest_at.",
@@ -84,7 +89,14 @@ package Memcp.Tools with SPARK_Mode => On is
          when Fetch_Turns =>
             "Fetch verbatim conversation turns by position -- NOT "
               & "semantic search. last=N for the final N turns; start/end for a "
-              & "half-open [start,end) slice; neither for the whole session.");
+              & "half-open [start,end) slice; neither for the whole session.",
+         when Doctor =>
+            "Diagnose the memcp fleet. `faults` names, per fault, the "
+              & "surface, what is wrong, and the command that fixes it -- run "
+              & "them locally, since the server may not be on the surface "
+              & "being diagnosed. `surfaces` is every surface on record, "
+              & "including what sits below the alarm line. Call it when a "
+              & "warning or finding says to, or when asked how memcp is.");
    --  The human-readable description of a tool, shown in the tools/list
    --  listing.
    --  @param Id The tool whose description is requested.
@@ -96,7 +108,10 @@ package Memcp.Tools with SPARK_Mode => On is
             "{""type"":""object"",""properties"":{"
               & """projects"":{""type"":""array"",""items"":{""type"":"
               & """string""}},""n"":{""type"":""integer""},"
-              & """surface"":{""type"":""string""}},"
+              & """surface"":{""type"":""string""},"
+              & """hook_version"":{""type"":""string""},"
+              & """host"":{""type"":""string""},"
+              & """install_host"":{""type"":""string""}},"
               & """required"":[""projects""]}",
          when List_Projects =>
             "{""type"":""object"",""properties"":{"
@@ -155,7 +170,10 @@ package Memcp.Tools with SPARK_Mode => On is
               & """start"":{""type"":""integer""},"
               & """end"":{""type"":""integer""},"
               & """surface"":{""type"":""string""}},"
-              & """required"":[""session_id""]}");
+              & """required"":[""session_id""]}",
+         when Doctor =>
+            "{""type"":""object"",""properties"":{"
+              & """surface"":{""type"":""string""}}}");
    --  The JSON Schema for a tool's `arguments` object.
    --  @param Id The tool whose input schema is requested.
    --  @return The JSON Schema text describing the tool's arguments.
@@ -233,7 +251,11 @@ private
      & LF
      & "warning is served with the result, never instead of it -- read it, act on"
      & LF
-     & "it, and tell the user." & LF
+     & "it, and tell the user. `doctor` turns either into a remedy naming the"
+     & LF
+     & "surface, the fault and the command; run the command locally, since the"
+     & LF
+     & "server may not be on the surface at fault." & LF
      & LF
      & "## Saving" & LF
      & LF

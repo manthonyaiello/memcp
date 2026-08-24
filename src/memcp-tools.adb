@@ -19,6 +19,7 @@ with Memcp.Replay;
 with Memcp.Json;
 with Memcp.Log;
 with Memcp.Extractor;
+with Memcp.Hooks;
 with Memcp.Text;
 
 package body Memcp.Tools with SPARK_Mode => On is
@@ -84,6 +85,12 @@ package body Memcp.Tools with SPARK_Mode => On is
 
    function B (V : Boolean) return String is (if V then "true" else "false");
    --  A JSON boolean literal.
+
+   function Or_Null (S : String) return String is
+     (if S'Length = 0 then "null" else Q (S));
+   --  S as a JSON string, or null where the column carried nothing. Absent and
+   --  empty are one fact about a surface, and null is the honest rendering of
+   --  it.
 
    function To_Nat (V : Interfaces.Integer_64) return Natural is
      (if V <= 0 then 0
@@ -969,19 +976,34 @@ package body Memcp.Tools with SPARK_Mode => On is
       Memcp.Text.Add (Buf, "]");
    end Ser_Findings;
 
-   procedure Check_In (R : MR.Resources; Surface : String);
-   --  Note that Surface is in use now. Best effort: a store failure here is
-   --  logged and not returned, since recording the caller is not what the
+   procedure Check_In
+     (R            : MR.Resources;
+      Surface      : String;
+      Hook_Version : String;
+      Host         : String;
+      Install_Host : String);
+   --  Note that Surface is in use now, and record what it reports about
+   --  itself. Only a hook can know the latter three, and only the check-in
+   --  carries them, so they are what makes a surface's release and origin
+   --  readable once it has stopped calling. Best effort: a store failure here
+   --  is logged and not returned, since recording the caller is not what the
    --  caller asked for.
 
-   procedure Check_In (R : MR.Resources; Surface : String) is
+   procedure Check_In
+     (R            : MR.Resources;
+      Surface      : String;
+      Hook_Version : String;
+      Host         : String;
+      Install_Host : String)
+   is
       St : MS.Op_Status;
    begin
       if Surface_Sep (Surface) = 0 then
          return;
       end if;
       MR.Touch_Surface
-        (R, Surface_Id (Surface), Surface_Label (Surface), St);
+        (R, Surface_Id (Surface), Surface_Label (Surface),
+         Hook_Version, Host, Install_Host, St);
       if St /= MS.Success then
          Memcp.Log.Error ("recent: the surface check-in was not recorded");
       end if;
@@ -1082,7 +1104,11 @@ package body Memcp.Tools with SPARK_Mode => On is
                --  this is where a surface is recorded as still working. No
                --  other tool does it: a surface that only ever reads has not
                --  started a session here.
-               Check_In (R, Surf);
+               Check_In
+                 (R, Surf,
+                  MJ.Get_Str (D, "hook_version"),
+                  MJ.Get_Str (D, "host"),
+                  MJ.Get_Str (D, "install_host"));
                MR.Degraded_Surfaces (R, Health, Hst);
                Open_Result (Buf, "entries");
                Ser_Diary (Entries, Buf);
@@ -1729,6 +1755,303 @@ package body Memcp.Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_Upload_Session;
 
+   ---------------
+   -- Diagnosis --
+   ---------------
+
+   --  What `doctor` is made of: one entry per (surface, fault), each carrying
+   --  the command that fixes it. The server may not be running on the surface
+   --  at fault, so a remedy is text for the agent to execute and never
+   --  something memcp does itself.
+
+   Max_Named : constant := 128;
+   --  How much of a surface's own text a fault message repeats. A label, a
+   --  host name and a release are all short by construction, and bounding them
+   --  is what lets a message be built by concatenation -- the counterpart to
+   --  the totality that lets Q quote one.
+
+   function Short (S : String) return String is
+     (if S'Length <= Max_Named then S
+      else S (S'First .. S'First + (Max_Named - 1)))
+   with Post => Short'Result'Length <= Max_Named;
+   --  S truncated to Max_Named characters. Total, so no caller needs a
+   --  precondition for text that arrived from a database column.
+
+   function Deploy (Label : String; Local : Boolean) return String is
+     (if Local
+      then "From a memcp checkout on this surface: scripts/hooks/deploy.sh"
+           & " --local"
+      else "From a memcp checkout: scripts/hooks/deploy.sh " & Short (Label))
+   with Post => Deploy'Result'First = 1
+                and then Deploy'Result'Length <= Max_Named + 64;
+   --  The redeploy command for one surface, which is the remedy for every
+   --  fault a hook release can carry. The surface asking gets the `--local`
+   --  form: `deploy.sh` takes an ssh destination, and the corpus stores a
+   --  label, which is not the same thing.
+
+   procedure Ser_Fault
+     (Buf   : in out Memcp.Text.Builder;
+      First : in out Boolean;
+      Label, Uuid, Fault, Detail, Remedy, Latest : String);
+   --  Append one fault, comma-separating it from any already emitted. An empty
+   --  Label is the group of sessions that named no surface: the fault is real
+   --  and no machine can be named for it, so both identity members are null.
+   --  Latest is the newest evidence behind the claim, which is what tells a
+   --  live fault from corpus history.
+
+   procedure Ser_Fault
+     (Buf   : in out Memcp.Text.Builder;
+      First : in out Boolean;
+      Label, Uuid, Fault, Detail, Remedy, Latest : String)
+   is
+   begin
+      if not First then
+         Memcp.Text.Add (Buf, ",");
+      end if;
+      First := False;
+      Memcp.Text.Add (Buf, "{""surface"":");
+      Memcp.Text.Add (Buf, Or_Null (Label));
+      Memcp.Text.Add (Buf, ",""surface_id"":");
+      Memcp.Text.Add (Buf, Or_Null (Uuid));
+      Memcp.Text.Add (Buf, ",""fault"":");
+      Memcp.Text.Add (Buf, Q (Fault));
+      Memcp.Text.Add (Buf, ",""detail"":");
+      Memcp.Text.Add (Buf, Q (Detail));
+      Memcp.Text.Add (Buf, ",""remedy"":");
+      Memcp.Text.Add (Buf, Q (Remedy));
+      Memcp.Text.Add (Buf, ",""latest"":");
+      Memcp.Text.Add (Buf, Or_Null (Latest));
+      Memcp.Text.Add (Buf, "}");
+   end Ser_Fault;
+
+   procedure Ser_Faults
+     (Fleet : MS.Surface_Health_List;
+      Surf  : String;
+      Buf   : out Memcp.Text.Builder;
+      Any   : out Boolean);
+   --  Render the whole fault array for a call whose surface argument was Surf.
+   --  Any is False only when nothing is wrong anywhere, which is all a healthy
+   --  answer consists of. Built into its own builder because `healthy` is
+   --  emitted ahead of the faults it summarizes.
+
+   procedure Ser_Faults
+     (Fleet : MS.Surface_Health_List;
+      Surf  : String;
+      Buf   : out Memcp.Text.Builder;
+      Any   : out Boolean)
+   is
+      First : Boolean := True;
+      --  False once a fault has been emitted, which is also the answer to
+      --  whether the fleet is healthy.
+
+      Me : constant String := Surface_Id (Surf);
+      --  The caller's own surface id, empty when it gave none.
+   begin
+      Memcp.Text.Reset (Buf);
+      Memcp.Text.Add (Buf, "[");
+
+      if Surface_Sep (Surf) = 0 then
+         --  The condition that most needs diagnosing is the one that sends a
+         --  caller here, so it is a fault of its own rather than only the
+         --  warning every tool already carries.
+         Ser_Fault
+           (Buf, First, "", "", "no-surface",
+            "This call carried no usable surface, so memcp cannot tell which "
+            & "machine is asking and nothing written from here can be traced "
+            & "to one. The memcp SessionStart hook did not run on it, or is "
+            & "too old to inject a surface.",
+            "From a memcp checkout on this surface: scripts/hooks/install.sh, "
+            & "or scripts/hooks/deploy.sh --local. If the hooks are already "
+            & "installed, check the SessionStart entry in "
+            & "~/.claude/settings.json.",
+            "");
+      end if;
+
+      for I in MS.Surface_Health_Vectors.First_Index (Fleet)
+               .. MS.Surface_Health_Vectors.Last_Index (Fleet)
+      loop
+         declare
+            E : constant MS.Surface_Health :=
+              MS.Surface_Health_Vectors.Element (Fleet, I);
+
+            Mine : constant Boolean :=
+              E.Attributed and then Me'Length > 0 and then E.Uuid = Me;
+            --  Whether this row is the surface asking, which is the only one
+            --  whose remedy can be run without an ssh destination.
+         begin
+            if E.Missing >= MS.Health_Threshold then
+               if E.Attributed then
+                  Ser_Fault
+                    (Buf, First, E.Label, E.Uuid, "transcripts-missing",
+                     N (E.Missing) & " of the last " & N (E.Sessions)
+                     & " sessions on this surface saved a summary that no "
+                     & "transcript ever followed, so its SessionEnd hook is "
+                     & "not uploading.",
+                     Deploy (E.Label, Mine)
+                     & ". If the gap persists, read "
+                     & "~/.claude/memcp-hook.log (MEMCP_HOOK_LOG) on that "
+                     & "surface: SessionEnd reports there and nowhere else.",
+                     E.Last_Saved);
+               else
+                  Ser_Fault
+                    (Buf, First, "", "", "unattributed-sessions",
+                     N (E.Missing) & " of the last " & N (E.Sessions)
+                     & " sessions that named no surface at all saved a "
+                     & "summary with no transcript behind it. They are "
+                     & "countable but not attributable, so no one machine can "
+                     & "be named for them.",
+                     "Install the hooks wherever memcp is used: from a memcp "
+                     & "checkout, scripts/hooks/deploy.sh HOST. Read the date "
+                     & "below first -- sessions predating surface provenance "
+                     & "are history, and no redeploy attributes them now.",
+                     E.Last_Saved);
+               end if;
+            end if;
+
+            if E.Attributed and then E.Hook_Version'Length = 0 then
+               Ser_Fault
+                 (Buf, First, E.Label, E.Uuid, "hook-version-unknown",
+                  "No hook version on record. This surface has not started a "
+                  & "session since memcp began recording one, or runs hooks "
+                  & "too old to report it; both are answered by the same "
+                  & "redeploy.",
+                  Deploy (E.Label, Mine), E.Last_Seen);
+            elsif E.Attributed
+              and then not Memcp.Hooks.Is_Current (E.Hook_Version)
+            then
+               Ser_Fault
+                 (Buf, First, E.Label, E.Uuid, "hook-stale",
+                  "Reports hooks " & Short (E.Hook_Version)
+                  & "; this server shipped " & Memcp.Hooks.Hook_Version & ".",
+                  Deploy (E.Label, Mine), E.Last_Seen);
+            end if;
+
+            if E.Attributed
+              and then E.Host'Length > 0
+              and then E.Install_Host'Length > 0
+              and then E.Host /= E.Install_Host
+            then
+               Ser_Fault
+                 (Buf, First, E.Label, E.Uuid, "inherited-config",
+                  "This surface identity was minted on host "
+                  & Short (E.Install_Host) & " and now reports from "
+                  & Short (E.Host)
+                  & ", so its config was inherited rather than created there. "
+                  & "Two machines writing under one surface id corrupt the "
+                  & "provenance of both.",
+                  "If this is a clone, a restore or a fork, re-roll the "
+                  & "identity: delete the MEMCP_SURFACE_ID line from "
+                  & "~/.memcp/hooks.env there and run "
+                  & "scripts/hooks/install.sh. If the machine was only "
+                  & "renamed, set MEMCP_SURFACE_HOST to the new name instead, "
+                  & "which keeps its history under one id.",
+                  E.Last_Seen);
+            end if;
+         end;
+      end loop;
+
+      Memcp.Text.Add (Buf, "]");
+      Any := not First;
+   end Ser_Faults;
+
+   procedure Ser_Fleet
+     (V : MS.Surface_Health_List; Buf : in out Memcp.Text.Builder);
+   --  Render the roster: every surface on record with what it last reported
+   --  and its window counts, faulted or not. What sits below the alarm line is
+   --  most of what a diagnosis is asked for, and `recent` never shows it.
+
+   procedure Ser_Fleet
+     (V : MS.Surface_Health_List; Buf : in out Memcp.Text.Builder)
+   is
+   begin
+      Memcp.Text.Add (Buf, "[");
+      for I in MS.Surface_Health_Vectors.First_Index (V)
+               .. MS.Surface_Health_Vectors.Last_Index (V)
+      loop
+         declare
+            E : constant MS.Surface_Health :=
+              MS.Surface_Health_Vectors.Element (V, I);
+         begin
+            if I > MS.Surface_Health_Vectors.First_Index (V) then
+               Memcp.Text.Add (Buf, ",");
+            end if;
+            Memcp.Text.Add (Buf, "{""surface"":");
+            Memcp.Text.Add
+              (Buf, (if E.Attributed then Q (E.Label) else "null"));
+            Memcp.Text.Add (Buf, ",""surface_id"":");
+            Memcp.Text.Add
+              (Buf, (if E.Attributed then Q (E.Uuid) else "null"));
+            Memcp.Text.Add (Buf, ",""last_seen"":");
+            Memcp.Text.Add (Buf, Or_Null (E.Last_Seen));
+            Memcp.Text.Add (Buf, ",""hook_version"":");
+            Memcp.Text.Add (Buf, Or_Null (E.Hook_Version));
+            Memcp.Text.Add (Buf, ",""host"":");
+            Memcp.Text.Add (Buf, Or_Null (E.Host));
+            Memcp.Text.Add (Buf, ",""install_host"":");
+            Memcp.Text.Add (Buf, Or_Null (E.Install_Host));
+            Memcp.Text.Add (Buf, ",""sessions"":");
+            Memcp.Text.Add (Buf, N (E.Sessions));
+            Memcp.Text.Add (Buf, ",""missing_transcript"":");
+            Memcp.Text.Add (Buf, N (E.Missing));
+            Memcp.Text.Add (Buf, ",""last_saved"":");
+            Memcp.Text.Add (Buf, Or_Null (E.Last_Saved));
+            Memcp.Text.Add (Buf, ",""last_uploaded"":");
+            Memcp.Text.Add (Buf, Or_Null (E.Last_Uploaded));
+            Memcp.Text.Add (Buf, "}");
+         end;
+      end loop;
+      Memcp.Text.Add (Buf, "]");
+   end Ser_Fleet;
+
+   procedure Do_Doctor
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
+   --  doctor: the fleet's faults, each with the command that fixes it. Takes
+   --  no arguments but the surface every tool takes, and answers without one:
+   --  a call with no surface is the fault it most has to explain.
+
+   procedure Do_Doctor
+     (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
+   is
+      D      : MJ.Doc;
+      Fleet  : MS.Surface_Health_List;
+      St     : MS.Op_Status;
+      Buf    : Memcp.Text.Builder;
+      Faults : Memcp.Text.Builder;
+      Any    : Boolean;
+   begin
+      MJ.Open (D, Arguments);
+      declare
+         Surf : constant String := MJ.Get_Str (D, "surface");
+      begin
+         MR.Fleet_Health (R, Fleet, St);
+         if St /= MS.Success then
+            Result := Err (Internal_Error, "doctor: store error");
+         else
+            Ser_Faults (Fleet, Surf, Faults, Any);
+            if Memcp.Text.Overflowed (Faults) then
+               Result := Err (Internal_Error, "result too large");
+            else
+               Open_Result (Buf, "entry");
+               Memcp.Text.Add (Buf, "{""healthy"":");
+               Memcp.Text.Add (Buf, B (not Any));
+               Memcp.Text.Add (Buf, ",""calling_surface"":");
+               Memcp.Text.Add
+                 (Buf,
+                  (if Surface_Sep (Surf) = 0
+                   then "null" else Q (Surface_Label (Surf))));
+               Memcp.Text.Add (Buf, ",""faults"":");
+               Memcp.Text.Add (Buf, Memcp.Text.Value (Faults));
+               Memcp.Text.Add (Buf, ",""surfaces"":");
+               Ser_Fleet (Fleet, Buf);
+               Memcp.Text.Add (Buf, "}");
+               Close_Result (Buf, Surf);
+               Result := OK (Buf);
+            end if;
+         end if;
+      end;
+      MJ.Close (D);
+   end Do_Doctor;
+
    ------------
    -- Invoke --
    ------------
@@ -1755,6 +2078,7 @@ package body Memcp.Tools with SPARK_Mode => On is
          when Fetch_Chunks   => Do_Fetch_Chunks (R, Arguments, Result);
          when Fetch_Turns    => Do_Fetch_Turns (R, Arguments, Result);
          when Upload_Session => Do_Upload_Session (R, Arguments, Result);
+         when Doctor         => Do_Doctor (R, Arguments, Result);
       end case;
    end Invoke;
 

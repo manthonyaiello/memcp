@@ -49,8 +49,10 @@ test-hooks: hook-version ## Run the SessionStart / SessionEnd hook tests
 hook-version: ## Check the hook release string agrees across bash and Ada
 	./scripts/check-hook-version.sh
 
+# --timeout matches scripts/check-proof.sh, so this target and the gate agree on
+# what is proved; see that script for why the wall-clock extra is needed.
 prove: ## Prove memcp to SPARK Silver — AoRTE (--level=2)
-	$(ALR) gnatprove -P memcp.gpr -j0 --level=2
+	$(ALR) gnatprove -P memcp.gpr -j0 --level=2 --timeout=10
 
 # Provision what gnatprove needs WITHOUT building the Rust staticlibs. gnatprove
 # processes memcp.gpr's whole closure via gprbuild, which requires every withed

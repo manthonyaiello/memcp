@@ -206,19 +206,33 @@ package Memcp.Store with SPARK_Mode => On is
    --  A list of project rows, as returned by List_Projects.
 
    type Surface_Health
-     (Label_Len : Natural;   --  Length of Label.
-      Uuid_Len  : Natural) is   --  Length of Uuid.
+     (Label_Len    : Natural;   --  Length of Label.
+      Uuid_Len     : Natural;   --  Length of Uuid.
+      Seen_Len     : Natural;   --  Length of Last_Seen.
+      Version_Len  : Natural;   --  Length of Hook_Version.
+      Host_Len     : Natural;   --  Length of Host.
+      Install_Len  : Natural;   --  Length of Install_Host.
+      Saved_Len    : Natural;   --  Length of Last_Saved.
+      Uploaded_Len : Natural) is   --  Length of Last_Uploaded.
       record
-         Attributed : Boolean;   --  Whether the sessions counted named a surface.
-         Sessions   : Row_Id;    --  Distinct sessions examined.
-         Missing    : Row_Id;    --  Of those, the ones with no transcript.
-         Label      : String (1 .. Label_Len);   --  Surface label ("" when unattributed).
-         Uuid       : String (1 .. Uuid_Len);    --  Surface id ("" when unattributed).
+         Attributed    : Boolean;   --  Whether the sessions counted named a surface.
+         Sessions      : Row_Id;    --  Distinct sessions examined.
+         Missing       : Row_Id;    --  Of those, the ones with no transcript.
+         Label         : String (1 .. Label_Len);   --  Surface label ("" when unattributed).
+         Uuid          : String (1 .. Uuid_Len);    --  Surface id ("" when unattributed).
+         Last_Seen     : String (1 .. Seen_Len);    --  Newest check-in ("" if never).
+         Hook_Version  : String (1 .. Version_Len);   --  Reported hook release ("" if none).
+         Host          : String (1 .. Host_Len);      --  Host name as of that check-in.
+         Install_Host  : String (1 .. Install_Len);   --  Host name when the identity was minted.
+         Last_Saved    : String (1 .. Saved_Len);     --  Newest summary written ("" if none).
+         Last_Uploaded : String (1 .. Uploaded_Len);  --  Newest transcript written ("" if none).
       end record;
-   --  One surface's ingestion health: how many of its recent sessions saved a
-   --  summary, and how many of those never had a transcript uploaded. Sessions
-   --  written with no surface at all are counted together as one group, which
-   --  comes back with Attributed False and both texts empty.
+   --  One surface as the corpus has it: what it last reported about itself, and
+   --  how many of its recent sessions saved a summary that no transcript
+   --  followed. Sessions written with no surface at all are counted together as
+   --  one group, which comes back with Attributed False and every text empty.
+   --  An empty Hook_Version is a surface that has not checked in since memcp
+   --  began recording one, which reads the same as hooks too old to report it.
 
    package Surface_Health_Vectors is new
      SPARK.Containers.Formal.Unbounded_Vectors
@@ -226,12 +240,12 @@ package Memcp.Store with SPARK_Mode => On is
    --  SPARKlib vector instance over Surface_Health.
 
    subtype Surface_Health_List is Surface_Health_Vectors.Vector;
-   --  A list of degraded surfaces, as returned by Degraded_Surfaces.
+   --  A list of surfaces, as returned by Fleet_Health and Degraded_Surfaces.
 
    Health_Window : constant := 20;
-   --  How many of a surface's most recent summary-bearing sessions
-   --  Degraded_Surfaces weighs. Bounds the lookback, so a surface that has
-   --  been retired stops being reported once its last sessions age out.
+   --  How many of a surface's most recent summary-bearing sessions Fleet_Health
+   --  weighs. Bounds the lookback, so a surface that has been retired stops
+   --  being reported once its last sessions age out.
 
    Health_Threshold : constant := 3;
    --  How many sessions in that window must lack a transcript before the
@@ -571,6 +585,24 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Result One row per known project.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
+   procedure Fleet_Health
+     (S      : Store;
+      Window : Positive;
+      Result : out Surface_Health_List;
+      Status : out Op_Status)
+     with Pre => Is_Open (S);
+   --  Every known surface, plus the group of sessions that named none, each
+   --  with what it last reported and how many of its last Window
+   --  summary-bearing sessions have no transcript. Counted per distinct
+   --  session, so a session that saves repeatedly weighs once. Fleet-wide
+   --  rather than project-scoped: a surface whose hooks have stopped cannot
+   --  report on itself, so the answer must be the same from wherever it is
+   --  asked. Worst gap first. Result is empty on Db_Error.
+   --  @param S The open store to read.
+   --  @param Window How many of a surface's recent sessions to weigh.
+   --  @param Result One row per known surface, worst gap first.
+   --  @param Status Success, or Db_Error on a SQLite failure.
+
    procedure Degraded_Surfaces
      (S      : Store;
       Window : Positive;
@@ -578,13 +610,10 @@ package Memcp.Store with SPARK_Mode => On is
       Result : out Surface_Health_List;
       Status : out Op_Status)
      with Pre => Is_Open (S);
-   --  Surfaces that saved summaries without ever uploading the matching
-   --  transcript, at least Least such sessions among the last Window sessions
-   --  that surface saved. Counted per distinct session, so a session that
-   --  saves repeatedly weighs once. Fleet-wide rather than project-scoped: a
-   --  surface whose SessionEnd hook has stopped cannot report on itself, so
-   --  the answer must be the same from wherever it is asked. Result is empty
-   --  on Db_Error, and empty is the healthy answer.
+   --  Fleet_Health narrowed to the surfaces with at least Least sessions
+   --  missing a transcript, which is a stopped SessionEnd as the corpus sees
+   --  it. One query behind both, so what is reported unasked and what a
+   --  diagnosis reports cannot disagree. Empty is the healthy answer.
    --  @param S The open store to read.
    --  @param Window How many of a surface's recent sessions to weigh.
    --  @param Least How many of those must lack a transcript to be reported.
@@ -592,19 +621,27 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Status Success, or Db_Error on a SQLite failure.
 
    procedure Touch_Surface
-     (S      : Store;
-      Uuid   : String;
-      Label  : String;
-      Status : out Op_Status)
+     (S            : Store;
+      Uuid         : String;
+      Label        : String;
+      Hook_Version : String;
+      Host         : String;
+      Install_Host : String;
+      Status       : out Op_Status)
      with Pre => Is_Open (S);
    --  Record surface Uuid as in use now, inserting it when new and refreshing
-   --  its label and last_seen when not. An empty Uuid does nothing and
-   --  succeeds. The only path that records a surface without it writing a row
-   --  of its own, which is what separates a surface that has stopped working
-   --  from one that has merely stopped saving.
+   --  what it reports about itself when not. An empty Uuid does nothing and
+   --  succeeds; any other field left empty keeps whatever is already on
+   --  record, so a caller that knows less than the last one erases nothing.
+   --  The only path that records a surface without it writing a row of its
+   --  own, which is what separates a surface that has stopped working from one
+   --  that has merely stopped saving.
    --  @param S The open store to write.
    --  @param Uuid The surface's UUID; empty does nothing.
    --  @param Label The surface's label, refreshed on every call.
+   --  @param Hook_Version The hook release the surface reports running.
+   --  @param Host The surface's host name now.
+   --  @param Install_Host The host name when the surface's identity was minted.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
    procedure Fetch_Turns
