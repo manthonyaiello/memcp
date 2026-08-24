@@ -395,6 +395,112 @@ package body Memcp.Store with SPARK_Mode => On is
    --  Zero-copy reinterpretation of an embedding as the packed little-endian
    --  float32 blob sqlite-vec stores and compares against.
 
+   -----------------------------
+   -- Checked statement layer --
+   -----------------------------
+
+   Sql_Error : exception;
+   --  A SQLite status that is a failure rather than an answer. An operation
+   --  catches it once, at the frame that owns the transaction. A non-Ok status
+   --  that is an answer -- no such row, the end of a result set -- comes back
+   --  as an out parameter instead, and never reaches here.
+
+   procedure Check (St : Sql.Status)
+     with --  St rather than True: stated as True the handle facts do not
+          --  survive the raise, and Prepare's own exceptional case goes
+          --  unproved.
+          Post => St = Sql.Ok,
+          Exceptional_Cases => (Sql_Error => St /= Sql.Ok);
+   --  Let an Ok status through, and turn any other into Sql_Error.
+
+   procedure Check (St : Sql.Status) is
+   begin
+      if St /= Sql.Ok then
+         raise Sql_Error;
+      end if;
+   end Check;
+
+   procedure Prepare (S : Store; Text : String; Stmt : out Sql.Statement)
+     with Pre  => Is_Open (S) and then Text'Length > 0,
+          Post => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => Sql.Is_Reclaimed (Stmt));
+   --  Compile Text against S. A statement that comes back valid belongs to the
+   --  frame that asked for it, and that frame releases it in its `finally`
+   --  part: only a raise from Prepare itself reclaims.
+
+   procedure Prepare (S : Store; Text : String; Stmt : out Sql.Statement) is
+      St : Sql.Status;
+   begin
+      Sql.Prepare (S.DB, Text, Stmt, St);
+      Check (St);
+   end Prepare;
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : String)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind text at the 1-based Index.
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : String) is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Text (Stmt, Index, Value, St);
+      Check (St);
+   end Bind;
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : Row_Id)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind a rowid at the 1-based Index.
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : Row_Id) is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Int64 (Stmt, Index, Value, St);
+      Check (St);
+   end Bind;
+
+   procedure Bind
+     (Stmt : Sql.Statement; Index : Positive; Value : Packed_Blob)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind a packed embedding at the 1-based Index.
+
+   procedure Bind
+     (Stmt : Sql.Statement; Index : Positive; Value : Packed_Blob)
+   is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Blob (Stmt, Index, Value, St);
+      Check (St);
+   end Bind;
+
+   procedure Reset (Stmt : Sql.Statement)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Return a stepped statement to its initial state, bindings intact.
+
+   procedure Reset (Stmt : Sql.Statement) is
+      St : Sql.Status;
+   begin
+      Sql.Reset (Stmt, St);
+      Check (St);
+   end Reset;
+
+   procedure Step_Row (Stmt : Sql.Statement; Have_Row : out Boolean)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Advance a query one row. Have_Row is False at the end of the result set,
+   --  which is the one non-Ok outcome that is an answer.
+
+   procedure Step_Row (Stmt : Sql.Statement; Have_Row : out Boolean) is
+      St : Sql.Status;
+   begin
+      Sql.Step (Stmt, St);
+      if St /= Sql.Row and then St /= Sql.Done then
+         raise Sql_Error;
+      end if;
+      Have_Row := St = Sql.Row;
+   end Step_Row;
    -------------------
    -- Insert_Chunks --
    -------------------
@@ -939,24 +1045,16 @@ package body Memcp.Store with SPARK_Mode => On is
       Result : out Summary_Ptr;
       Status : out Op_Status)
    is
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
    begin
       Result := null;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Fetch_Summary_SQL, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Int64 (Stmt, 1, Id, St);
-      if St /= Sql.Ok then
-         Sql.Finalize (Stmt);
-         return;
-      end if;
+      Prepare (S, Fetch_Summary_SQL, Stmt);
+      Bind (Stmt, 1, Id);
+      Step_Row (Stmt, Have_Row);
 
-      Sql.Step (Stmt, St);
-      if St = Sql.Row then
+      if Have_Row then
          declare
             Proj : Sql.Text_Ptr := Sql.Column_Text (Stmt, 1);
             Sess : Sql.Text_Ptr := Sql.Column_Text (Stmt, 2);
@@ -992,11 +1090,15 @@ package body Memcp.Store with SPARK_Mode => On is
             Sql.Free (Bod);
             Sql.Free (Kind);
          end;
-         Status := Success;
-      elsif St = Sql.Done then
-         Status := Success;   --  no such id: Result stays null
       end if;
 
+      --  No such id: Result stays null, which is an answer rather than a
+      --  failure.
+      Status := Success;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
    end Fetch_Summary;
 
@@ -1015,7 +1117,6 @@ package body Memcp.Store with SPARK_Mode => On is
         Name_Vectors.Length (Projects);
    begin
       Result := Diary_Vectors.Empty_Vector;
-      Status := Db_Error;
 
       --  No projects, or a filter too long to spell as a bounded IN clause:
       --  both return an empty list with Success.
@@ -1025,44 +1126,39 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
 
       declare
-         K     : constant Positive := Positive (Len_CT);
-         Query : constant String :=
+         K        : constant Positive := Positive (Len_CT);
+         Query    : constant String :=
            "SELECT d.id, p.name, d.summary_id, s.session_id, d.created_at,"
            & " d.body, s.headline, s.kind FROM diary d"
            & " JOIN projects p ON p.id = d.project_id"
            & " JOIN summaries s ON s.id = d.summary_id"
            & " WHERE p.name IN (" & Placeholders (K) & ")"
            & " ORDER BY d.created_at DESC LIMIT ?";
-         Stmt  : Sql.Statement;
-         St    : Sql.Status;
+         Stmt     : Sql.Statement;
+         Have_Row : Boolean;
       begin
-         Sql.Prepare (S.DB, Query, Stmt, St);
-         if St /= Sql.Ok then
-            return;
-         end if;
+         Prepare (S, Query, Stmt);
 
          --  The K project names go to params 1 .. K, the 1-based vector index
          --  doubling as the bind position, and N to the LIMIT param at K + 1.
          for I in Name_Vectors.First_Index (Projects)
                   .. Name_Vectors.Last_Index (Projects)
          loop
-            Sql.Bind_Text
-              (Stmt, I, Name_Vectors.Element (Projects, I).Value, St);
-            exit when St /= Sql.Ok;
+            pragma Loop_Invariant (Sql.Is_Valid (Stmt));
+            --  The enclosing frame's `finally` writes Stmt, which puts it in
+            --  this loop's frame: without the invariant, Prepare's Post does
+            --  not survive the back edge.
+            Bind (Stmt, I, Name_Vectors.Element (Projects, I).Value);
          end loop;
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Stmt, K + 1, Row_Id (N), St);
-         end if;
-         if St /= Sql.Ok then
-            Sql.Finalize (Stmt);
-            return;
-         end if;
+         Bind (Stmt, K + 1, Row_Id (N));
 
          --  One Diary_Entry per row; the Length guard discharges Append's
          --  capacity precondition.
          loop
-            Sql.Step (Stmt, St);
-            exit when St /= Sql.Row;
+            pragma Loop_Invariant (Sql.Is_Valid (Stmt));
+            --  As on the bind loop above.
+            Step_Row (Stmt, Have_Row);
+            exit when not Have_Row;
             exit when Diary_Vectors.Length (Result) = Diary_Vectors.Last_Count;
             declare
                Id_C  : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
@@ -1105,11 +1201,16 @@ package body Memcp.Store with SPARK_Mode => On is
             end;
          end loop;
 
+         --  Leaving the loop with a row still pending is the vector filling
+         --  up: the caller would be handed a truncated list, which is not a
+         --  success.
+         Status := (if Have_Row then Db_Error else Success);
+      finally
          Sql.Finalize (Stmt);
-         if St = Sql.Done then
-            Status := Success;
-         end if;
       end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Recent_Diary;
 
    -------------------
@@ -1127,20 +1228,16 @@ package body Memcp.Store with SPARK_Mode => On is
         & " GROUP BY p.id, p.name"
         & " ORDER BY MAX(d.created_at) IS NULL,"
         & " MAX(d.created_at) DESC, p.name";
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
    begin
       Result := Project_Vectors.Empty_Vector;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Query, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
+      Prepare (S, Query, Stmt);
 
       loop
-         Sql.Step (Stmt, St);
-         exit when St /= Sql.Row;
+         Step_Row (Stmt, Have_Row);
+         exit when not Have_Row;
          exit when
            Project_Vectors.Length (Result) = Project_Vectors.Last_Count;
          declare
@@ -1166,10 +1263,13 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
+      --  As in Recent_Diary: a row still pending means the vector filled.
+      Status := (if Have_Row then Db_Error else Success);
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Status := Success;
-      end if;
    end List_Projects;
 
    ------------------
@@ -1220,26 +1320,17 @@ package body Memcp.Store with SPARK_Mode => On is
       --  second branch adds the sessions that named no surface, windowed
       --  together as one group because no row can tell them apart.
 
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
    begin
       Result := Surface_Health_Vectors.Empty_Vector;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Query, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-
-      Sql.Bind_Int64 (Stmt, 1, Row_Id (Window), St);
-      if St /= Sql.Ok then
-         Sql.Finalize (Stmt);
-         return;
-      end if;
+      Prepare (S, Query, Stmt);
+      Bind (Stmt, 1, Row_Id (Window));
 
       loop
-         Sql.Step (Stmt, St);
-         exit when St /= Sql.Row;
+         Step_Row (Stmt, Have_Row);
+         exit when not Have_Row;
          exit when Surface_Health_Vectors.Length (Result)
                    = Surface_Health_Vectors.Last_Count;
          declare
@@ -1291,10 +1382,13 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
+      --  As in Recent_Diary: a row still pending means the vector filled.
+      Status := (if Have_Row then Db_Error else Success);
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Status := Success;
-      end if;
    end Fleet_Health;
 
    -----------------------
@@ -1439,8 +1533,8 @@ package body Memcp.Store with SPARK_Mode => On is
       --  Tail rows with DESC + LIMIT and SQLite re-sorts them ascending, so
       --  nothing is reversed on the Ada side.
 
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
 
       P_Project : constant Positive := 2;
       --  Placeholder of " AND p.name = ?", right after the session_id one.
@@ -1468,34 +1562,26 @@ package body Memcp.Store with SPARK_Mode => On is
       --  the two disagree.
    begin
       Result := Chunk_Vectors.Empty_Vector;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Query, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
+      Prepare (S, Query, Stmt);
 
-      Sql.Bind_Text (Stmt, 1, Session_Id, St);
-      if St = Sql.Ok and then Has_Project then
-         Sql.Bind_Text (Stmt, P_Project, Project, St);
+      Bind (Stmt, 1, Session_Id);
+      if Has_Project then
+         Bind (Stmt, P_Project, Project);
       end if;
-      if St = Sql.Ok and then Has_Start then
-         Sql.Bind_Int64 (Stmt, P_Start, Start_Ord, St);
+      if Has_Start then
+         Bind (Stmt, P_Start, Start_Ord);
       end if;
-      if St = Sql.Ok and then Has_End then
-         Sql.Bind_Int64 (Stmt, P_End, End_Ord, St);
+      if Has_End then
+         Bind (Stmt, P_End, End_Ord);
       end if;
-      if St = Sql.Ok and then Has_Tail then
-         Sql.Bind_Int64 (Stmt, P_Tail, Row_Id (Tail), St);
-      end if;
-      if St /= Sql.Ok then
-         Sql.Finalize (Stmt);
-         return;
+      if Has_Tail then
+         Bind (Stmt, P_Tail, Row_Id (Tail));
       end if;
 
       loop
-         Sql.Step (Stmt, St);
-         exit when St /= Sql.Row;
+         Step_Row (Stmt, Have_Row);
+         exit when not Have_Row;
          exit when Chunk_Vectors.Length (Result) = Chunk_Vectors.Last_Count;
          declare
             Id_C  : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
@@ -1523,10 +1609,13 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
+      --  As in Recent_Diary: a row still pending means the vector filled.
+      Status := (if Have_Row then Db_Error else Success);
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Status := Success;
-      end if;
    end Fetch_Turns;
 
    ---------------------
@@ -1552,128 +1641,114 @@ package body Memcp.Store with SPARK_Mode => On is
         Len_P > 0 or else Has_Since or else Has_Until;
       Lim         : constant Natural := Natural'Min (Limit, Max_Search_Limit);
       Over        : constant Natural := (if Has_Filters then Lim * 5 else Lim);
-      K1          : Sql.Statement;
-      St          : Sql.Status;
       Count       : Natural := 0;
-      Failed      : Boolean := False;
    begin
       Result := Summary_Hit_Vectors.Empty_Vector;
-      Status := Db_Error;
 
       if Lim = 0 or else Len_P > Max_Filter_Terms then
          Status := Success;
          return;
       end if;
 
-      Sql.Prepare
-        (S.DB,
-         "SELECT rowid, distance FROM summary_vec"
-         & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Blob (K1, 1, Blob, St);
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (K1, 2, Row_Id (Over), St);
-      end if;
-      if St /= Sql.Ok then
-         Sql.Finalize (K1);
-         return;
-      end if;
-
-      --  One prepared per-row fetch, reset and rebound between candidates: the
-      --  filtered over-fetch runs to Lim * 5 rows.
       declare
-         M   : Sql.Statement;
-         MSt : Sql.Status;
+         K1        : Sql.Statement;
+         Have_Cand : Boolean;
       begin
-         Sql.Prepare (S.DB, Fetch_Summary_SQL, M, MSt);
-         if MSt /= Sql.Ok then
-            Sql.Finalize (K1);
-            return;
-         end if;
+         Prepare
+           (S,
+            "SELECT rowid, distance FROM summary_vec"
+            & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1);
+         Bind (K1, 1, Blob);
+         Bind (K1, 2, Row_Id (Over));
 
-         loop
-            Sql.Step (K1, St);
-            exit when St /= Sql.Row;
-            exit when Count >= Lim;
-            exit when Summary_Hit_Vectors.Length (Result)
-                      = Summary_Hit_Vectors.Last_Count;
-            declare
-               Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
-               Dist : constant Interfaces.IEEE_Float_64 :=
-                 Sql.Column_Double (K1, 1);
-            begin
-               Sql.Reset (M, MSt);
-               if MSt = Sql.Ok then
-                  Sql.Bind_Int64 (M, 1, Rid, MSt);
-               end if;
-               if MSt = Sql.Ok then
-                  Sql.Step (M, MSt);
-               end if;
-               if MSt = Sql.Row then
-                  declare
-                     Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 1);
-                     Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
-                     Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 3);
-                     Head  : Sql.Text_Ptr := Sql.Column_Text (M, 4);
-                     Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 5);
-                     Kind  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
-                     Null_S : constant Boolean := Sql.Column_Is_Null (M, 2);
-                     Has_S  : constant Boolean := not Null_S;
-                     --  Two steps, as in Fetch_Summary: a volatile column read
-                     --  may not be an operand of `not`.
-                     Passes : constant Boolean :=
-                       (Len_P = 0 or else Contains (Projects, Proj.all))
-                       and then (not Has_Since or else Crea.all >= Since)
-                       and then (not Has_Until or else Crea.all <= Until_At);
-                  begin
-                     if Passes then
-                        Summary_Hit_Vectors.Append
-                          (Result,
-                           Summary_Hit'
-                             (Project_Len  => Proj.all'Length,
-                              Session_Len  => Sess.all'Length,
-                              Created_Len  => Crea.all'Length,
-                              Headline_Len => Head.all'Length,
-                              Body_Len     => Bod.all'Length,
-                              Kind_Len     => Kind.all'Length,
-                              Id           => Rid,
-                              Has_Session  => Has_S,
-                              Project      => Proj.all,
-                              Session      => Sess.all,
-                              Created_At   => Crea.all,
-                              Headline     => Head.all,
-                              Content      => Bod.all,
-                              Kind         => Kind.all,
-                              Distance     => Dist));
-                        Count := Count + 1;
-                     end if;
-                     Sql.Free (Proj);
-                     Sql.Free (Sess);
-                     Sql.Free (Crea);
-                     Sql.Free (Head);
-                     Sql.Free (Bod);
-                     Sql.Free (Kind);
-                  end;
-               end if;
-               if MSt /= Sql.Row and then MSt /= Sql.Done then
-                  Failed := True;
-               end if;
-            end;
-            exit when Failed;
-         end loop;
+         --  One prepared per-row fetch, reset and rebound between candidates:
+         --  the filtered over-fetch runs to Lim * 5 rows.
+         declare
+            M : Sql.Statement;
+         begin
+            Prepare (S, Fetch_Summary_SQL, M);
 
-         Sql.Finalize (M);
-      end;
+            loop
+               pragma Loop_Invariant
+                 (Sql.Is_Valid (K1) and then Sql.Is_Valid (M));
+               --  Both handles are written by a `finally`, as in Recent_Diary,
+               --  and so are in this loop's frame.
+               Step_Row (K1, Have_Cand);
+               exit when not Have_Cand;
+               exit when Count >= Lim;
+               exit when Summary_Hit_Vectors.Length (Result)
+                         = Summary_Hit_Vectors.Last_Count;
+               declare
+                  Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
+                  Dist : constant Interfaces.IEEE_Float_64 :=
+                    Sql.Column_Double (K1, 1);
+                  Have_Meta : Boolean;
+               begin
+                  Reset (M);
+                  Bind (M, 1, Rid);
+                  Step_Row (M, Have_Meta);
+                  if Have_Meta then
+                     declare
+                        Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 1);
+                        Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
+                        Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 3);
+                        Head  : Sql.Text_Ptr := Sql.Column_Text (M, 4);
+                        Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 5);
+                        Kind  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
+                        Null_S : constant Boolean := Sql.Column_Is_Null (M, 2);
+                        Has_S  : constant Boolean := not Null_S;
+                        --  Two steps, as in Fetch_Summary: a volatile column
+                        --  read may not be an operand of `not`.
+                        Passes : constant Boolean :=
+                          (Len_P = 0 or else Contains (Projects, Proj.all))
+                          and then (not Has_Since or else Crea.all >= Since)
+                          and then (not Has_Until or else Crea.all <= Until_At);
+                     begin
+                        if Passes then
+                           Summary_Hit_Vectors.Append
+                             (Result,
+                              Summary_Hit'
+                                (Project_Len  => Proj.all'Length,
+                                 Session_Len  => Sess.all'Length,
+                                 Created_Len  => Crea.all'Length,
+                                 Headline_Len => Head.all'Length,
+                                 Body_Len     => Bod.all'Length,
+                                 Kind_Len     => Kind.all'Length,
+                                 Id           => Rid,
+                                 Has_Session  => Has_S,
+                                 Project      => Proj.all,
+                                 Session      => Sess.all,
+                                 Created_At   => Crea.all,
+                                 Headline     => Head.all,
+                                 Content      => Bod.all,
+                                 Kind         => Kind.all,
+                                 Distance     => Dist));
+                           Count := Count + 1;
+                        end if;
+                        Sql.Free (Proj);
+                        Sql.Free (Sess);
+                        Sql.Free (Crea);
+                        Sql.Free (Head);
+                        Sql.Free (Bod);
+                        Sql.Free (Kind);
+                     end;
+                  end if;
+               end;
+            end loop;
+         finally
+            Sql.Finalize (M);
+         end;
 
-      Sql.Finalize (K1);
-      --  Done means the candidates were exhausted, Row that the loop stopped
-      --  early with enough hits or at capacity: both are success, and any other
-      --  Step code is a failure.
-      if not Failed and then (St = Sql.Done or else St = Sql.Row) then
+         --  Stopping early -- enough hits, or at capacity -- is as much a
+         --  success as exhausting the candidates: a partial read is still a
+         --  read. Only an unreadable row is a failure, and that raises.
          Status := Success;
-      end if;
+      finally
+         Sql.Finalize (K1);
+      end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Search_Summaries;
 
    -------------------
@@ -1709,13 +1784,9 @@ package body Memcp.Store with SPARK_Mode => On is
         Len_P > 0 or else Len_S > 0 or else Has_Since or else Has_Until;
       Lim         : constant Natural := Natural'Min (Limit, Max_Search_Limit);
       Over        : constant Natural := (if Has_Filters then Lim * 5 else Lim);
-      K1          : Sql.Statement;
-      St          : Sql.Status;
       Count       : Natural := 0;
-      Failed      : Boolean := False;
    begin
       Result := Chunk_Hit_Vectors.Empty_Vector;
-      Status := Db_Error;
 
       if Lim = 0
         or else Len_P > Max_Filter_Terms
@@ -1725,107 +1796,96 @@ package body Memcp.Store with SPARK_Mode => On is
          return;
       end if;
 
-      Sql.Prepare
-        (S.DB,
-         "SELECT rowid, distance FROM chunk_vec"
-         & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Blob (K1, 1, Blob, St);
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (K1, 2, Row_Id (Over), St);
-      end if;
-      if St /= Sql.Ok then
-         Sql.Finalize (K1);
-         return;
-      end if;
-
-      --  One prepared per-row fetch, reset and rebound between candidates, as
-      --  in Search_Summaries.
       declare
-         M   : Sql.Statement;
-         MSt : Sql.Status;
+         K1        : Sql.Statement;
+         Have_Cand : Boolean;
       begin
-         Sql.Prepare (S.DB, Chunk_By_Id_SQL, M, MSt);
-         if MSt /= Sql.Ok then
-            Sql.Finalize (K1);
-            return;
-         end if;
+         Prepare
+           (S,
+            "SELECT rowid, distance FROM chunk_vec"
+            & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1);
+         Bind (K1, 1, Blob);
+         Bind (K1, 2, Row_Id (Over));
 
-         loop
-            Sql.Step (K1, St);
-            exit when St /= Sql.Row;
-            exit when Count >= Lim;
-            exit when Chunk_Hit_Vectors.Length (Result)
-                      = Chunk_Hit_Vectors.Last_Count;
-            declare
-               Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
-               Dist : constant Interfaces.IEEE_Float_64 :=
-                 Sql.Column_Double (K1, 1);
-            begin
-               Sql.Reset (M, MSt);
-               if MSt = Sql.Ok then
-                  Sql.Bind_Int64 (M, 1, Rid, MSt);
-               end if;
-               if MSt = Sql.Ok then
-                  Sql.Step (M, MSt);
-               end if;
-               if MSt = Sql.Row then
-                  declare
-                     Sr_C  : constant Row_Id := Sql.Column_Int64 (M, 1);
-                     Ord_C : constant Row_Id := Sql.Column_Int64 (M, 3);
-                     Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
-                     Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 4);
-                     Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 5);
-                     Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
-                     Passes : constant Boolean :=
-                       (Len_P = 0 or else Contains (Projects, Proj.all))
-                       and then
-                         (Len_S = 0 or else Contains (Session_Ids, Sess.all))
-                       and then (not Has_Since or else Crea.all >= Since)
-                       and then (not Has_Until or else Crea.all <= Until_At);
-                  begin
-                     if Passes then
-                        Chunk_Hit_Vectors.Append
-                          (Result,
-                           Chunk_Hit'
-                             (Project_Len    => Proj.all'Length,
-                              Body_Len       => Bod.all'Length,
-                              Created_Len    => Crea.all'Length,
-                              Session_Len    => Sess.all'Length,
-                              Id             => Rid,
-                              Session_Row_Id => Sr_C,
-                              Ordinal        => Ord_C,
-                              Project        => Proj.all,
-                              Content        => Bod.all,
-                              Created_At     => Crea.all,
-                              Session        => Sess.all,
-                              Distance       => Dist));
-                        Count := Count + 1;
-                     end if;
-                     Sql.Free (Proj);
-                     Sql.Free (Bod);
-                     Sql.Free (Crea);
-                     Sql.Free (Sess);
-                  end;
-               end if;
-               if MSt /= Sql.Row and then MSt /= Sql.Done then
-                  Failed := True;
-               end if;
-            end;
-            exit when Failed;
-         end loop;
+         --  One prepared per-row fetch, reset and rebound between candidates,
+         --  as in Search_Summaries.
+         declare
+            M : Sql.Statement;
+         begin
+            Prepare (S, Chunk_By_Id_SQL, M);
 
-         Sql.Finalize (M);
-      end;
+            loop
+               pragma Loop_Invariant
+                 (Sql.Is_Valid (K1) and then Sql.Is_Valid (M));
+               --  As in Search_Summaries.
+               Step_Row (K1, Have_Cand);
+               exit when not Have_Cand;
+               exit when Count >= Lim;
+               exit when Chunk_Hit_Vectors.Length (Result)
+                         = Chunk_Hit_Vectors.Last_Count;
+               declare
+                  Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
+                  Dist : constant Interfaces.IEEE_Float_64 :=
+                    Sql.Column_Double (K1, 1);
+                  Have_Meta : Boolean;
+               begin
+                  Reset (M);
+                  Bind (M, 1, Rid);
+                  Step_Row (M, Have_Meta);
+                  if Have_Meta then
+                     declare
+                        Sr_C  : constant Row_Id := Sql.Column_Int64 (M, 1);
+                        Ord_C : constant Row_Id := Sql.Column_Int64 (M, 3);
+                        Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
+                        Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 4);
+                        Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 5);
+                        Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
+                        Passes : constant Boolean :=
+                          (Len_P = 0 or else Contains (Projects, Proj.all))
+                          and then
+                            (Len_S = 0
+                             or else Contains (Session_Ids, Sess.all))
+                          and then (not Has_Since or else Crea.all >= Since)
+                          and then (not Has_Until or else Crea.all <= Until_At);
+                     begin
+                        if Passes then
+                           Chunk_Hit_Vectors.Append
+                             (Result,
+                              Chunk_Hit'
+                                (Project_Len    => Proj.all'Length,
+                                 Body_Len       => Bod.all'Length,
+                                 Created_Len    => Crea.all'Length,
+                                 Session_Len    => Sess.all'Length,
+                                 Id             => Rid,
+                                 Session_Row_Id => Sr_C,
+                                 Ordinal        => Ord_C,
+                                 Project        => Proj.all,
+                                 Content        => Bod.all,
+                                 Created_At     => Crea.all,
+                                 Session        => Sess.all,
+                                 Distance       => Dist));
+                           Count := Count + 1;
+                        end if;
+                        Sql.Free (Proj);
+                        Sql.Free (Bod);
+                        Sql.Free (Crea);
+                        Sql.Free (Sess);
+                     end;
+                  end if;
+               end;
+            end loop;
+         finally
+            Sql.Finalize (M);
+         end;
 
-      Sql.Finalize (K1);
-      --  As in Search_Summaries: Row (stopped early) and Done (exhausted) are
-      --  both success, and any other Step code is a failure.
-      if not Failed and then (St = Sql.Done or else St = Sql.Row) then
+         --  As in Search_Summaries: stopping early is still a read.
          Status := Success;
-      end if;
+      finally
+         Sql.Finalize (K1);
+      end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Search_Chunks;
 
    --------------------
