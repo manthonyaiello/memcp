@@ -22,14 +22,14 @@ memcp distinguishes four levels of detail for any past session:
 
 | Term | What | Where |
 | --- | --- | --- |
-| **Header** | 1–2 line title that surfaces in `recent()` and `search()` hits. The 5 most recent Headers are injected into Claude's starting context by the `SessionStart` hook. This adds up to about 10 lines to your context window. | `summaries.headline` |
+| **Header** | 1–2 line title, written by the model as `save`'s `header` argument and stored exactly as written. It surfaces in `recent()` and `search()` hits, and the 5 most recent are injected into Claude's starting context by the `SessionStart` hook, so a Header is what decides whether the Summary behind it is worth fetching. This adds up to about 10 lines to your context window. | `summaries.header` |
 | **Summary** | Possibly long, semi-structured account of the session. Not injected into starting context, but reachable from the injected Headers if Claude determines that a Header is relevant to your discussion. | `summaries.body` |
 | **Details** | The verbatim conversation, one embedded chunk per turn (a single user or assistant message). Thinking, tool calls, and tool results are deliberately not stored — only what was actually said. `fetch_chunks` searches turns by relevance; `fetch_turns` retrieves them by position (`ordinal` = turn index, e.g. `last=2`). Both can be scoped by `session_id`. | `chunks.body` |
 | **Session** | The raw `.jsonl` transcript itself. Never surfaced by Claude through the `memcp`. Retrieved (over the HTTP MCP connection, thus allowing session files to be saved from remote Claude sessions to the machine running `memcp`) so that you always have a full backup. | on disk, write-only from the model's perspective |
 
 Every Header carries a `kind`:
 
-- `kind="diary"` — the model called `save()` and wrote a real Summary.
+- `kind="authored"` — the model called `save()` and wrote both.
 - `kind="autorecap"` — the model didn't `save()`, so the SessionEnd hook's
   upload found a `※ recap` line in the transcript and used it as the Header.
   For these, the Header text **is** the Summary text — there's nothing more
@@ -177,9 +177,9 @@ time. A surface you miss says so on its next session start (see
 
 **SessionStart** derives the project key and this surface's `label:id`, emits
 both in a `<memcp-session>` block for the model to use verbatim, and prints the
-most recent diary entries for
+most recent Headers for
 that project inside a `<memcp-prior-sessions>` block, which Claude picks up as
-first-turn context. On `source=resume` and `source=compact` the diary listing
+first-turn context. On `source=resume` and `source=compact` the Header listing
 is skipped — the model already has that context — but the key is still injected,
 because a compaction can drop it.
 
@@ -197,7 +197,7 @@ stores one searchable chunk per turn. If no Header exists for that
 `session_id` and the transcript contains a `※ recap` line, the server writes
 a `kind="autorecap"` Header so the session is at least anchored in
 `recent()`. A real `save()` from the model always takes precedence —
-autorecap never overwrites a diary entry. Idempotent on
+autorecap never overwrites an authored Header. Idempotent on
 `(project, session_id)`: re-runs are no-ops.
 
 ### One project key per repository
@@ -281,28 +281,28 @@ In-session tools (call from inside a Claude Code session via the MCP server):
 
 | Tool | Purpose |
 | --- | --- |
-| `list_projects` | Enumerate known projects with diary counts and latest activity; use to discover scopes for `recent` / `search` |
+| `list_projects` | Enumerate known projects with Header counts and latest activity; use to discover scopes for `recent` / `search` |
 | `recent` | N most recent Headers for the given projects (includes `kind`), plus `findings` on surfaces whose transcripts stopped arriving |
-| `save` | Write a `(diary line, structured summary)` pair; session-scoped upsert when `session_id` is provided, otherwise content-idempotent |
+| `save` | Write a `(header, structured summary)` pair; session-scoped upsert when `session_id` is provided, otherwise content-idempotent |
 | `search` | Semantic search over saved Summaries (includes `kind` per hit) |
 | `fetch_summary` | Retrieve a full Summary by id (includes `kind`) |
-| `forget` | Delete a Summary, its diary line, and its embedding by summary id |
+| `forget` | Delete a Summary and its embedding by summary id |
 | `doctor` | Diagnose the fleet: one entry per fault naming the surface, what is wrong, and the command that fixes it, plus every surface on record |
 
 `save` has two modes:
 
 - **Session-scoped upsert** (when `session_id` is provided): a second
   `save()` within the same session **replaces** that session's existing
-  Header in place — same `summary_id` and `diary_id`, new
-  body/headline/embedding/timestamp/kind. The response carries
+  Header in place — same `summary_id`, new
+  header/body/embedding/timestamp/kind. The response carries
   `already_existed: true, replaced: true`. This lets the model save at
   an early milestone and re-save when more lands without producing
   multiple Headers for one session. An identical retry (same content)
   is a no-op: `already_existed: true, replaced: false`. A real `save()`
   also promotes a prior `kind="autorecap"` row for the same session
-  into a real `kind="diary"` entry.
+  into a `kind="authored"` one.
 - **Content-idempotent insert** (no `session_id`, or no prior row for
-  that session): a retry with the same `(project, diary, summary)`
+  that session): a retry with the same `(project, header, summary)`
   returns the original ids with `already_existed: true, replaced: false`;
   otherwise it inserts fresh. Safe for the harness to retry when an
   encoding glitch drops a parameter on the first attempt.

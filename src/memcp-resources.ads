@@ -90,18 +90,18 @@ package Memcp.Resources with SPARK_Mode => On is
    --  caller needs no precondition of its own.
    ---------------------------------------------------------------------------
 
-   procedure Recent_Diary
+   procedure Recent_Headers
      (R        : Resources;
       Projects : MS.Name_List;
       N        : Natural;
-      Result   : out MS.Diary_Entry_List;
+      Result   : out MS.Header_List;
       Status   : out MS.Op_Status)
      with Global => (In_Out => Sqlite_Vec_Spark.DBMS);
-   --  Return the most recent diary entries across the given projects.
+   --  Return the most recent Headers across the given projects.
    --  @param R The resources holding the store.
-   --  @param Projects The projects to draw diary entries from (empty for all).
+   --  @param Projects The projects to draw Headers from (empty for all).
    --  @param N Maximum number of entries to return.
-   --  @param Result The diary entries, most recent first.
+   --  @param Result The Headers, most recent first.
    --  @param Status Outcome of the query (Db_Error on failure).
 
    procedure List_Projects
@@ -248,7 +248,7 @@ package Memcp.Resources with SPARK_Mode => On is
    procedure Save
      (R            : Resources;
       Project      : String;
-      Diary_Body   : String;
+      Header_Text   : String;
       Summary_Body : String;
       Embedding    : Candle_Spark.Embedding;
       Has_Session  : Boolean;
@@ -260,10 +260,10 @@ package Memcp.Resources with SPARK_Mode => On is
       Result       : out MS.Save_Result;
       Status       : out MS.Op_Status)
      with Global => (In_Out => (Sqlite_Vec_Spark.DBMS, Ada.Text_IO.File_System));
-   --  Persist a diary headline plus its summary and embedding for a project.
+   --  Persist a Header plus its summary and embedding for a project.
    --  @param R The resources holding the store.
    --  @param Project The project the entry belongs to.
-   --  @param Diary_Body The single-line diary headline.
+   --  @param Header_Text The Header line, stored as authored.
    --  @param Summary_Body The full structured summary text.
    --  @param Embedding The summary embedding vector.
    --  @param Has_Session Whether Session_Id is supplied.
@@ -327,11 +327,11 @@ package Memcp.Resources with SPARK_Mode => On is
       Result      : out MS.Autorecap_Result;
       Status      : out MS.Op_Status)
      with Global => (In_Out => (Sqlite_Vec_Spark.DBMS, Ada.Text_IO.File_System));
-   --  Persist a fallback autorecap summary/diary pair for a session.
+   --  Persist a fallback autorecap Header and summary for a session.
    --  @param R The resources holding the store.
    --  @param Project The project the recap belongs to.
    --  @param Session_Id Identifier of the session being recapped.
-   --  @param Recap_Text The recap text stored as both summary and diary.
+   --  @param Recap_Text The recap text, stored as both Header and summary.
    --  @param Embedding The recap embedding vector.
    --  @param Has_Created Whether Created_At is supplied.
    --  @param Created_At Creation timestamp (used only when Has_Created is True).

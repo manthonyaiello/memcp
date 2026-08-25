@@ -135,27 +135,27 @@ begin
                    "{""query"":""hi"",""since"":""garbage""}"), "ISO-8601"),
           "search with malformed since -> invalid params");
    Check (Has_Sub (Call (Memcp.Tools.Save,
-                   "{""project"":""demo"",""diary"":""\n"",""summary"":""\t""}"),
-                   "diary"),
-          "save with whitespace-only diary/summary -> invalid params");
+                   "{""project"":""demo"",""header"":""\n"",""summary"":""\t""}"),
+                   "header"),
+          "save with whitespace-only header/summary -> invalid params");
    Check (Has_Sub (Call (Memcp.Tools.Save,
-            "{""project"":""demo"",""diary"":""d"",""summary"":""s""}"),
+            "{""project"":""demo"",""header"":""h"",""summary"":""s""}"),
             "embedder"),
           "save without model -> embedder unavailable");
-   --  A leaked-parameter save: the summary swallowed the diary across a
-   --  </parameter><parameter name="diary"> boundary, with diary omitted. The
+   --  A leaked-parameter save: the summary swallowed the header across a
+   --  </parameter><parameter name="header"> boundary, with header omitted. The
    --  salvage must split it back apart, so the emptiness gate passes and the
-   --  call reaches the embedder-unavailable path rather than "diary required".
+   --  call reaches the embedder-unavailable path rather than "header required".
    Check (Has_Sub (Call (Memcp.Tools.Save,
             "{""project"":""demo"",""summary"":""real summary</parameter>"
-            & "<parameter name=\""diary\"">the diary</parameter>""}"),
+            & "<parameter name=\""header\"">the header</parameter>""}"),
             "embedder"),
-          "save with leaked diary boundary -> salvaged, reaches embedder");
+          "save with leaked header boundary -> salvaged, reaches embedder");
    --  A leaked tag may carry an `ns:`-style namespace prefix; it must still
-   --  salvage rather than fall through to "diary required".
+   --  salvage rather than fall through to "header required".
    Check (Has_Sub (Call (Memcp.Tools.Save,
             "{""project"":""demo"",""summary"":""real summary</ns:parameter>"
-            & "<ns:parameter name=\""diary\"">the diary</parameter>""}"),
+            & "<ns:parameter name=\""header\"">the header</parameter>""}"),
             "embedder"),
           "save with namespace-prefixed leaked boundary -> salvaged");
    --  With both fields supplied, a boundary-looking sequence is content, not a
@@ -163,8 +163,8 @@ begin
    --  truncate it to empty and reject the save, so reaching the embedder gate is
    --  what says it was left intact.
    Check (Has_Sub (Call (Memcp.Tools.Save,
-            "{""project"":""demo"",""diary"":""real diary"","
-            & """summary"":""</parameter><parameter name=\""diary\"">"
+            "{""project"":""demo"",""header"":""real header"","
+            & """summary"":""</parameter><parameter name=\""header\"">"
             & "leaked""}"),
             "embedder"),
           "save quoting boundary with both fields present -> not split");
@@ -173,7 +173,7 @@ begin
    Check (Has_Sub (Call (Memcp.Tools.Fetch_Chunks, "{""query"":""hi""}"),
                    "embedder"),
           "fetch_chunks without model -> embedder unavailable");
-   Check (Has_Sub (Call (Memcp.Tools.Save, "{""diary"":""d"",""summary"":""s""}"),
+   Check (Has_Sub (Call (Memcp.Tools.Save, "{""header"":""h"",""summary"":""s""}"),
                    "project"),
           "save without project -> invalid params");
    --  upload_session, no-model paths. A transcript with turns needs the
@@ -285,7 +285,7 @@ begin
       Memcp.Resources.Save
         (Res,
          Project      => "demo",
-         Diary_Body   => "a diary headline",
+         Header_Text  => "an authored header",
          Summary_Body => "the full summary body",
          Embedding    => Zero,
          Has_Session  => True,
@@ -329,8 +329,8 @@ begin
       J : constant String := Call (Memcp.Tools.List_Projects, "{}");
    begin
       Check (Has_Sub (J, """project"":""demo""")
-             and then Has_Sub (J, """diary_count"":1"),
-             "list_projects (seeded) -> demo, diary_count 1");
+             and then Has_Sub (J, """header_count"":1"),
+             "list_projects (seeded) -> demo, header_count 1");
    end;
 
    --  recent returns the seeded Header with its session + kind.
@@ -338,11 +338,12 @@ begin
       J : constant String :=
         Call (Memcp.Tools.Recent, "{""projects"":[""demo""],""n"":5}");
    begin
-      --  The headline is derived from the summary body, not the diary line.
-      Check (Has_Sub (J, """headline"":""the full summary body""")
+      --  The Header is what save was handed, not anything read off the body.
+      Check (Has_Sub (J, """header"":""an authored header""")
+             and then not Has_Sub (J, """header"":""the full summary body""")
              and then Has_Sub (J, """session_id"":""sess-1""")
-             and then Has_Sub (J, """kind"":""diary"""),
-             "recent (seeded) -> headline/session/kind");
+             and then Has_Sub (J, """kind"":""authored"""),
+             "recent (seeded) -> authored header/session/kind");
    end;
 
    --  fetch_summary of the seeded id returns the full body.
@@ -440,7 +441,7 @@ begin
    --  Every tool warns about a surface it did not get
    ------------------------------------------------------------------
    --  Gating the writes alone would leave the fault behind an event that may
-   --  never happen: a session whose diary comes from SessionEnd never calls
+   --  never happen: a session whose Header comes from SessionEnd never calls
    --  save. A read is the earliest moment this can be said.
    declare
       procedure Warns (Id : Memcp.Tools.Tool_Id; Args, Label : String);
@@ -493,7 +494,7 @@ begin
          Memcp.Resources.Save
            (Res,
             Project      => "dark",
-            Diary_Body   => "d " & Session,
+            Header_Text  => "h " & Session,
             Summary_Body => "b " & Session,
             Embedding    => Zero,
             Has_Session  => True,
@@ -536,7 +537,7 @@ begin
          begin
             loop
                Pos := Ada.Strings.Fixed.Index
-                 (K (Pos .. K'Last), """diary_id"":");
+                 (K (Pos .. K'Last), """summary_id"":");
                exit when Pos = 0;
                Hits := Hits + 1;
                Pos := Pos + 1;
@@ -582,7 +583,7 @@ begin
          Memcp.Resources.Save
            (Res,
             Project       => "doc",
-            Diary_Body    => "d " & Session,
+            Header_Text   => "h " & Session,
             Summary_Body  => "b " & Session,
             Embedding     => Zero,
             Has_Session   => True,

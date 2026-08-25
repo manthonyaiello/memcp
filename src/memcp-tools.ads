@@ -21,10 +21,10 @@ package Memcp.Tools with SPARK_Mode => On is
       Doctor);
    --  memcp's tool set. The enumeration literals are the identifiers; the
    --  lowercase wire names come from Name below.
-   --  @enum Recent The N most recent diary Headers.
+   --  @enum Recent The N most recent Headers.
    --  @enum List_Projects Every project memcp has seen, newest activity first.
-   --  @enum Save Save a (diary line, structured summary) pair.
-   --  @enum Forget Delete a summary, diary line, and embedding by id.
+   --  @enum Save Save a (Header, structured Summary) pair.
+   --  @enum Forget Delete a summary and its embedding by id.
    --  @enum Search Semantic search over Summaries.
    --  @enum Fetch_Summary Fetch a full Summary by id.
    --  @enum Upload_Session Persist a session transcript plus embeddable
@@ -55,7 +55,7 @@ package Memcp.Tools with SPARK_Mode => On is
    function Description (Id : Tool_Id) return String is
      (case Id is
          when Recent =>
-            "Return Headers for the N most recent diary entries, in "
+            "Return the N most recent Headers, in "
               & "`entries`. Headers only -- use fetch_summary(summary_id) for "
               & "the full body, unless kind == 'autorecap' (Header text "
               & "already is it). `findings` reports surfaces whose sessions "
@@ -64,14 +64,16 @@ package Memcp.Tools with SPARK_Mode => On is
               & "SessionStart hook's report on itself: omit them.",
          when List_Projects =>
             "List every project memcp has seen, newest activity first. "
-              & "Each entry carries project, diary_count, and latest_at.",
+              & "Each entry carries project, header_count, and latest_at.",
          when Save =>
-            "Save a (diary line, structured summary) pair as a "
-              & "kind='diary' Header. With session_id it is a session-scoped "
+            "Save a (header, structured summary) pair as a "
+              & "kind='authored' Header. `header` is the line that greets "
+              & "your next session -- write it to be read cold, and keep it "
+              & "under 400 characters. With session_id it is a session-scoped "
               & "upsert: a later save in the same session replaces it in "
               & "place. Pass the surface the SessionStart hook injected.",
          when Forget =>
-            "Delete a summary, its diary line, and its embedding by "
+            "Delete a summary and its embedding by "
               & "summary id. Returns {""deleted"": false} if the id is unknown.",
          when Search =>
             "Semantic search over Summaries. projects=null searches all "
@@ -119,7 +121,7 @@ package Memcp.Tools with SPARK_Mode => On is
          when Save =>
             "{""type"":""object"",""properties"":{"
               & """project"":{""type"":""string""},"
-              & """diary"":{""type"":""string""},"
+              & """header"":{""type"":""string""},"
               & """summary"":{""type"":""string""},"
               & """session_id"":{""type"":""string""},"
               & """surface"":{""type"":""string""},"
@@ -213,7 +215,7 @@ private
      & " carries a" & LF
      & "   `kind` field:" & LF
      & LF
-     & "  - kind=""diary""     -- a real model-authored summary is available."
+     & "  - kind=""authored""  -- you wrote this one; a full Summary is there."
      & LF
      & "  - kind=""autorecap"" -- fallback recap line from last session." & LF
      & "                       Header text == Summary text. NO fetch_summary; go"
@@ -259,11 +261,17 @@ private
      & LF
      & "## Saving" & LF
      & LF
-     & "save(project, diary, summary, session_id, surface). `diary` is a single"
+     & "save(project, header, summary, session_id, surface). `header` is the"
      & LF
-     & "headline line; `summary` is the full structured body. Pass each in its"
-     & " own" & LF
-     & "argument, and `surface` verbatim as SessionStart injected it." & LF
+     & "one line your next session is greeted with, so write it to be read cold"
+     & LF
+     & "and keep it under 400 characters; `summary` is the full structured body."
+     & LF
+     & "It is stored as you wrote it -- nothing derives a Header from the body."
+     & LF
+     & "Pass each in its own argument, and `surface` verbatim as SessionStart"
+     & LF
+     & "injected it." & LF
      & "Saves are session-scoped: a later save() in the same session replaces the"
      & LF
      & "prior one in place, so it is safe to save early and re-save as more lands.";

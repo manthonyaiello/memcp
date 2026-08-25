@@ -71,16 +71,16 @@ assert_contains "stale: names the command and the surface to run it for" \
 # Reporting, not withholding: a behind-but-working hook still does its job.
 assert_contains "stale: still injects the key" \
     '<memcp-session id="S1" project="widget"' "$OUT"
-assert_contains "stale: still injects the diary" \
+assert_contains "stale: still injects the Headers" \
     '<memcp-prior-sessions' "$OUT"
 
 # --- a resumed session -------------------------------------------------------
 
-# `resume` and `compact` skip the diary listing, so the report has to be emitted
+# `resume` and `compact` skip the Header listing, so the report has to be emitted
 # ahead of that early exit or a long-running session never hears about it.
 OUT=$(run_start "9.9.9" resume)
 assert_contains     "resume: still reports staleness" '<memcp-hook-stale' "$OUT"
-assert_not_contains "resume: still skips the diary listing" \
+assert_not_contains "resume: still skips the Header listing" \
     '<memcp-prior-sessions' "$OUT"
 
 # --- SessionEnd --------------------------------------------------------------

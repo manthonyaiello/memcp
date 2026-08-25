@@ -154,7 +154,7 @@ if [[ -n "${MEMCP_TEST_ARGV_LOG:-}" ]]; then
     printf '%s\n' "$*" >>"$MEMCP_TEST_ARGV_LOG"
 fi
 
-ENTRIES='[{"created_at":"2026-08-01T09:00:00Z","kind":"diary","headline":"first headline"},{"created_at":"2026-08-02T09:00:00Z","kind":"autorecap","headline":"second headline"}]'
+ENTRIES='[{"created_at":"2026-08-01T09:00:00Z","kind":"authored","header":"first header"},{"created_at":"2026-08-02T09:00:00Z","kind":"autorecap","header":"second header"}]'
 
 FINDINGS='[{"surface":"otherbox","surface_id":"u-1","sessions":20,"missing_transcript":9},{"surface":null,"surface_id":null,"sessions":6,"missing_transcript":6}]'
 

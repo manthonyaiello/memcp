@@ -108,7 +108,7 @@ package body Memcp.Tools with SPARK_Mode => On is
    function Blank (S : String) return Boolean is
      (for all I in S'Range => Is_Space (S (I)));
    --  True when S is empty or entirely whitespace, so that save rejects a
-   --  tab-or-newline-only diary or summary that Trim would let through.
+   --  tab-or-newline-only header or summary that Trim would let through.
 
    function Valid_Timestamp (S : String) return Boolean;
    --  A pragmatic ISO-8601 check: a YYYY-MM-DD date, optionally followed by
@@ -195,14 +195,14 @@ package body Memcp.Tools with SPARK_Mode => On is
    -- save leaked-parameter salvage --
    -------------------------------------
 
-   --  A model sometimes emits a save() whose diary or summary value has
+   --  A model sometimes emits a save() whose header or summary value has
    --  swallowed its sibling across a leaked tag boundary --
-   --  ...real</parameter><parameter name="diary">... -- and a save is usually a
+   --  ...real</parameter><parameter name="header">... -- and a save is usually a
    --  session's terminal turn, so splitting the value back apart beats
    --  rejecting the call and losing the memory with no retry turn left. The
    --  scanner below matches that one shape, case-insensitively:
-   --    </parameter|summary|diary>        (whitespace tolerated before '>')
-   --    <parameter name="summary|diary">   (either quote; whitespace tolerated
+   --    </parameter|summary|header>       (whitespace tolerated before '>')
+   --    <parameter name="summary|header">  (either quote; whitespace tolerated
    --                                        between tags, around name and '=')
    --  with an optional `ns:`-style namespace prefix on either tag name.
 
@@ -278,7 +278,7 @@ package body Memcp.Tools with SPARK_Mode => On is
           Post => Match_Tag_Name'Result = 0
                   or else Match_Tag_Name'Result in S'Range;
    --  Index of the last character of the close-tag name at P -- parameter,
-   --  summary or diary, case-folded, after an optional namespace prefix -- or 0
+   --  summary or header, case-folded, after an optional namespace prefix -- or 0
    --  on no match. The one place the tag vocabulary is spelled out.
 
    function Match_Tag_Name (S : String; P : Positive) return Natural is
@@ -290,8 +290,8 @@ package body Memcp.Tools with SPARK_Mode => On is
          return Q + 8;
       elsif Lit_At (S, Q, "summary") then
          return Q + 6;
-      elsif Lit_At (S, Q, "diary") then
-         return Q + 4;
+      elsif Lit_At (S, Q, "header") then
+         return Q + 5;
       else
          return 0;
       end if;
@@ -302,11 +302,11 @@ package body Memcp.Tools with SPARK_Mode => On is
       Found        : out Boolean;
       B_Start      : out Positive;
       B_End        : out Positive;
-      Sib_Is_Diary : out Boolean)
+      Sib_Is_Header : out Boolean)
    with Post => (if Found then B_Start in S'Range and then B_End in S'Range);
    --  Scan S for the first leak boundary. On Found, S (B_Start .. B_End) is the
-   --  matched boundary and Sib_Is_Diary says which sibling the open tag named
-   --  (True => "diary", False => "summary"); B_Start and B_End are placeholders
+   --  matched boundary and Sib_Is_Header says which sibling the open tag named
+   --  (True => "header", False => "summary"); B_Start and B_End are placeholders
    --  otherwise.
 
    procedure Find_Leak_Boundary
@@ -314,23 +314,23 @@ package body Memcp.Tools with SPARK_Mode => On is
       Found        : out Boolean;
       B_Start      : out Positive;
       B_End        : out Positive;
-      Sib_Is_Diary : out Boolean)
+      Sib_Is_Header : out Boolean)
    is
       procedure Try_At
         (I    : Positive;
          Ok   : out Boolean;
          E    : out Positive;
-         Diar : out Boolean)
+         Hdr  : out Boolean)
       with Pre  => I in S'Range,
            Post => (if Ok then E in S'Range);
       --  Try to match a boundary starting at I. On Ok, E is the index of the
-      --  closing '>' of the open tag and Diar reports the named sibling.
+      --  closing '>' of the open tag and Hdr reports the named sibling.
 
       procedure Try_At
         (I    : Positive;
          Ok   : out Boolean;
          E    : out Positive;
-         Diar : out Boolean)
+         Hdr  : out Boolean)
       is
          P     : Natural;
          Quote : Character;
@@ -374,9 +374,9 @@ package body Memcp.Tools with SPARK_Mode => On is
       begin
          Ok   := False;
          E    := I;
-         Diar := False;
+         Hdr := False;
 
-         --  Close tag: "</" [ns:] (parameter|summary|diary) optional-ws ">".
+         --  Close tag: "</" [ns:] (parameter|summary|header) optional-ws ">".
          if not Lit_At (S, I, "</") then
             return;
          end if;
@@ -456,11 +456,11 @@ package body Memcp.Tools with SPARK_Mode => On is
 
          --  Sibling name, then the matching closing quote.
          if Lit_At (S, P, "summary") then
-            Diar := False;
+            Hdr := False;
             P := After (S, P + 6);
-         elsif Lit_At (S, P, "diary") then
-            Diar := True;
-            P := After (S, P + 4);
+         elsif Lit_At (S, P, "header") then
+            Hdr := True;
+            P := After (S, P + 5);
          else
             return;
          end if;
@@ -488,7 +488,7 @@ package body Memcp.Tools with SPARK_Mode => On is
       Found        := False;
       B_Start      := 1;
       B_End        := 1;
-      Sib_Is_Diary := False;
+      Sib_Is_Header := False;
       if S'Length = 0 then
          return;
       end if;
@@ -496,14 +496,14 @@ package body Memcp.Tools with SPARK_Mode => On is
          declare
             Ok   : Boolean;
             E    : Positive;
-            Diar : Boolean;
+            Hdr  : Boolean;
          begin
-            Try_At (I, Ok, E, Diar);
+            Try_At (I, Ok, E, Hdr);
             if Ok then
                Found        := True;
                B_Start      := I;
                B_End        := E;
-               Sib_Is_Diary := Diar;
+               Sib_Is_Header := Hdr;
                return;
             end if;
          end;
@@ -541,7 +541,7 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Strip;
 
    function Clean (Raw : String) return String;
-   --  A salvaged half tidied up: one trailing </parameter|summary|diary>
+   --  A salvaged half tidied up: one trailing </parameter|summary|header>
    --  close tag dropped, with whitespace tolerated around it, and the result
    --  stripped.
 
@@ -589,9 +589,9 @@ package body Memcp.Tools with SPARK_Mode => On is
    end Clean;
 
    procedure Salvage
-     (Diary       : String;
+     (Header      : String;
       Summary     : String;
-      Out_Diary   : out Memcp.Text.Builder;
+      Out_Header  : out Memcp.Text.Builder;
       Out_Summary : out Memcp.Text.Builder;
       Did         : out Boolean);
    --  Split a leaked value back into its two halves. A leak's signature is
@@ -604,9 +604,9 @@ package body Memcp.Tools with SPARK_Mode => On is
    --  builders are only Reset, and the caller reuses the original strings.
 
    procedure Salvage
-     (Diary       : String;
+     (Header      : String;
       Summary     : String;
-      Out_Diary   : out Memcp.Text.Builder;
+      Out_Header  : out Memcp.Text.Builder;
       Out_Summary : out Memcp.Text.Builder;
       Did         : out Boolean)
    is
@@ -624,28 +624,28 @@ package body Memcp.Tools with SPARK_Mode => On is
       BE    : Positive;
       SibD  : Boolean;
    begin
-      --  Diary swallowed the (missing) summary across a `name="summary"`
-      --  boundary. A `name="diary"` boundary inside diary names the scanned
+      --  Header swallowed the (missing) summary across a `name="summary"`
+      --  boundary. A `name="header"` boundary inside header names the scanned
       --  field itself, fails the empty-sibling test, and so counts as content.
-      Find_Leak_Boundary (Diary, Found, BS, BE, SibD);
+      Find_Leak_Boundary (Header, Found, BS, BE, SibD);
       if Found and then not SibD and then Summary'Length = 0 then
          declare
-            Before : constant String := Clean (Diary (Diary'First .. BS - 1));
+            Before : constant String := Clean (Header (Header'First .. BS - 1));
             Aft : constant String :=
-              Clean ((if BE < Diary'Last then Diary (BE + 1 .. Diary'Last)
+              Clean ((if BE < Header'Last then Header (BE + 1 .. Header'Last)
                       else ""));
          begin
-            Emit (Out_Diary, Before);
+            Emit (Out_Header, Before);
             Emit (Out_Summary, Aft);
          end;
          Did := True;
          return;
       end if;
 
-      --  Summary swallowed the (missing) diary across a `name="diary"`
+      --  Summary swallowed the (missing) header across a `name="header"`
       --  boundary (the common serialization glitch).
       Find_Leak_Boundary (Summary, Found, BS, BE, SibD);
-      if Found and then SibD and then Diary'Length = 0 then
+      if Found and then SibD and then Header'Length = 0 then
          declare
             Before : constant String :=
               Clean (Summary (Summary'First .. BS - 1));
@@ -654,14 +654,14 @@ package body Memcp.Tools with SPARK_Mode => On is
                       else ""));
          begin
             Emit (Out_Summary, Before);
-            Emit (Out_Diary, Aft);
+            Emit (Out_Header, Aft);
          end;
          Did := True;
          return;
       end if;
 
       --  No salvageable boundary: signal the caller to reuse the inputs.
-      Memcp.Text.Reset (Out_Diary);
+      Memcp.Text.Reset (Out_Header);
       Memcp.Text.Reset (Out_Summary);
       Did := False;
    end Salvage;
@@ -713,14 +713,39 @@ package body Memcp.Tools with SPARK_Mode => On is
    --  Warning returned alongside a successful call whose surface argument
    --  could not be split.
 
-   function Surface_Warning (Arg : String) return String is
-     (if Arg'Length = 0 then ",""warning"":""" & No_Surface_Warning & """"
-      elsif Surface_Sep (Arg) = 0
-      then ",""warning"":""" & Bad_Surface_Warning & """"
+   function Surface_Warning_Text (Arg : String) return String is
+     (if Arg'Length = 0 then No_Surface_Warning
+      elsif Surface_Sep (Arg) = 0 then Bad_Surface_Warning
       else "");
-   --  The trailing `,"warning":...` member for a call whose surface argument
-   --  was Arg, or the empty string when it was usable. Neither warning carries
-   --  a character JSON would escape.
+   --  What is wrong with the surface argument Arg, or "" when nothing is.
+
+   function Warning_Member (Text : String) return String
+     with Pre => Text'Length <= Memcp.Text.Max_Len;
+   --  The trailing `,"warning":...` member carrying Text, or the empty string
+   --  when there is nothing to warn about. Every warning built here is written
+   --  free of characters JSON would escape.
+
+   function Warning_Member (Text : String) return String is
+     (if Text'Length = 0 then "" else ",""warning"":""" & Text & """");
+
+   function Surface_Warning (Arg : String) return String is
+     (Warning_Member (Surface_Warning_Text (Arg)));
+   --  The warning member for a call whose surface argument was Arg.
+
+   Max_Header_Image : constant String := "400";
+   --  MS.Max_Header as the text the over-budget warning quotes.
+
+   pragma Assert (MS.Max_Header = 400);
+
+   Long_Header_Warning : constant String :=
+     "the header is over budget: it is what greets your next session, so it "
+     & "is stored whole rather than cut, but a header past "
+     & Max_Header_Image & " characters "
+     & "costs that session context before it has read anything. Shorten it "
+     & "and save again -- a later save in the same session replaces this one "
+     & "in place.";
+   --  Warning returned alongside a successful save whose header exceeds
+   --  MS.Max_Header.
 
    function Surface_Id (Arg : String) return String is
      (if Surface_Sep (Arg) = 0 then ""
@@ -757,25 +782,23 @@ package body Memcp.Tools with SPARK_Mode => On is
       Memcp.Text.Add (Buf, "}");
    end Close_Result;
 
-   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : in out Memcp.Text.Builder);
-   --  Render the diary Headers V into Buf as a JSON array.
+   procedure Ser_Headers (V : MS.Header_List; Buf : in out Memcp.Text.Builder);
+   --  Render the Headers V into Buf as a JSON array.
 
-   procedure Ser_Diary (V : MS.Diary_Entry_List; Buf : in out Memcp.Text.Builder)
+   procedure Ser_Headers (V : MS.Header_List; Buf : in out Memcp.Text.Builder)
    is
    begin
       Memcp.Text.Add (Buf, "[");
-      for I in MS.Diary_Vectors.First_Index (V)
-               .. MS.Diary_Vectors.Last_Index (V)
+      for I in MS.Header_Vectors.First_Index (V)
+               .. MS.Header_Vectors.Last_Index (V)
       loop
          declare
-            E : constant MS.Diary_Entry := MS.Diary_Vectors.Element (V, I);
+            E : constant MS.Header_Entry := MS.Header_Vectors.Element (V, I);
          begin
-            if I > MS.Diary_Vectors.First_Index (V) then
+            if I > MS.Header_Vectors.First_Index (V) then
                Memcp.Text.Add (Buf, ",");
             end if;
-            Memcp.Text.Add (Buf, "{""diary_id"":");
-            Memcp.Text.Add (Buf, N (E.Id));
-            Memcp.Text.Add (Buf, ",""project"":");
+            Memcp.Text.Add (Buf, "{""project"":");
             Memcp.Text.Add (Buf, Q (E.Project));
             Memcp.Text.Add (Buf, ",""summary_id"":");
             Memcp.Text.Add (Buf, N (E.Summary_Id));
@@ -784,15 +807,15 @@ package body Memcp.Tools with SPARK_Mode => On is
               (Buf, (if E.Has_Session then Q (E.Session) else "null"));
             Memcp.Text.Add (Buf, ",""created_at"":");
             Memcp.Text.Add (Buf, Q (E.Created_At));
-            Memcp.Text.Add (Buf, ",""headline"":");
-            Memcp.Text.Add (Buf, Q (E.Headline));
+            Memcp.Text.Add (Buf, ",""header"":");
+            Memcp.Text.Add (Buf, Q (E.Header));
             Memcp.Text.Add (Buf, ",""kind"":");
             Memcp.Text.Add (Buf, Q (E.Kind));
             Memcp.Text.Add (Buf, "}");
          end;
       end loop;
       Memcp.Text.Add (Buf, "]");
-   end Ser_Diary;
+   end Ser_Headers;
 
    procedure Ser_Projects
      (V : MS.Project_Info_List; Buf : in out Memcp.Text.Builder);
@@ -814,8 +837,8 @@ package body Memcp.Tools with SPARK_Mode => On is
             end if;
             Memcp.Text.Add (Buf, "{""project"":");
             Memcp.Text.Add (Buf, Q (E.Name));
-            Memcp.Text.Add (Buf, ",""diary_count"":");
-            Memcp.Text.Add (Buf, N (E.Diary_Count));
+            Memcp.Text.Add (Buf, ",""header_count"":");
+            Memcp.Text.Add (Buf, N (E.Header_Count));
             Memcp.Text.Add (Buf, ",""latest_at"":");
             Memcp.Text.Add
               (Buf, (if E.Has_Latest then Q (E.Latest_At) else "null"));
@@ -853,8 +876,8 @@ package body Memcp.Tools with SPARK_Mode => On is
               (Buf, (if E.Has_Session then Q (E.Session) else "null"));
             Memcp.Text.Add (Buf, ",""created_at"":");
             Memcp.Text.Add (Buf, Q (E.Created_At));
-            Memcp.Text.Add (Buf, ",""headline"":");
-            Memcp.Text.Add (Buf, Q (E.Headline));
+            Memcp.Text.Add (Buf, ",""header"":");
+            Memcp.Text.Add (Buf, Q (E.Header));
             Memcp.Text.Add (Buf, ",""kind"":");
             Memcp.Text.Add (Buf, Q (E.Kind));
             Memcp.Text.Add (Buf, ",""distance"":");
@@ -1075,13 +1098,13 @@ package body Memcp.Tools with SPARK_Mode => On is
 
    procedure Do_Recent
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
-   --  recent: the N most recent diary Headers across the named projects.
+   --  recent: the N most recent Headers across the named projects.
 
    procedure Do_Recent
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
    is
       D       : MJ.Doc;
-      Entries : MS.Diary_Entry_List;
+      Entries : MS.Header_List;
       Health  : MS.Surface_Health_List;
       St      : MS.Op_Status;
       Hst     : MS.Op_Status;
@@ -1096,7 +1119,7 @@ package body Memcp.Tools with SPARK_Mode => On is
          declare
             Surf : constant String := MJ.Get_Str (D, "surface");
          begin
-            MR.Recent_Diary
+            MR.Recent_Headers
               (R, MJ.Get_Names (D, "projects"),
                To_Nat (MJ.Get_Int (D, "n", 5)), Entries, St);
             if St = MS.Success then
@@ -1111,14 +1134,14 @@ package body Memcp.Tools with SPARK_Mode => On is
                   MJ.Get_Str (D, "install_host"));
                MR.Degraded_Surfaces (R, Health, Hst);
                Open_Result (Buf, "entries");
-               Ser_Diary (Entries, Buf);
+               Ser_Headers (Entries, Buf);
                Memcp.Text.Add (Buf, ",""findings"":");
                if Hst = MS.Success then
                   Ser_Findings (Health, Buf);
                else
                   --  An empty list and a failed query read alike from here,
                   --  so the failure goes to the log. Failing the whole call
-                  --  over it would cost the caller its diary as well.
+                  --  over it would cost the caller its Headers as well.
                   Memcp.Text.Add (Buf, "[]");
                   Memcp.Log.Error ("recent: degraded-surface query failed");
                end if;
@@ -1160,7 +1183,7 @@ package body Memcp.Tools with SPARK_Mode => On is
 
    procedure Do_Save
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
-   --  save: a (diary line, structured summary) pair, plus the summary's
+   --  save: a (Header, structured summary) pair, plus the summary's
    --  embedding.
 
    procedure Do_Save
@@ -1171,23 +1194,23 @@ package body Memcp.Tools with SPARK_Mode => On is
       MJ.Open (D, Arguments);
       declare
          Project    : constant String := MJ.Get_Str (D, "project");
-         Diary_In   : constant String := MJ.Get_Str (D, "diary");
+         Header_In  : constant String := MJ.Get_Str (D, "header");
          Summary_In : constant String := MJ.Get_Str (D, "summary");
          Bd_Buf     : Memcp.Text.Builder;
          Sm_Buf     : Memcp.Text.Builder;
          Salvaged   : Boolean;
       begin
          --  Recover a leaked <parameter> boundary before the emptiness gate.
-         Salvage (Diary_In, Summary_In, Bd_Buf, Sm_Buf, Salvaged);
+         Salvage (Header_In, Summary_In, Bd_Buf, Sm_Buf, Salvaged);
          if Salvaged then
             Memcp.Log.Warning
               ("save: recovered a leaked <parameter> boundary; "
-               & "split diary/summary");
+               & "split header/summary");
          end if;
          declare
-            Diary   : constant String :=
-              (if Salvaged then Memcp.Text.Value (Bd_Buf) else Diary_In);
-            --  The diary to save. On the common no-leak path Salvage leaves the
+            Header  : constant String :=
+              (if Salvaged then Memcp.Text.Value (Bd_Buf) else Header_In);
+            --  The Header to save. On the common no-leak path Salvage leaves the
             --  builders empty, so the original argument is reused rather than
             --  round-tripped.
 
@@ -1200,10 +1223,10 @@ package body Memcp.Tools with SPARK_Mode => On is
          begin
             if Project'Length = 0 then
                Result := Err (Invalid_Params, "save: 'project' is required");
-            elsif Blank (Diary) or else Blank (Summary) then
+            elsif Blank (Header) or else Blank (Summary) then
                Result := Err
                  (Invalid_Params,
-                  "save: 'diary' and 'summary' are required, non-empty, and "
+                  "save: 'header' and 'summary' are required, non-empty, and "
                   & "separate string arguments");
             else
                Embed_Query (R, Summary, Emb, Emb_Ok);
@@ -1231,7 +1254,7 @@ package body Memcp.Tools with SPARK_Mode => On is
                      MR.Save
                        (R,
                         Project      => Project,
-                        Diary_Body   => Diary,
+                        Header_Text  => Header,
                         Summary_Body => Summary,
                         Embedding    => Emb,
                         Has_Session  => MJ.Has_Str (D, "session_id"),
@@ -1243,12 +1266,29 @@ package body Memcp.Tools with SPARK_Mode => On is
                         Result       => Res,
                         Status       => St);
                      if St = MS.Success then
-                        Result := OK
-                          ("{""summary_id"":" & N (Res.Summary_Id)
-                           & ",""diary_id"":" & N (Res.Diary_Id)
-                           & ",""already_existed"":" & B (Res.Already_Existed)
-                           & ",""replaced"":" & B (Res.Replaced)
-                           & Surface_Warning (Surf) & "}");
+                        declare
+                           Surf_Txt : constant String :=
+                             Surface_Warning_Text (Surf);
+
+                           Head_Txt : constant String :=
+                             (if Header'Length > MS.Max_Header
+                              then Long_Header_Warning else "");
+
+                           Both : constant String :=
+                             Surf_Txt
+                             & (if Surf_Txt'Length > 0
+                                  and then Head_Txt'Length > 0
+                                then " -- " else "")
+                             & Head_Txt;
+                           --  One member, so a save that is both unattributed
+                           --  and over budget reports both faults.
+                        begin
+                           Result := OK
+                             ("{""summary_id"":" & N (Res.Summary_Id)
+                              & ",""already_existed"":" & B (Res.Already_Existed)
+                              & ",""replaced"":" & B (Res.Replaced)
+                              & Warning_Member (Both) & "}");
+                        end;
                      else
                         Result := Err (Internal_Error, "save: store error");
                      end if;
@@ -1262,7 +1302,7 @@ package body Memcp.Tools with SPARK_Mode => On is
 
    procedure Do_Forget
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
-   --  forget: delete a summary, its diary line and its embedding by id.
+   --  forget: delete a summary and its embedding by id.
 
    procedure Do_Forget
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr)
@@ -1404,8 +1444,8 @@ package body Memcp.Tools with SPARK_Mode => On is
                      (if Ptr.Has_Session then Q (Ptr.Session) else "null"));
                   Memcp.Text.Add (Buf, ",""created_at"":");
                   Memcp.Text.Add (Buf, Q (Ptr.Created_At));
-                  Memcp.Text.Add (Buf, ",""headline"":");
-                  Memcp.Text.Add (Buf, Q (Ptr.Headline));
+                  Memcp.Text.Add (Buf, ",""header"":");
+                  Memcp.Text.Add (Buf, Q (Ptr.Header));
                   Memcp.Text.Add (Buf, ",""body"":");
                   Memcp.Text.Add (Buf, Q (Ptr.Content));
                   Memcp.Text.Add (Buf, ",""kind"":");

@@ -16,15 +16,15 @@ package Memcp.Store with SPARK_Mode => On is
    --  Vector dimension; must match Candle_Spark's Dimension and sqlite-vec's
    --  packed float[384].
 
-   Schema_Version : constant String := "1";
+   Schema_Version : constant String := "2";
    --  Schema version stamped into the meta row.
 
    Embedding_Model : constant String :=
      "sentence-transformers/all-MiniLM-L6-v2";
    --  Embedding model id stamped into the meta row.
 
-   Kind_Diary    : constant String := "diary";
-   --  Header kind for a real, model-authored diary summary.
+   Kind_Authored : constant String := "authored";
+   --  Header kind for a Header and Summary the model wrote itself.
 
    Kind_Autorecap : constant String := "autorecap";
    --  Header kind for the SessionEnd fallback recap.
@@ -70,10 +70,10 @@ package Memcp.Store with SPARK_Mode => On is
           Post => (Is_Open (S) = (Result = Opened))
                   and then (Is_Reclaimed (S) = (Result /= Opened));
    --  Open (or create) the store at DB_Path: open the connection, apply the
-   --  full schema plus the two vec0 virtual tables, then assert the meta row.
-   --  On any failure the connection is closed and S is left reclaimed.
-   --  Migrations for pre-existing older DBs are out of scope; fresh DBs need
-   --  none.
+   --  full schema plus the two vec0 virtual tables, migrate a database written
+   --  against an older schema, then assert the meta row. On any failure the
+   --  connection is closed and S is left reclaimed -- which is also what
+   --  discards a migration that did not finish.
    --  @param S The store to open (initialized on return).
    --  @param DB_Path Filesystem path to the SQLite DB (or ":memory:").
    --  @param Result The outcome of the open attempt.
@@ -122,6 +122,11 @@ package Memcp.Store with SPARK_Mode => On is
    --  Integer'Last, and sits far above any real filter. A longer filter is
    --  refused, not truncated.
 
+   Max_Header : constant := 400;
+   --  Longest Header, in characters, that save takes without warning. A budget
+   --  reported back to the caller, not a cut: an over-budget Header is stored
+   --  whole, since the alternative is losing text no one else holds.
+
    Max_Search_Limit : constant := 1000;
    --  Ceiling on a search's requested result count. The KNN over-fetch factor
    --  is applied to the clamped value, so this also bounds the candidate scan.
@@ -135,7 +140,7 @@ package Memcp.Store with SPARK_Mode => On is
      (Project_Len  : Natural;   --  Length of Project.
       Session_Len  : Natural;   --  Length of Session.
       Created_Len  : Natural;   --  Length of Created_At.
-      Headline_Len : Natural;   --  Length of Headline.
+      Header_Len   : Natural;   --  Length of Header.
       Body_Len     : Natural;   --  Length of Content.
       Kind_Len     : Natural) is   --  Length of Kind.
       record
@@ -144,9 +149,9 @@ package Memcp.Store with SPARK_Mode => On is
          Project     : String (1 .. Project_Len);    --  Project name.
          Session     : String (1 .. Session_Len);    --  Session id ("" if none).
          Created_At  : String (1 .. Created_Len);    --  ISO-8601 creation time.
-         Headline    : String (1 .. Headline_Len);   --  The headline line.
+         Header      : String (1 .. Header_Len);     --  The Header line.
          Content     : String (1 .. Body_Len);       --  The summary body.
-         Kind        : String (1 .. Kind_Len);        --  Header kind (diary/autorecap).
+         Kind        : String (1 .. Kind_Len);        --  Header kind.
       end record;
    --  A full summary row, as returned by Fetch_Summary. Indefinite: each
    --  variable-length text field carries its own Len discriminant.
@@ -157,46 +162,43 @@ package Memcp.Store with SPARK_Mode => On is
    procedure Free is new Ada.Unchecked_Deallocation (Summary, Summary_Ptr);
    --  Reclaim a Summary_Ptr returned by Fetch_Summary.
 
-   type Diary_Entry
-     (Project_Len  : Natural;   --  Length of Project.
-      Session_Len  : Natural;   --  Length of Session.
-      Created_Len  : Natural;   --  Length of Created_At.
-      Body_Len     : Natural;   --  Length of Content.
-      Headline_Len : Natural;   --  Length of Headline.
-      Kind_Len     : Natural) is   --  Length of Kind.
+   type Header_Entry
+     (Project_Len : Natural;   --  Length of Project.
+      Session_Len : Natural;   --  Length of Session.
+      Created_Len : Natural;   --  Length of Created_At.
+      Header_Len  : Natural;   --  Length of Header.
+      Kind_Len    : Natural) is   --  Length of Kind.
       record
-         Id          : Row_Id;    --  diary.id
-         Summary_Id  : Row_Id;    --  diary.summary_id
-         Has_Session : Boolean;   --  summaries.session_id IS NOT NULL
+         Summary_Id  : Row_Id;    --  The summary's rowid.
+         Has_Session : Boolean;   --  session_id IS NOT NULL.
          Project     : String (1 .. Project_Len);     --  Project name.
          Session     : String (1 .. Session_Len);     --  Session id ("" if none).
-         Created_At  : String (1 .. Created_Len);     --  ISO-8601 diary time.
-         Content     : String (1 .. Body_Len);        --  diary.body
-         Headline    : String (1 .. Headline_Len);    --  The summary's headline.
-         Kind        : String (1 .. Kind_Len);        --  Header kind (diary/autorecap).
+         Created_At  : String (1 .. Created_Len);     --  ISO-8601 creation time.
+         Header      : String (1 .. Header_Len);      --  The Header line.
+         Kind        : String (1 .. Kind_Len);        --  Header kind.
       end record;
-   --  A diary Header, the unit Recent_Diary returns: the diary row's own id,
-   --  body and created_at joined to its summary's session, headline and kind.
+   --  One Header, the unit Recent_Headers returns: a summaries row without its
+   --  body, which is what fetch_summary is for.
 
-   package Diary_Vectors is new SPARK.Containers.Formal.Unbounded_Vectors
-     (Index_Type => Positive, Element_Type => Diary_Entry);
-   --  SPARKlib vector instance over Diary_Entry.
+   package Header_Vectors is new SPARK.Containers.Formal.Unbounded_Vectors
+     (Index_Type => Positive, Element_Type => Header_Entry);
+   --  SPARKlib vector instance over Header_Entry.
 
-   subtype Diary_Entry_List is Diary_Vectors.Vector;
-   --  A list of diary Headers, as returned by Recent_Diary.
+   subtype Header_List is Header_Vectors.Vector;
+   --  A list of Headers, as returned by Recent_Headers.
 
    type Project_Info
      (Name_Len   : Natural;   --  Length of Name.
       Latest_Len : Natural) is   --  Length of Latest_At.
       record
-         Diary_Count : Row_Id;    --  Raw COUNT of diary entries (non-negative).
+         Header_Count : Row_Id;   --  Raw COUNT of Headers (non-negative).
          Has_Latest  : Boolean;   --  Whether Latest_At is present (non-null).
          Name        : String (1 .. Name_Len);      --  Project name.
          Latest_At   : String (1 .. Latest_Len);    --  Newest-Header time ("" if none).
       end record;
-   --  One row of List_Projects: a project with its diary count and the
+   --  One row of List_Projects: a project with its Header count and the
    --  timestamp of its newest Header. Latest_At is nullable -- a project may
-   --  have no diary entries -- carried as Has_Latest plus a 0-length string.
+   --  have no Headers -- carried as Has_Latest plus a 0-length string.
 
    package Project_Vectors is new SPARK.Containers.Formal.Unbounded_Vectors
      (Index_Type => Positive, Element_Type => Project_Info);
@@ -277,7 +279,7 @@ package Memcp.Store with SPARK_Mode => On is
      (Project_Len  : Natural;   --  Length of Project.
       Session_Len  : Natural;   --  Length of Session.
       Created_Len  : Natural;   --  Length of Created_At.
-      Headline_Len : Natural;   --  Length of Headline.
+      Header_Len   : Natural;   --  Length of Header.
       Body_Len     : Natural;   --  Length of Content.
       Kind_Len     : Natural) is   --  Length of Kind.
       record
@@ -286,9 +288,9 @@ package Memcp.Store with SPARK_Mode => On is
          Project     : String (1 .. Project_Len);     --  Project name.
          Session     : String (1 .. Session_Len);     --  Session id ("" if none).
          Created_At  : String (1 .. Created_Len);     --  ISO-8601 creation time.
-         Headline    : String (1 .. Headline_Len);    --  The headline line.
+         Header      : String (1 .. Header_Len);      --  The Header line.
          Content     : String (1 .. Body_Len);        --  The summary body.
-         Kind        : String (1 .. Kind_Len);         --  Header kind (diary/autorecap).
+         Kind        : String (1 .. Kind_Len);         --  Header kind.
          Distance    : Interfaces.IEEE_Float_64;      --  vec0 KNN L2 distance.
       end record;
    --  A summary search hit: a Summary's fields, flattened, plus the vec0 KNN L2
@@ -352,17 +354,16 @@ package Memcp.Store with SPARK_Mode => On is
    ---------------
 
    type Save_Result is record
-      Summary_Id     : Row_Id;    --  Rowid of the saved summary.
-      Diary_Id       : Row_Id;    --  Rowid of the saved diary line.
+      Summary_Id      : Row_Id;   --  Rowid of the saved summary.
       Already_Existed : Boolean;  --  An identical row already existed (no-op retry).
       Replaced        : Boolean;  --  An existing session-scoped row was replaced.
    end record;
-   --  Save's outcome: the two rowids plus the dedup and replace flags.
+   --  Save's outcome: the rowid plus the dedup and replace flags.
 
    procedure Save
      (S            : Store;
       Project      : String;
-      Diary_Body   : String;
+      Header_Text  : String;
       Summary_Body : String;
       Embedding    : Candle_Spark.Embedding;
       Has_Session  : Boolean;
@@ -377,21 +378,23 @@ package Memcp.Store with SPARK_Mode => On is
                  and then Project'Length > 0
                  and then Project'Last < Natural'Last
                  and then Summary_Body'Last < Integer'Last;
-   --  Insert or session-scoped upsert a (diary line, summary) pair, with its
-   --  summary embedding:
+   --  Insert or session-scoped upsert a (Header, Summary) pair, with its
+   --  summary embedding. Header_Text is stored as authored -- never derived,
+   --  never trimmed; Max_Header is a budget the caller is told about, not a
+   --  cut applied here.
    --
    --    * Has_Session and a prior row for (project, session): identical
    --      content (same dedup hash) is a no-op (Already_Existed, not Replaced);
-   --      new content UPDATEs the summary/diary in place and REPLACEs the
-   --      embedding, preserving ids (Already_Existed and Replaced), also
-   --      promoting an autorecap row to kind='diary'.
-   --    * otherwise content-dedup on (project, diary, summary): identical
-   --      returns the existing ids (Already_Existed); else a fresh INSERT.
+   --      new content UPDATEs the row in place and REPLACEs the embedding,
+   --      preserving the id (Already_Existed and Replaced), also promoting an
+   --      autorecap row to kind='authored'.
+   --    * otherwise content-dedup on (project, Header, Summary): identical
+   --      returns the existing id (Already_Existed); else a fresh INSERT.
    --
    --  Created_At overrides the "now" timestamp when Has_Created.
    --  @param S The open store to write to.
    --  @param Project The project name.
-   --  @param Diary_Body The diary line text.
+   --  @param Header_Text The Header line, stored as authored.
    --  @param Summary_Body The summary body text.
    --  @param Embedding The summary's [384] embedding.
    --  @param Has_Session Whether Session_Id is present (session-scoped upsert).
@@ -458,10 +461,9 @@ package Memcp.Store with SPARK_Mode => On is
 
    type Autorecap_Result is record
       Summary_Id : Row_Id;    --  Rowid of the written summary.
-      Diary_Id   : Row_Id;    --  Rowid of the written diary line.
       Written    : Boolean;   --  A new autorecap row was written.
    end record;
-   --  Save_Autorecap's outcome: the two rowids plus the write flag.
+   --  Save_Autorecap's outcome: the rowid plus the write flag.
 
    procedure Save_Autorecap
      (S           : Store;
@@ -480,11 +482,11 @@ package Memcp.Store with SPARK_Mode => On is
                  and then Project'Last < Natural'Last
                  and then Recap_Text'Last < Integer'Last;
    --  Write a kind='autorecap' Header + Summary for a session that has none --
-   --  the SessionEnd fallback when the model saved no diary. Short-circuits
+   --  the SessionEnd fallback when the model never called save. Short-circuits
    --  (Written => False, no write) if ANY Header already exists for (Project,
-   --  Session_Id), so a real Save is never overwritten. Header text == Summary
-   --  text == Recap_Text; the headline is the stripped first 100 chars (no
-   --  HEADLINE: parsing).
+   --  Session_Id), so an authored Header is never overwritten. Recap_Text goes
+   --  in whole as both, so Header text == Summary text holds exactly and a
+   --  reader can skip the fetch on that promise.
    --  @param S The open store to write to.
    --  @param Project The project name.
    --  @param Session_Id The session id.
@@ -495,7 +497,7 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Surface The writing surface's id; empty leaves the row
    --    unattributed.
    --  @param Surface_Label The writing surface's human-readable name.
-   --  @param Result The rowids written and whether a write happened.
+   --  @param Result The rowid written and whether a write happened.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
    procedure Reindex_Session
@@ -532,7 +534,7 @@ package Memcp.Store with SPARK_Mode => On is
       Deleted : out Boolean;
       Status  : out Op_Status)
      with Pre => Is_Open (S);
-   --  Delete a summary, its diary line (FK cascade), and its embedding row.
+   --  Delete a summary and its embedding row.
    --  @param S The open store to modify.
    --  @param Id The rowid of the summary to delete.
    --  @param Deleted True iff a matching summary existed and was deleted.
@@ -555,22 +557,22 @@ package Memcp.Store with SPARK_Mode => On is
    --  @param Result The fetched Summary, or null when the id is unknown.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
-   procedure Recent_Diary
+   procedure Recent_Headers
      (S        : Store;
       Projects : Name_List;
       N        : Natural;
-      Result   : out Diary_Entry_List;
+      Result   : out Header_List;
       Status   : out Op_Status)
      with Pre => Is_Open (S);
-   --  The N most recent diary Headers across the given Projects, newest first
-   --  (diary.created_at DESC). An empty Projects list, or one longer than
+   --  The N most recent Headers across the given Projects, newest first
+   --  (created_at DESC). An empty Projects list, or one longer than
    --  Max_Filter_Terms, yields an empty Result with Success rather than an
    --  unbounded IN clause. Result is always initialized; on Db_Error it is
    --  empty.
    --  @param S The open store to read.
    --  @param Projects The project-name filter (empty yields an empty Result).
    --  @param N The maximum number of Headers to return.
-   --  @param Result The matching diary Headers, newest first.
+   --  @param Result The matching Headers, newest first.
    --  @param Status Success, or Db_Error on a SQLite failure.
 
    procedure List_Projects
@@ -578,7 +580,7 @@ package Memcp.Store with SPARK_Mode => On is
       Result : out Project_Info_List;
       Status : out Op_Status)
      with Pre => Is_Open (S);
-   --  Every known project with its diary count and newest-Header timestamp,
+   --  Every known project with its Header count and newest-Header timestamp,
    --  ordered newest-activity first, empty projects last. Result is empty on
    --  Db_Error.
    --  @param S The open store to read.

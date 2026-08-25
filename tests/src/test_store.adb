@@ -53,10 +53,27 @@ procedure Test_Store with SPARK_Mode => Off is
       return E;
    end Hot;
 
+   procedure Exec_Raw (Path, Query : String);
+   --  Run a resultless statement against the database at Path.
+
    function Scalar (Path, Query : String) return String;
    --  The first column of Query's first row, run against the database at
    --  Path, or "" when it returns no row. "<null>" for a NULL column, so a
    --  missing attribution is distinguishable from a missing row.
+
+   procedure Exec_Raw (Path, Query : String) is
+      DB : Sqlite_Vec_Spark.Database;
+      St : Sqlite_Vec_Spark.Status;
+   begin
+      Sqlite_Vec_Spark.Open (DB, Path, St);
+      if St = Sqlite_Vec_Spark.Ok then
+         Sqlite_Vec_Spark.Execute (DB, Query, St);
+         Check (St = Sqlite_Vec_Spark.Ok, "fixture SQL accepted");
+         Sqlite_Vec_Spark.Close (DB);
+      else
+         Check (False, "fixture database opened");
+      end if;
+   end Exec_Raw;
 
    function Scalar (Path, Query : String) return String is
       DB   : Sqlite_Vec_Spark.Database;
@@ -136,14 +153,14 @@ begin
       St : Memcp.Store.Op_Status;
    begin
       Memcp.Store.Save
-        (S, "demo", "a diary headline",
-         "HEADLINE: my summary head" & ASCII.LF & "the body text",
+        (S, "demo", "an authored header",
+         "my summary head" & ASCII.LF & "the body text",
          Zero_Emb, Has_Session => False, Session_Id => "",
          Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => TS, Result => R, Status => St);
       Check (St = Memcp.Store.Success, "Save fresh -> Success");
       Check (not R.Already_Existed and not R.Replaced, "Save fresh: new row");
-      Check (R.Summary_Id > 0 and R.Diary_Id > 0, "Save fresh: rowids assigned");
+      Check (R.Summary_Id > 0, "Save fresh: rowid assigned");
 
       --  Fetch it back.
       declare
@@ -155,10 +172,11 @@ begin
                 "Fetch_Summary hit");
          if P /= null then
             Check (P.Project = "demo", "Fetch: project");
-            Check (P.Headline = "my summary head", "Fetch: HEADLINE parsed");
-            Check (P.Content = "HEADLINE: my summary head" & ASCII.LF
+            Check (P.Header = "an authored header",
+                   "Fetch: header is what save was given, not the body");
+            Check (P.Content = "my summary head" & ASCII.LF
                    & "the body text", "Fetch: body preserved");
-            Check (P.Kind = "diary", "Fetch: kind=diary");
+            Check (P.Kind = "authored", "Fetch: kind=authored");
             Check (not P.Has_Session, "Fetch: session null");
             Memcp.Store.Free (P);
          end if;
@@ -170,15 +188,14 @@ begin
          St2 : Memcp.Store.Op_Status;
       begin
          Memcp.Store.Save
-           (S, "demo", "a diary headline",
-            "HEADLINE: my summary head" & ASCII.LF & "the body text",
+           (S, "demo", "an authored header",
+            "my summary head" & ASCII.LF & "the body text",
             Zero_Emb, Has_Session => False, Session_Id => "",
             Surface => "", Surface_Label => "",
             Has_Created => True, Created_At => TS, Result => R2, Status => St2);
          Check (St2 = Memcp.Store.Success, "Save retry -> Success");
          Check (R2.Already_Existed and not R2.Replaced, "Save retry: dedup");
-         Check (R2.Summary_Id = R.Summary_Id and R2.Diary_Id = R.Diary_Id,
-                "Save retry: ids preserved");
+         Check (R2.Summary_Id = R.Summary_Id, "Save retry: id preserved");
       end;
 
       --  Forget it.
@@ -209,7 +226,7 @@ begin
       St3 : Memcp.Store.Op_Status;
    begin
       Memcp.Store.Save
-        (S, "demo", "first diary", "first summary body",
+        (S, "demo", "first header", "first summary body",
          Zero_Emb, Has_Session => True, Session_Id => "sess-1",
          Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => TS, Result => R1, Status => St1);
@@ -217,13 +234,13 @@ begin
              "Session save: fresh");
 
       Memcp.Store.Save
-        (S, "demo", "second diary", "second summary body",
+        (S, "demo", "second header", "second summary body",
          Zero_Emb, Has_Session => True, Session_Id => "sess-1",
          Surface => "", Surface_Label => "",
          Has_Created => True, Created_At => TS, Result => R2, Status => St2);
       Check (St2 = Memcp.Store.Success and then R2.Replaced,
              "Session save: replaced in place");
-      Check (R2.Summary_Id = R1.Summary_Id and R2.Diary_Id = R1.Diary_Id,
+      Check (R2.Summary_Id = R1.Summary_Id,
              "Session save: ids preserved across replace");
 
       Memcp.Store.Fetch_Summary (S, R2.Summary_Id, P, St3);
@@ -238,7 +255,7 @@ begin
    end;
 
    ------------------------------------------------------------------
-   --  Recent_Diary: list-valued read over a Name_List filter
+   --  Recent_Headers: list-valued read over a Name_List filter
    ------------------------------------------------------------------
    declare
       use type Memcp.Store.Name_Vectors.Capacity_Range;
@@ -246,76 +263,75 @@ begin
       Stx        : Memcp.Store.Op_Status;
       Projs      : Memcp.Store.Name_List;
       Empty      : Memcp.Store.Name_List;
-      Entries    : Memcp.Store.Diary_Entry_List;
+      Entries    : Memcp.Store.Header_List;
       RD_St      : Memcp.Store.Op_Status;
    begin
-      --  Three diary entries across two projects, ascending timestamps.
+      --  Three Headers across two projects, ascending timestamps.
       Memcp.Store.Save
-        (S, "alpha", "diary a1", "body a1", Zero_Emb,
+        (S, "alpha", "header a1", "body a1", Zero_Emb,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-02-01T00:00:00+00:00",
          Surface => "", Surface_Label => "",
          Result => R1, Status => Stx);
       Memcp.Store.Save
-        (S, "beta", "diary b1", "body b1", Zero_Emb,
+        (S, "beta", "header b1", "body b1", Zero_Emb,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-02-02T00:00:00+00:00",
          Surface => "", Surface_Label => "",
          Result => R2, Status => Stx);
       Memcp.Store.Save
-        (S, "alpha", "diary a2", "body a2", Zero_Emb,
+        (S, "alpha", "header a2", "body a2", Zero_Emb,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-02-03T00:00:00+00:00",
          Surface => "", Surface_Label => "",
          Result => R3, Status => Stx);
 
       --  No projects -> empty result, still Success.
-      Memcp.Store.Recent_Diary (S, Empty, 10, Entries, RD_St);
+      Memcp.Store.Recent_Headers (S, Empty, 10, Entries, RD_St);
       Check (RD_St = Memcp.Store.Success
-             and then Memcp.Store.Diary_Vectors.Length (Entries) = 0,
-             "Recent_Diary: no projects -> empty");
+             and then Memcp.Store.Header_Vectors.Length (Entries) = 0,
+             "Recent_Headers: no projects -> empty");
 
       --  Filter to "alpha": two rows, newest (a2) first.
       Memcp.Store.Name_Vectors.Append (Projs, (Len => 5, Value => "alpha"));
-      Memcp.Store.Recent_Diary (S, Projs, 10, Entries, RD_St);
+      Memcp.Store.Recent_Headers (S, Projs, 10, Entries, RD_St);
       Check (RD_St = Memcp.Store.Success
-             and then Memcp.Store.Diary_Vectors.Length (Entries) = 2,
-             "Recent_Diary: alpha -> 2 rows");
-      if Memcp.Store.Diary_Vectors.Length (Entries) = 2 then
+             and then Memcp.Store.Header_Vectors.Length (Entries) = 2,
+             "Recent_Headers: alpha -> 2 rows");
+      if Memcp.Store.Header_Vectors.Length (Entries) = 2 then
          declare
-            E1 : constant Memcp.Store.Diary_Entry :=
-              Memcp.Store.Diary_Vectors.Element (Entries, 1);
-            E2 : constant Memcp.Store.Diary_Entry :=
-              Memcp.Store.Diary_Vectors.Element (Entries, 2);
+            E1 : constant Memcp.Store.Header_Entry :=
+              Memcp.Store.Header_Vectors.Element (Entries, 1);
+            E2 : constant Memcp.Store.Header_Entry :=
+              Memcp.Store.Header_Vectors.Element (Entries, 2);
          begin
-            Check (E1.Content = "diary a2" and then E2.Content = "diary a1",
-                   "Recent_Diary: DESC order (a2 before a1)");
+            Check (E1.Header = "header a2" and then E2.Header = "header a1",
+                   "Recent_Headers: DESC order (a2 before a1)");
             Check (E1.Project = "alpha" and then not E1.Has_Session,
-                   "Recent_Diary: project + null session carried");
-            Check (E1.Headline = "body a2", "Recent_Diary: headline joined");
-            Check (E1.Kind = "diary", "Recent_Diary: kind joined");
+                   "Recent_Headers: project + null session carried");
+            Check (E1.Kind = "authored", "Recent_Headers: kind carried");
          end;
       end if;
 
       --  LIMIT: N=1 over both projects returns just the newest (a2).
       Memcp.Store.Name_Vectors.Append (Projs, (Len => 4, Value => "beta"));
-      Memcp.Store.Recent_Diary (S, Projs, 1, Entries, RD_St);
+      Memcp.Store.Recent_Headers (S, Projs, 1, Entries, RD_St);
       Check (RD_St = Memcp.Store.Success
-             and then Memcp.Store.Diary_Vectors.Length (Entries) = 1
-             and then Memcp.Store.Diary_Vectors.Element (Entries, 1).Content
-                      = "diary a2",
-             "Recent_Diary: LIMIT 1 -> newest across projects");
+             and then Memcp.Store.Header_Vectors.Length (Entries) = 1
+             and then Memcp.Store.Header_Vectors.Element (Entries, 1).Header
+                      = "header a2",
+             "Recent_Headers: LIMIT 1 -> newest across projects");
    end;
 
    ------------------------------------------------------------------
-   --  List_Projects: every project with its diary count, newest first
+   --  List_Projects: every project with its Header count, newest first
    ------------------------------------------------------------------
    declare
       use type Memcp.Store.Project_Vectors.Capacity_Range;
       Projs : Memcp.Store.Project_Info_List;
       LP_St : Memcp.Store.Op_Status;
    begin
-      --  Prior blocks left three projects: alpha (2 diary, newest 02-03),
+      --  Prior blocks left three projects: alpha (2 Headers, newest 02-03),
       --  beta (1, 02-02), demo (1 session-scoped, 01-01). Ordered by newest
       --  activity DESC -> alpha, beta, demo.
       Memcp.Store.List_Projects (S, Projs, LP_St);
@@ -327,7 +343,7 @@ begin
             P1 : constant Memcp.Store.Project_Info :=
               Memcp.Store.Project_Vectors.Element (Projs, 1);
          begin
-            Check (P1.Name = "alpha" and then P1.Diary_Count = 2,
+            Check (P1.Name = "alpha" and then P1.Header_Count = 2,
                    "List_Projects: alpha first, count 2");
             Check (P1.Has_Latest
                    and then P1.Latest_At = "2026-02-03T00:00:00+00:00",
@@ -355,13 +371,13 @@ begin
       Emb_A (1) := 1.0;
       Emb_B (2) := 1.0;
       Memcp.Store.Save
-        (S, "search", "diary sa", "summary sa", Emb_A,
+        (S, "search", "header sa", "summary sa", Emb_A,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-03-01T00:00:00+00:00",
          Surface => "", Surface_Label => "",
          Result => Ra, Status => Sv);
       Memcp.Store.Save
-        (S, "search", "diary sb", "summary sb", Emb_B,
+        (S, "search", "header sb", "summary sb", Emb_B,
          Has_Session => False, Session_Id => "",
          Has_Created => True, Created_At => "2026-03-02T00:00:00+00:00",
          Surface => "", Surface_Label => "",
@@ -641,7 +657,7 @@ begin
          Surface => "", Surface_Label => "",
          Result => Rec, Status => St);
       Check (St = Memcp.Store.Success and then Rec.Written
-             and then Rec.Summary_Id > 0 and then Rec.Diary_Id > 0,
+             and then Rec.Summary_Id > 0,
              "Save_Autorecap: fresh -> written");
 
       declare
@@ -652,9 +668,9 @@ begin
          Check (St2 = Memcp.Store.Success and then P /= null
                 and then P.Kind = "autorecap"
                 and then P.Content = "session recap line"
-                and then P.Headline = "session recap line"
+                and then P.Header = "session recap line"
                 and then P.Has_Session and then P.Session = "se-1",
-                "Save_Autorecap: summary kind/body/headline/session");
+                "Save_Autorecap: summary kind/body/header/session");
          if P /= null then
             Memcp.Store.Free (P);
          end if;
@@ -675,7 +691,7 @@ begin
          Sv : Memcp.Store.Op_Status;
       begin
          Memcp.Store.Save
-           (S, "sessapp", "diary for se-2", "summary for se-2", Zero_Emb,
+           (S, "sessapp", "header for se-2", "summary for se-2", Zero_Emb,
             Has_Session => True, Session_Id => "se-2",
             Surface => "", Surface_Label => "",
             Has_Created => True, Created_At => TS, Result => R, Status => Sv);
@@ -809,24 +825,6 @@ begin
         (if Tmp'Length > 0 and then Tmp (Tmp'Last) = '/'
          then Tmp else Tmp & "/") & "memcp_surface_test";
       DB_File : constant String := Base & "/store.db";
-
-
-      procedure Exec_Raw (Path, Query : String);
-      --  Run a resultless statement against the database at Path.
-
-      procedure Exec_Raw (Path, Query : String) is
-         DB : Sqlite_Vec_Spark.Database;
-         St : Sqlite_Vec_Spark.Status;
-      begin
-         Sqlite_Vec_Spark.Open (DB, Path, St);
-         if St = Sqlite_Vec_Spark.Ok then
-            Sqlite_Vec_Spark.Execute (DB, Query, St);
-            Check (St = Sqlite_Vec_Spark.Ok, "fixture SQL accepted");
-            Sqlite_Vec_Spark.Close (DB);
-         else
-            Check (False, "fixture database opened");
-         end if;
-      end Exec_Raw;
    begin
       if Ada.Directories.Exists (Base) then
          Ada.Directories.Delete_Tree (Base);
@@ -875,12 +873,13 @@ begin
              "Migration: no row lost");
       Check (Scalar
                (DB_File,
-                "SELECT headline || '|' || body || '|' || dedup_hash"
+                "SELECT header || '|' || body || '|' || dedup_hash"
                 & " || '|' || kind || '|' || created_at || '|' || session_id"
                 & " FROM summaries WHERE id = 1")
-             = "old head|old body|oldhash|diary|"
+             = "old head|old body|oldhash|authored|"
                & "2026-01-01T00:00:00+00:00|old-1",
-             "Migration: the pre-existing summary reads back unchanged");
+             "Migration: a headline with no diary row behind it becomes"
+             & " the Header");
       Check (Scalar (DB_File, "SELECT raw_path FROM sessions WHERE id = 1")
              = "/old/path.jsonl",
              "Migration: the pre-existing session reads back unchanged");
@@ -906,7 +905,7 @@ begin
                 "Migration: re-opening a migrated database is a no-op");
          if Open_MS = Memcp.Store.Opened then
             Memcp.Store.Save
-              (MS, "prov", "attributed diary", "attributed body", Zero_Emb,
+              (MS, "prov", "attributed header", "attributed body", Zero_Emb,
                Has_Session => True, Session_Id => "p-1",
                Has_Created => True, Created_At => TS,
                Surface => "11111111-2222-3333-4444-555555555555",
@@ -927,7 +926,7 @@ begin
 
             --  An unattributed write lands beside them, with no surface.
             Memcp.Store.Save
-              (MS, "prov", "anon diary", "anon body", Zero_Emb,
+              (MS, "prov", "anon header", "anon body", Zero_Emb,
                Has_Session => True, Session_Id => "p-2",
                Has_Created => True, Created_At => TS,
                Surface => "", Surface_Label => "",
@@ -958,6 +957,131 @@ begin
                 & " WHERE session_id = 'p-2'")
              = "<null>",
              "Provenance: an unattributed write stays null");
+
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+   end;
+
+   ------------------------------------------------------------------
+   --  Migration: a diary table folded into summaries.header
+   ------------------------------------------------------------------
+   declare
+      Tmp : constant String :=
+        (if Ada.Environment_Variables.Exists ("TMPDIR")
+         then Ada.Environment_Variables.Value ("TMPDIR")
+         else "/tmp");
+      Base : constant String :=
+        (if Tmp'Length > 0 and then Tmp (Tmp'Last) = '/'
+         then Tmp else Tmp & "/") & "memcp_header_migration_test";
+      DB_File : constant String := Base & "/store.db";
+
+      Long_Line : constant String (1 .. 420) := [others => 'x'];
+      --  A diary line past Max_Header, so the row keeps its old headline.
+   begin
+      if Ada.Directories.Exists (Base) then
+         Ada.Directories.Delete_Tree (Base);
+      end if;
+      Ada.Directories.Create_Path (Base);
+
+      --  Four rows, one per branch the migration decides between.
+      Exec_Raw
+        (DB_File,
+         "CREATE TABLE projects (id INTEGER PRIMARY KEY,"
+         & " name TEXT NOT NULL UNIQUE);"
+         & "CREATE TABLE summaries (id INTEGER PRIMARY KEY,"
+         & " project_id INTEGER NOT NULL REFERENCES projects(id),"
+         & " session_id TEXT, created_at TEXT NOT NULL,"
+         & " headline TEXT NOT NULL, body TEXT NOT NULL,"
+         & " dedup_hash TEXT, kind TEXT NOT NULL DEFAULT 'diary');"
+         & "CREATE TABLE diary (id INTEGER PRIMARY KEY,"
+         & " project_id INTEGER NOT NULL REFERENCES projects(id),"
+         & " summary_id INTEGER NOT NULL REFERENCES summaries(id)"
+         & " ON DELETE CASCADE,"
+         & " created_at TEXT NOT NULL, body TEXT NOT NULL);"
+         & "INSERT INTO projects (id, name) VALUES (1, 'old');"
+
+         --  1: an authored line within budget -- promoted.
+         & "INSERT INTO summaries VALUES (1, 1, 's-1', '2026-01-01T00:00:00Z',"
+         & " 'cut prefix of the body', 'the body', 'h1', 'diary');"
+         & "INSERT INTO diary VALUES (1, 1, 1, '2026-01-01T00:00:00Z',"
+         & " 'the line the model authored');"
+
+         --  2: an autorecap -- its own body, whole.
+         & "INSERT INTO summaries VALUES (2, 1, 's-2', '2026-01-02T00:00:00Z',"
+         & " 'cut recap', 'the whole recap text', 'h2', 'autorecap');"
+         & "INSERT INTO diary VALUES (2, 1, 2, '2026-01-02T00:00:00Z',"
+         & " 'the whole recap text');"
+
+         --  3: a diary line already inside its summary -- headline kept,
+         --  body untouched.
+         & "INSERT INTO summaries VALUES (3, 1, 's-3', '2026-01-03T00:00:00Z',"
+         & " 'marker head', 'marker head' || char(10) || '" & Long_Line
+         & "', 'h3', 'diary');"
+         & "INSERT INTO diary VALUES (3, 1, 3, '2026-01-03T00:00:00Z',"
+         & " '" & Long_Line & "');"
+
+         --  4: a long diary line held nowhere else -- appended to the body.
+         & "INSERT INTO summaries VALUES (4, 1, 's-4', '2026-01-04T00:00:00Z',"
+         & " 'marker four', 'body four', 'h4', 'diary');"
+         & "INSERT INTO diary VALUES (4, 1, 4, '2026-01-04T00:00:00Z',"
+         & " 'orphan text' || char(10) || 'second line');");
+
+      declare
+         MS      : Memcp.Store.Store;
+         Open_MS : Memcp.Store.Open_Status;
+      begin
+         Memcp.Store.Open (MS, DB_File, Open_MS);
+         Check (Open_MS = Memcp.Store.Opened,
+                "Header migration: a database with a diary table opens");
+         if Open_MS = Memcp.Store.Opened then
+            Memcp.Store.Close (MS);
+         end if;
+      end;
+
+      Check (Scalar (DB_File, "SELECT header FROM summaries WHERE id = 1")
+             = "the line the model authored",
+             "Header migration: the authored line becomes the Header");
+      Check (Scalar (DB_File, "SELECT header FROM summaries WHERE id = 2")
+             = "the whole recap text"
+             and then Scalar
+               (DB_File, "SELECT header = body FROM summaries WHERE id = 2")
+                = "1",
+             "Header migration: an autorecap's Header is its Summary, whole");
+      Check (Scalar (DB_File, "SELECT header FROM summaries WHERE id = 3")
+             = "marker head",
+             "Header migration: an over-budget line leaves the headline");
+      Check (Scalar
+               (DB_File,
+                "SELECT instr(body, char(10) || char(10))"
+                & " FROM summaries WHERE id = 3")
+             = "0",
+             "Header migration: a line already in the body is not appended");
+      Check (Scalar (DB_File, "SELECT body FROM summaries WHERE id = 4")
+             = "body four" & ASCII.LF & ASCII.LF & "orphan text" & ASCII.LF
+               & "second line",
+             "Header migration: text held nowhere else joins the Summary");
+      Check (Scalar
+               (DB_File,
+                "SELECT count(*) FROM summaries WHERE kind = 'authored'")
+             = "3",
+             "Header migration: kind='diary' becomes kind='authored'");
+      Check (Scalar
+               (DB_File,
+                "SELECT count(*) FROM sqlite_master"
+                & " WHERE type = 'table' AND name = 'diary'")
+             = "0",
+             "Header migration: the diary table is gone");
+      Check (Scalar
+               (DB_File,
+                "SELECT count(*) FROM pragma_table_info('summaries')"
+                & " WHERE name = 'headline'")
+             = "0",
+             "Header migration: the headline column is gone");
+      Check (Scalar (DB_File,
+                     "SELECT value FROM meta WHERE key = 'schema_version'")
+             = "2",
+             "Header migration: the schema version moves with it");
 
       if Ada.Directories.Exists (Base) then
          Ada.Directories.Delete_Tree (Base);
@@ -1271,7 +1395,7 @@ begin
 
          if Open_S1 = Memcp.Store.Opened then
             Memcp.Store.Save
-              (S1, "faults", "diary one", "summary one", Hot (1),
+              (S1, "faults", "header one", "summary one", Hot (1),
                Has_Session => False, Session_Id => "",
                Has_Created => True, Created_At => "2026-06-01T00:00:00+00:00",
                Surface => "", Surface_Label => "",
@@ -1282,7 +1406,7 @@ begin
             Exec_Raw (Summary_DB, "DROP TABLE summary_vec;");
 
             Memcp.Store.Save
-              (S1, "faults", "diary two", "summary two", Hot (2),
+              (S1, "faults", "header two", "summary two", Hot (2),
                Has_Session => False, Session_Id => "",
                Has_Created => True, Created_At => "2026-06-02T00:00:00+00:00",
                Surface => "", Surface_Label => "",
@@ -1291,8 +1415,6 @@ begin
                    "Save: a failing embedding write -> Db_Error");
             Check (Scalar (Summary_DB, "SELECT count(*) FROM summaries") = "1",
                    "Save: the failed save left no summary row behind");
-            Check (Scalar (Summary_DB, "SELECT count(*) FROM diary") = "1",
-                   "Save: nor a diary line");
 
             declare
                Projs : Memcp.Store.Name_List;
@@ -1308,7 +1430,7 @@ begin
             end;
 
             --  A forget deletes the embedding first, so this one fails with
-            --  the summary and its diary line already inside the transaction.
+            --  the summary already inside the transaction.
             declare
                Del   : Boolean;
                FG_St : Memcp.Store.Op_Status;
@@ -1319,8 +1441,6 @@ begin
             end;
             Check (Scalar (Summary_DB, "SELECT count(*) FROM summaries") = "1",
                    "Forget_Summary: the interrupted delete kept the summary");
-            Check (Scalar (Summary_DB, "SELECT count(*) FROM diary") = "1",
-                   "Forget_Summary: and the diary line it would have cascaded");
 
             --  A read that never reaches the missing table is unaffected.
             declare

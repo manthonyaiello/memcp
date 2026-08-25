@@ -3,7 +3,7 @@
 #
 # Reads the Claude Code SessionStart payload from stdin (JSON with at least
 # `session_id`, `cwd`, and `source`), derives the project key, looks up recent
-# diary entries for it via the `recent` MCP tool, and prints them to stdout so
+# Headers for it via the `recent` MCP tool, and prints them to stdout so
 # Claude Code adds them to the first-turn context.
 #
 # `<memcp-session/>` carries the session id and the derived project key. The
@@ -91,7 +91,7 @@ cwd=$(jq -r '.cwd // empty' <<<"$payload" 2>/dev/null || true)
 session_id=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null || true)
 
 # `resume` and `compact` still get the identity block — the model needs the key
-# to save under, and a compaction can drop it — but not the diary listing,
+# to save under, and a compaction can drop it — but not the Header listing,
 # which duplicates context the model already has.
 list_prior=1
 case "$source_kind" in
@@ -140,7 +140,7 @@ if ! memcp_is_rpc "$(cat "$body")"; then
 fi
 
 # Before the early exit below: a resumed session needs the report as much as a
-# fresh one, and nothing about it depends on the diary listing.
+# fresh one, and nothing about it depends on the Header listing.
 expected=$(memcp_stale_expected "$body")
 if [[ -n "$expected" ]]; then
     memcp_stale "$HOOK_NAME" "$expected"
@@ -160,7 +160,7 @@ emit_session_block() {
 
 if [[ "$list_prior" == "0" ]]; then
     emit_session_block
-    log "surfaced project=$project (source=$source_kind; no diary listing)"
+    log "surfaced project=$project (source=$source_kind; no Header listing)"
     exit 0
 fi
 
@@ -220,16 +220,16 @@ entries=$(jq -c '.entries // []' <<<"$result" 2>/dev/null || echo '[]')
 count=$(jq 'length' <<<"$entries" 2>/dev/null || echo 0)
 
 if [[ "$count" == "0" ]]; then
-    log "no prior diary entries for project=$project"
+    log "no prior Headers for project=$project"
     exit 0
 fi
 
-# Surface to Claude. Headlines only — bodies are recoverable via fetch_summary.
-# `kind` (diary|autorecap) tells the model whether fetch_summary will return
-# anything richer than the headline itself.
+# Surface to Claude. Headers only — bodies are recoverable via fetch_summary.
+# `kind` (authored|autorecap) tells the model whether fetch_summary will return
+# anything richer than the Header itself.
 printf '<memcp-prior-sessions project="%s" count="%s">\n' "$project" "$count"
-jq -r '.[] | "[\(.created_at) kind=\(.kind // "diary")] \(.headline)"' <<<"$entries"
+jq -r '.[] | "[\(.created_at) kind=\(.kind // "authored")] \(.header)"' <<<"$entries"
 printf '</memcp-prior-sessions>\n'
 
-log "surfaced $count diary entries for project=$project"
+log "surfaced $count Headers for project=$project"
 exit 0

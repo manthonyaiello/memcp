@@ -109,7 +109,7 @@ fi
 
 # The hooks inject and upload on their own, but save/search/fetch_* reach the
 # server as MCP tools, so a surface without the registration can never author a
-# diary entry. Scope is user: the CLI defaults to the current directory only.
+# Header. Scope is user: the CLI defaults to the current directory only.
 if claude mcp get memcp 2>&1 | grep -q 'No MCP server named'; then
     if claude mcp add -s user -t http memcp "$eff_url" >/dev/null 2>&1; then
         echo "   registered memcp -> $eff_url"

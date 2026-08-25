@@ -79,7 +79,7 @@ assert_contains "degraded: counts the sessions it cannot attribute" \
     '  - an unidentified surface: 6 of the last 6 sessions have no transcript' "$OUT"
 assert_contains "degraded: names the remedy" '`doctor`' "$OUT"
 assert_contains "degraded: tells the user"   'Tell the user' "$OUT"
-assert_contains "degraded: the diary is still listed" \
+assert_contains "degraded: the Headers are still listed" \
     '<memcp-prior-sessions project="widget" count="2">' "$OUT"
 
 # --- an unattributed call ----------------------------------------------------
@@ -93,7 +93,7 @@ assert_contains "unattributed: the block is emitted" \
     '<memcp-hook-unattributed hook="session_start">' "$OUT"
 assert_contains "unattributed: carries the server's words" \
     'no surface argument, so memcp cannot record which machine' "$OUT"
-assert_contains "unattributed: the diary is still listed" \
+assert_contains "unattributed: the Headers are still listed" \
     '<memcp-prior-sessions project="widget" count="2">' "$OUT"
 
 finish

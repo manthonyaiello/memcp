@@ -48,7 +48,7 @@ assert_contains "healthy: session block carries the derived key" \
 assert_contains "healthy: the key is marked verbatim" \
     'Pass project="widget", session_id="S1" and surface=' "$OUT"
 assert_contains "healthy: prior sessions are listed"  '<memcp-prior-sessions project="widget" count="2">' "$OUT"
-assert_contains "healthy: headlines are surfaced"     'kind=autorecap] second headline' "$OUT"
+assert_contains "healthy: Headers are surfaced"       'kind=autorecap] second header' "$OUT"
 assert_not_contains "healthy: no fault block"         '<memcp-hook-error' "$OUT"
 assert_not_contains "healthy: no modification block"  '<memcp-hook-modified' "$OUT"
 
@@ -164,7 +164,7 @@ OUT=$(MEMCP_TEST_SCENARIO=healthy MEMCP_CONFIG="$CONFIG" PATH="$SANDBOX" \
       2>/dev/null)
 assert_contains "compact: the key is still injected" \
     '<memcp-session id="S1" project="widget"' "$OUT"
-assert_not_contains "compact: no diary listing" '<memcp-prior-sessions' "$OUT"
+assert_not_contains "compact: no Header listing" '<memcp-prior-sessions' "$OUT"
 
 # --- what the hooks must not send -------------------------------------------
 # The two are co-designed: memcp assigns no session and reads no notification,
