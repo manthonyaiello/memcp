@@ -14,3 +14,9 @@ pragma SPARK_Mode (On);
 --  so memcp compiles in Ada 2022 mode. A superset of what the json generics
 --  need, so it costs the rest of the tree nothing.
 pragma Ada_2022;
+
+--  Memcp.Store's SQL layer releases each statement in a `finally` part, which
+--  FSF 16.1 gates on this pragma alone -- neither -gnatX nor
+--  Extensions_Allowed (On) admits it. The pragma opens every extension, not
+--  that one; see docs/design/0020.
+pragma Extensions_Allowed (All_Extensions);

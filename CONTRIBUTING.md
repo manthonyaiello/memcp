@@ -36,6 +36,11 @@ sources, so a unit outside SPARK has to say so at its own declaration. Units
 also carry that aspect explicitly, which the configuration pragma does not
 replace.
 
+`gnat.adc` also sets `pragma Extensions_Allowed (All_Extensions)`, which is what
+admits the `finally` parts `Memcp.Store` releases its statements in. It opens
+every extension, not that one; see
+[`docs/design/0020`](docs/design/0020-a-sql-error-is-an-exception.md).
+
 ## Before opening a pull request
 
 ```sh

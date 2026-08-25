@@ -395,6 +395,186 @@ package body Memcp.Store with SPARK_Mode => On is
    --  Zero-copy reinterpretation of an embedding as the packed little-endian
    --  float32 blob sqlite-vec stores and compares against.
 
+   -----------------------------
+   -- Checked statement layer --
+   -----------------------------
+
+   Sql_Error : exception;
+   --  A SQLite status that is a failure rather than an answer. An operation
+   --  catches it once, at the frame that owns the transaction. A non-Ok status
+   --  that is an answer -- no such row, the end of a result set -- comes back
+   --  as an out parameter instead, and never reaches here.
+
+   procedure Check (St : Sql.Status)
+     with --  St rather than True: stated as True the handle facts do not
+          --  survive the raise, and Prepare's own exceptional case goes
+          --  unproved.
+          Post => St = Sql.Ok,
+          Exceptional_Cases => (Sql_Error => St /= Sql.Ok);
+   --  Let an Ok status through, and turn any other into Sql_Error.
+
+   procedure Check (St : Sql.Status) is
+   begin
+      if St /= Sql.Ok then
+         raise Sql_Error;
+      end if;
+   end Check;
+
+   procedure Prepare (S : Store; Text : String; Stmt : out Sql.Statement)
+     with Pre  => Is_Open (S) and then Text'Length > 0,
+          Post => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => Sql.Is_Reclaimed (Stmt));
+   --  Compile Text against S. A statement that comes back valid belongs to the
+   --  frame that asked for it, and that frame releases it in its `finally`
+   --  part: only a raise from Prepare itself reclaims.
+
+   procedure Prepare (S : Store; Text : String; Stmt : out Sql.Statement) is
+      St : Sql.Status;
+   begin
+      Sql.Prepare (S.DB, Text, Stmt, St);
+      Check (St);
+   end Prepare;
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : String)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind text at the 1-based Index.
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : String) is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Text (Stmt, Index, Value, St);
+      Check (St);
+   end Bind;
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : Row_Id)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind a rowid at the 1-based Index.
+
+   procedure Bind (Stmt : Sql.Statement; Index : Positive; Value : Row_Id) is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Int64 (Stmt, Index, Value, St);
+      Check (St);
+   end Bind;
+
+   procedure Bind
+     (Stmt : Sql.Statement; Index : Positive; Value : Packed_Blob)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind a packed embedding at the 1-based Index.
+
+   procedure Bind
+     (Stmt : Sql.Statement; Index : Positive; Value : Packed_Blob)
+   is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Blob (Stmt, Index, Value, St);
+      Check (St);
+   end Bind;
+
+   procedure Reset (Stmt : Sql.Statement)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Return a stepped statement to its initial state, bindings intact.
+
+   procedure Reset (Stmt : Sql.Statement) is
+      St : Sql.Status;
+   begin
+      Sql.Reset (Stmt, St);
+      Check (St);
+   end Reset;
+
+   procedure Step_Row (Stmt : Sql.Statement; Have_Row : out Boolean)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Advance a query one row. Have_Row is False at the end of the result set,
+   --  which is the one non-Ok outcome that is an answer.
+
+   procedure Step_Row (Stmt : Sql.Statement; Have_Row : out Boolean) is
+      St : Sql.Status;
+   begin
+      Sql.Step (Stmt, St);
+      if St /= Sql.Row and then St /= Sql.Done then
+         raise Sql_Error;
+      end if;
+      Have_Row := St = Sql.Row;
+   end Step_Row;
+
+   procedure Step_Done (Stmt : Sql.Statement)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Advance a statement that yields no rows. Anything but Done raises, a
+   --  Row included.
+
+   procedure Step_Done (Stmt : Sql.Statement) is
+      St : Sql.Status;
+   begin
+      Sql.Step (Stmt, St);
+      if St /= Sql.Done then
+         raise Sql_Error;
+      end if;
+   end Step_Done;
+
+   procedure Bind_Null (Stmt : Sql.Statement; Index : Positive)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind SQL NULL at the 1-based Index.
+
+   procedure Bind_Null (Stmt : Sql.Statement; Index : Positive) is
+      St : Sql.Status;
+   begin
+      Sql.Bind_Null (Stmt, Index, St);
+      Check (St);
+   end Bind_Null;
+
+   procedure Bind_Surface
+     (Stmt : Sql.Statement; Index : Positive; Id : Row_Id)
+     with Pre => Sql.Is_Valid (Stmt),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Bind the surfaces-row id at Index, or NULL for the unattributed write.
+
+   procedure Bind_Surface
+     (Stmt : Sql.Statement; Index : Positive; Id : Row_Id) is
+   begin
+      if Id = 0 then
+         Bind_Null (Stmt, Index);
+      else
+         Bind (Stmt, Index, Id);
+      end if;
+   end Bind_Surface;
+
+   procedure Exec (S : Store; Text : String)
+     with Pre => Is_Open (S)
+                 and then Text'Length > 0
+                 and then Text'Last < Natural'Last,
+          Exceptional_Cases => (Sql_Error => True);
+   --  Run a resultless statement -- BEGIN, COMMIT, ROLLBACK, simple DML --
+   --  as a whole.
+
+   procedure Exec (S : Store; Text : String) is
+      St : Sql.Status;
+   begin
+      Sql.Execute (S.DB, Text, St);
+      Check (St);
+   end Exec;
+
+   procedure Rollback (S : Store)
+     with Pre => Is_Open (S);
+   --  Abandon the current transaction. It is reached from a handler, with
+   --  nothing left to try, so a ROLLBACK that itself fails is logged rather
+   --  than raised: promising not to raise is what makes it callable there.
+
+   procedure Rollback (S : Store) is
+   begin
+      Exec (S, "ROLLBACK");
+   exception
+      when Sql_Error =>
+         Memcp.Log.Error
+           ("transaction ROLLBACK failed; database may be left "
+            & "mid-transaction");
+   end Rollback;
    -------------------
    -- Insert_Chunks --
    -------------------
@@ -404,24 +584,22 @@ package body Memcp.Store with SPARK_Mode => On is
       Session_Row : Row_Id;
       Proj_Id     : Row_Id;
       TS          : String;
-      Chunks      : Chunk_Input_List;
-      Ok          : out Boolean)
-     with Pre => Is_Open (S);
+      Chunks      : Chunk_Input_List)
+     with Pre => Is_Open (S),
+          Exceptional_Cases => (Sql_Error => True);
    --  Insert every element of Chunks, body and embedding, against one
    --  session row: shared by Save_Session and Reindex_Session. Ordinal is
    --  the 0-based position within Chunks. Runs inside the caller's
-   --  transaction, and Ok is False from the first SQLite failure on.
+   --  transaction, and raises at the first SQLite failure.
 
    procedure Insert_Chunks
      (S           : Store;
       Session_Row : Row_Id;
       Proj_Id     : Row_Id;
       TS          : String;
-      Chunks      : Chunk_Input_List;
-      Ok          : out Boolean)
+      Chunks      : Chunk_Input_List)
    is
    begin
-      Ok := True;
       for I in Chunk_Input_Vectors.First_Index (Chunks)
                .. Chunk_Input_Vectors.Last_Index (Chunks)
       loop
@@ -431,95 +609,49 @@ package body Memcp.Store with SPARK_Mode => On is
             Ord  : constant Row_Id :=
               Row_Id (I - Chunk_Input_Vectors.First_Index (Chunks));
             Blob : constant Packed_Blob := To_Blob (El.Embedding);
-            Ins  : Sql.Statement;
-            St   : Sql.Status;
             New_Chunk : Row_Id;
          begin
-            Sql.Prepare
-              (S.DB,
-               "INSERT INTO chunks (session_row_id, project_id, ordinal,"
-               & " body, created_at) VALUES (?, ?, ?, ?, ?)", Ins, St);
-            if St = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 1, Session_Row, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 2, Proj_Id, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 3, Ord, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Text (Ins, 4, El.Content, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Text (Ins, 5, TS, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Step (Ins, St);
-            end if;
-            Sql.Finalize (Ins);
-
-            if St /= Sql.Done then
-               Ok := False;
-            else
-               New_Chunk := Sql.Last_Insert_Rowid (S.DB);
-               Sql.Prepare
-                 (S.DB,
-                  "INSERT INTO chunk_vec (rowid, embedding) VALUES (?, ?)",
-                  Ins, St);
-               if St = Sql.Ok then
-                  Sql.Bind_Int64 (Ins, 1, New_Chunk, St);
-               end if;
-               if St = Sql.Ok then
-                  Sql.Bind_Blob (Ins, 2, Blob, St);
-               end if;
-               if St = Sql.Ok then
-                  Sql.Step (Ins, St);
-               end if;
+            Insert_Row :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO chunks (session_row_id, project_id, ordinal,"
+                  & " body, created_at) VALUES (?, ?, ?, ?, ?)", Ins);
+               Bind (Ins, 1, Session_Row);
+               Bind (Ins, 2, Proj_Id);
+               Bind (Ins, 3, Ord);
+               Bind (Ins, 4, El.Content);
+               Bind (Ins, 5, TS);
+               Step_Done (Ins);
+            finally
                Sql.Finalize (Ins);
-               if St /= Sql.Done then
-                  Ok := False;
-               end if;
-            end if;
+            end Insert_Row;
+
+            New_Chunk := Sql.Last_Insert_Rowid (S.DB);
+
+            Insert_Vec :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO chunk_vec (rowid, embedding) VALUES (?, ?)",
+                  Ins);
+               Bind (Ins, 1, New_Chunk);
+               Bind (Ins, 2, Blob);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Vec;
          end;
-         exit when not Ok;
       end loop;
    end Insert_Chunks;
 
-   ----------------------------
-   -- Small statement helpers --
-   ----------------------------
-
-   procedure Exec (S : Store; Text : String; Ok : out Boolean)
-     with Pre => Is_Open (S)
-                 and then Text'Length > 0
-                 and then Text'Last < Natural'Last;
-   --  Run a resultless statement -- BEGIN, COMMIT, ROLLBACK, simple DML --
-   --  as a whole. Ok when SQLite accepted it.
-
-   procedure Exec (S : Store; Text : String; Ok : out Boolean) is
-      St : Sql.Status;
-   begin
-      Sql.Execute (S.DB, Text, St);
-      Ok := St = Sql.Ok;
-   end Exec;
-
-   procedure Rollback (S : Store)
-     with Pre => Is_Open (S);
-   --  Abandon the current transaction. A ROLLBACK that itself fails can
-   --  leave the database mid-transaction, so it is logged rather than
-   --  discarded: callers reach here with nothing left to try.
-
-   procedure Rollback (S : Store) is
-      Ok : Boolean;
-   begin
-      Exec (S, "ROLLBACK", Ok);
-      if not Ok then
-         Memcp.Log.Error
-           ("transaction ROLLBACK failed; database may be left "
-            & "mid-transaction");
-      end if;
-   end Rollback;
+   --------------------
+   -- Filter helpers --
+   --------------------
 
    function Placeholders (K : Positive) return String
      with Pre  => K <= Max_Filter_Terms,
@@ -557,106 +689,87 @@ package body Memcp.Store with SPARK_Mode => On is
    -- Project_Id  --
    -----------------
 
-   procedure Project_Id
-     (S : Store; Name : String; Id : out Row_Id; Status : out Op_Status)
-     with Pre => Is_Open (S);
+   procedure Project_Id (S : Store; Name : String; Id : out Row_Id)
+     with Pre => Is_Open (S),
+          Exceptional_Cases => (Sql_Error => True);
    --  The id of the project named Name, inserting the projects row when it
    --  does not exist yet.
 
-   procedure Project_Id
-     (S : Store; Name : String; Id : out Row_Id; Status : out Op_Status)
-   is
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+   procedure Project_Id (S : Store; Name : String; Id : out Row_Id) is
+      Found : Boolean;
    begin
-      Id     := 0;
-      Status := Db_Error;
+      Id := 0;
 
-      Sql.Prepare (S.DB, "SELECT id FROM projects WHERE name = ?", Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Text (Stmt, 1, Name, St);
-      if St = Sql.Ok then
-         Sql.Step (Stmt, St);
-         if St = Sql.Row then
-            Id     := Sql.Column_Int64 (Stmt, 0);
-            Status := Success;
-            Sql.Finalize (Stmt);
-            return;
+      Look_Up :
+      declare
+         Stmt : Sql.Statement;
+      begin
+         Prepare (S, "SELECT id FROM projects WHERE name = ?", Stmt);
+         Bind (Stmt, 1, Name);
+         Step_Row (Stmt, Found);
+         if Found then
+            Id := Sql.Column_Int64 (Stmt, 0);
          end if;
-      end if;
-      Sql.Finalize (Stmt);
-      if St /= Sql.Done then
-         return;   --  a genuine error, not "no such project"
+      finally
+         Sql.Finalize (Stmt);
+      end Look_Up;
+
+      if Found then
+         return;
       end if;
 
       --  Not present: insert it.
-      Sql.Prepare (S.DB, "INSERT INTO projects (name) VALUES (?)", Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Text (Stmt, 1, Name, St);
-      if St = Sql.Ok then
-         Sql.Step (Stmt, St);
-      end if;
-      Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Id     := Sql.Last_Insert_Rowid (S.DB);
-         Status := Success;
-      end if;
+      Add_Row :
+      declare
+         Stmt : Sql.Statement;
+      begin
+         Prepare (S, "INSERT INTO projects (name) VALUES (?)", Stmt);
+         Bind (Stmt, 1, Name);
+         Step_Done (Stmt);
+      finally
+         Sql.Finalize (Stmt);
+      end Add_Row;
+
+      Id := Sql.Last_Insert_Rowid (S.DB);
    end Project_Id;
 
    ----------------
    -- Add_Column --
    ----------------
 
-   procedure Add_Column
-     (S : Store; Table, Column, Decl : String; Ok : out Boolean)
+   procedure Add_Column (S : Store; Table, Column, Decl : String)
      with Pre => Is_Open (S)
                  --  Bounded so the ALTER built below cannot overflow; every
                  --  caller passes a literal well inside these.
                  and then Table'Length in 1 .. 64
                  and then Column'Length in 1 .. 64
-                 and then Decl'Length in 1 .. 128;
+                 and then Decl'Length in 1 .. 128,
+          Exceptional_Cases => (Sql_Error => True);
    --  Add Column to Table when it is absent, leaving an already-migrated
    --  database untouched. Absence is established first so that a failing ALTER
    --  is a real error rather than the expected duplicate-column refusal.
 
-   procedure Add_Column
-     (S : Store; Table, Column, Decl : String; Ok : out Boolean)
-   is
-      Stmt    : Sql.Statement;
-      St      : Sql.Status;
-      Present : Boolean := False;
+   procedure Add_Column (S : Store; Table, Column, Decl : String) is
+      Present : Boolean;
    begin
-      Ok := False;
+      Look_Up :
+      declare
+         Stmt : Sql.Statement;
+      begin
+         Prepare
+           (S, "SELECT 1 FROM pragma_table_info(?) WHERE name = ?", Stmt);
+         Bind (Stmt, 1, Table);
+         Bind (Stmt, 2, Column);
+         Step_Row (Stmt, Present);
+      finally
+         Sql.Finalize (Stmt);
+      end Look_Up;
 
-      Sql.Prepare
-        (S.DB,
-         "SELECT 1 FROM pragma_table_info(?) WHERE name = ?", Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Text (Stmt, 1, Table, St);
-      if St = Sql.Ok then
-         Sql.Bind_Text (Stmt, 2, Column, St);
-      end if;
-      if St = Sql.Ok then
-         Sql.Step (Stmt, St);
-         Present := St = Sql.Row;
-      end if;
-      Sql.Finalize (Stmt);
-      if St /= Sql.Row and then St /= Sql.Done then
-         return;
-      end if;
-
-      if Present then
-         Ok := True;
-      else
+      --  An already-migrated database is a success, so the ALTER is the only
+      --  statement that can fail here.
+      if not Present then
          Exec
-           (S, "ALTER TABLE " & Table & " ADD COLUMN " & Column & " " & Decl,
-            Ok);
+           (S, "ALTER TABLE " & Table & " ADD COLUMN " & Column & " " & Decl);
       end if;
    end Add_Column;
 
@@ -665,125 +778,84 @@ package body Memcp.Store with SPARK_Mode => On is
    --------------------
 
    procedure Surface_Row_Id
-     (S      : Store;
-      Uuid   : String;
-      Label  : String;
-      Now    : String;
-      Id     : out Row_Id;
-      Status : out Op_Status)
-     with Pre => Is_Open (S);
+     (S     : Store;
+      Uuid  : String;
+      Label : String;
+      Now   : String;
+      Id    : out Row_Id)
+     with Pre => Is_Open (S),
+          Exceptional_Cases => (Sql_Error => True);
    --  The id of the surfaces row for Uuid, inserting it when new and
    --  refreshing its label and last_seen when not. An empty Uuid is the
    --  unattributed write: Id comes back 0, which every caller binds as NULL.
 
    procedure Surface_Row_Id
-     (S      : Store;
-      Uuid   : String;
-      Label  : String;
-      Now    : String;
-      Id     : out Row_Id;
-      Status : out Op_Status)
+     (S     : Store;
+      Uuid  : String;
+      Label : String;
+      Now   : String;
+      Id    : out Row_Id)
    is
-      Stmt  : Sql.Statement;
-      St    : Sql.Status;
-      Found : Boolean := False;
+      Found : Boolean;
    begin
-      Id     := 0;
-      Status := Success;
+      Id := 0;
 
       if Uuid'Length = 0 then
          return;
       end if;
-      Status := Db_Error;
 
-      Sql.Prepare
-        (S.DB, "SELECT id FROM surfaces WHERE surface_id = ?", Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Text (Stmt, 1, Uuid, St);
-      if St = Sql.Ok then
-         Sql.Step (Stmt, St);
-         if St = Sql.Row then
-            Found := True;
-            Id    := Sql.Column_Int64 (Stmt, 0);
+      Look_Up :
+      declare
+         Stmt : Sql.Statement;
+      begin
+         Prepare (S, "SELECT id FROM surfaces WHERE surface_id = ?", Stmt);
+         Bind (Stmt, 1, Uuid);
+         Step_Row (Stmt, Found);
+         if Found then
+            Id := Sql.Column_Int64 (Stmt, 0);
          end if;
-      end if;
-      Sql.Finalize (Stmt);
-      if St /= Sql.Row and then St /= Sql.Done then
-         Id := 0;
-         return;
-      end if;
+      finally
+         Sql.Finalize (Stmt);
+      end Look_Up;
 
       if Found then
          --  The label is config on the surface, so the newest write wins.
-         Sql.Prepare
-           (S.DB,
-            "UPDATE surfaces SET label = ?, last_seen = ? WHERE id = ?",
-            Stmt, St);
-         if St = Sql.Ok then
-            Sql.Bind_Text (Stmt, 1, Label, St);
-            if St = Sql.Ok then
-               Sql.Bind_Text (Stmt, 2, Now, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Int64 (Stmt, 3, Id, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Step (Stmt, St);
-            end if;
-         end if;
+         Refresh :
+         declare
+            Stmt : Sql.Statement;
+         begin
+            Prepare
+              (S,
+               "UPDATE surfaces SET label = ?, last_seen = ? WHERE id = ?",
+               Stmt);
+            Bind (Stmt, 1, Label);
+            Bind (Stmt, 2, Now);
+            Bind (Stmt, 3, Id);
+            Step_Done (Stmt);
+         finally
+            Sql.Finalize (Stmt);
+         end Refresh;
       else
-         Sql.Prepare
-           (S.DB,
-            "INSERT INTO surfaces (surface_id, label, first_seen, last_seen)"
-            & " VALUES (?, ?, ?, ?)", Stmt, St);
-         if St = Sql.Ok then
-            Sql.Bind_Text (Stmt, 1, Uuid, St);
-            if St = Sql.Ok then
-               Sql.Bind_Text (Stmt, 2, Label, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Text (Stmt, 3, Now, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Bind_Text (Stmt, 4, Now, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Step (Stmt, St);
-            end if;
-         end if;
-      end if;
-      Sql.Finalize (Stmt);
+         Add_Row :
+         declare
+            Stmt : Sql.Statement;
+         begin
+            Prepare
+              (S,
+               "INSERT INTO surfaces (surface_id, label, first_seen,"
+               & " last_seen) VALUES (?, ?, ?, ?)", Stmt);
+            Bind (Stmt, 1, Uuid);
+            Bind (Stmt, 2, Label);
+            Bind (Stmt, 3, Now);
+            Bind (Stmt, 4, Now);
+            Step_Done (Stmt);
+         finally
+            Sql.Finalize (Stmt);
+         end Add_Row;
 
-      if St = Sql.Done then
-         if not Found then
-            Id := Sql.Last_Insert_Rowid (S.DB);
-         end if;
-         Status := Success;
-      else
-         Id := 0;
+         Id := Sql.Last_Insert_Rowid (S.DB);
       end if;
    end Surface_Row_Id;
-
-   ------------------
-   -- Bind_Surface --
-   ------------------
-
-   procedure Bind_Surface
-     (Stmt : Sql.Statement; Index : Positive; Id : Row_Id; St : out Sql.Status);
-   --  Bind the surfaces-row id at Index, or NULL for the unattributed write.
-
-   procedure Bind_Surface
-     (Stmt : Sql.Statement; Index : Positive; Id : Row_Id; St : out Sql.Status)
-   is
-   begin
-      if Id = 0 then
-         Sql.Bind_Null (Stmt, Index, St);
-      else
-         Sql.Bind_Int64 (Stmt, Index, Id, St);
-      end if;
-   end Bind_Surface;
 
    ----------
    -- Open --
@@ -793,58 +865,55 @@ package body Memcp.Store with SPARK_Mode => On is
      (S : out Store; DB_Path : String; Result : out Open_Status)
    is
       St : Sql.Status;
-      Ok : Boolean;
 
-      procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status);
+      procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status)
+        with Pre => Is_Open (S),
+             Exceptional_Cases => (Sql_Error => True);
       --  Assert one meta (key, value) pair: insert it when absent, and
       --  report Meta_Mismatch when the stored value differs.
 
       procedure Assert_Meta (Key, Value : String; Outcome : out Open_Status) is
-         Stmt : Sql.Statement;
-         MSt  : Sql.Status;
+         Have_Row : Boolean;
+         Matches  : Boolean := False;
       begin
-         Outcome := Schema_Error;
-         Sql.Prepare (S.DB, "SELECT value FROM meta WHERE key = ?", Stmt, MSt);
-         if MSt /= Sql.Ok then
-            return;
-         end if;
-         Sql.Bind_Text (Stmt, 1, Key, MSt);
-         if MSt /= Sql.Ok then
+         Look_Up :
+         declare
+            Stmt : Sql.Statement;
+         begin
+            Prepare (S, "SELECT value FROM meta WHERE key = ?", Stmt);
+            Bind (Stmt, 1, Key);
+            Step_Row (Stmt, Have_Row);
+            if Have_Row then
+               declare
+                  Existing : Sql.Text_Ptr := Sql.Column_Text (Stmt, 0);
+               begin
+                  Matches := Existing.all = Value;
+                  Sql.Free (Existing);
+               end;
+            end if;
+         finally
             Sql.Finalize (Stmt);
-            return;
-         end if;
-         Sql.Step (Stmt, MSt);
-         if MSt = Sql.Row then
-            declare
-               Existing : Sql.Text_Ptr := Sql.Column_Text (Stmt, 0);
-               Matches  : constant Boolean := Existing.all = Value;
-            begin
-               Sql.Free (Existing);
-               Sql.Finalize (Stmt);
-               Outcome := (if Matches then Opened else Meta_Mismatch);
-            end;
-            return;
-         end if;
-         Sql.Finalize (Stmt);
-         if MSt /= Sql.Done then
+         end Look_Up;
+
+         if Have_Row then
+            Outcome := (if Matches then Opened else Meta_Mismatch);
             return;
          end if;
 
          --  Absent: insert the default.
-         Sql.Prepare
-           (S.DB, "INSERT INTO meta (key, value) VALUES (?, ?)", Stmt, MSt);
-         if MSt /= Sql.Ok then
-            return;
-         end if;
-         Sql.Bind_Text (Stmt, 1, Key, MSt);
-         if MSt = Sql.Ok then
-            Sql.Bind_Text (Stmt, 2, Value, MSt);
-         end if;
-         if MSt = Sql.Ok then
-            Sql.Step (Stmt, MSt);
-         end if;
-         Sql.Finalize (Stmt);
-         Outcome := (if MSt = Sql.Done then Opened else Schema_Error);
+         Add_Row :
+         declare
+            Stmt : Sql.Statement;
+         begin
+            Prepare (S, "INSERT INTO meta (key, value) VALUES (?, ?)", Stmt);
+            Bind (Stmt, 1, Key);
+            Bind (Stmt, 2, Value);
+            Step_Done (Stmt);
+         finally
+            Sql.Finalize (Stmt);
+         end Add_Row;
+
+         Outcome := Opened;
       end Assert_Meta;
 
       Dim_Image : constant String := "384";
@@ -860,48 +929,36 @@ package body Memcp.Store with SPARK_Mode => On is
          return;
       end if;
 
-      Exec (S, Schema_SQL, Ok);
-      if Ok then
-         Exec (S, Vec_Summary_SQL, Ok);
-      end if;
-      if Ok then
-         Exec (S, Vec_Chunk_SQL, Ok);
-      end if;
-      if Ok then
+      Apply_Schema :
+      begin
+         Exec (S, Schema_SQL);
+         Exec (S, Vec_Summary_SQL);
+         Exec (S, Vec_Chunk_SQL);
          Add_Column
            (S, "summaries", "surface_row_id",
-            "INTEGER REFERENCES surfaces(id)", Ok);
-      end if;
-      if Ok then
+            "INTEGER REFERENCES surfaces(id)");
          Add_Column
            (S, "sessions", "surface_row_id",
-            "INTEGER REFERENCES surfaces(id)", Ok);
-      end if;
+            "INTEGER REFERENCES surfaces(id)");
 
-      --  What a surface says about itself, all nullable: a row predating them
-      --  is a surface that has not checked in since, not a surface at fault.
-      if Ok then
-         Add_Column (S, "surfaces", "hook_version", "TEXT", Ok);
-      end if;
-      if Ok then
-         Add_Column (S, "surfaces", "host", "TEXT", Ok);
-      end if;
-      if Ok then
-         Add_Column (S, "surfaces", "install_host", "TEXT", Ok);
-      end if;
-      if not Ok then
-         Sql.Close (S.DB);
-         Result := Schema_Error;
-         return;
-      end if;
+         --  What a surface says about itself, all nullable: a row predating
+         --  them is a surface that has not checked in since, not a surface at
+         --  fault.
+         Add_Column (S, "surfaces", "hook_version", "TEXT");
+         Add_Column (S, "surfaces", "host", "TEXT");
+         Add_Column (S, "surfaces", "install_host", "TEXT");
 
-      Assert_Meta ("schema_version", Schema_Version, Result);
-      if Result = Opened then
-         Assert_Meta ("embedding_model", Embedding_Model, Result);
-      end if;
-      if Result = Opened then
-         Assert_Meta ("embedding_dim", Dim_Image, Result);
-      end if;
+         Assert_Meta ("schema_version", Schema_Version, Result);
+         if Result = Opened then
+            Assert_Meta ("embedding_model", Embedding_Model, Result);
+         end if;
+         if Result = Opened then
+            Assert_Meta ("embedding_dim", Dim_Image, Result);
+         end if;
+      exception
+         when Sql_Error =>
+            Result := Schema_Error;
+      end Apply_Schema;
 
       if Result /= Opened then
          Sql.Close (S.DB);
@@ -939,24 +996,16 @@ package body Memcp.Store with SPARK_Mode => On is
       Result : out Summary_Ptr;
       Status : out Op_Status)
    is
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
    begin
       Result := null;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Fetch_Summary_SQL, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Int64 (Stmt, 1, Id, St);
-      if St /= Sql.Ok then
-         Sql.Finalize (Stmt);
-         return;
-      end if;
+      Prepare (S, Fetch_Summary_SQL, Stmt);
+      Bind (Stmt, 1, Id);
+      Step_Row (Stmt, Have_Row);
 
-      Sql.Step (Stmt, St);
-      if St = Sql.Row then
+      if Have_Row then
          declare
             Proj : Sql.Text_Ptr := Sql.Column_Text (Stmt, 1);
             Sess : Sql.Text_Ptr := Sql.Column_Text (Stmt, 2);
@@ -992,11 +1041,15 @@ package body Memcp.Store with SPARK_Mode => On is
             Sql.Free (Bod);
             Sql.Free (Kind);
          end;
-         Status := Success;
-      elsif St = Sql.Done then
-         Status := Success;   --  no such id: Result stays null
       end if;
 
+      --  No such id: Result stays null, which is an answer rather than a
+      --  failure.
+      Status := Success;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
    end Fetch_Summary;
 
@@ -1015,7 +1068,6 @@ package body Memcp.Store with SPARK_Mode => On is
         Name_Vectors.Length (Projects);
    begin
       Result := Diary_Vectors.Empty_Vector;
-      Status := Db_Error;
 
       --  No projects, or a filter too long to spell as a bounded IN clause:
       --  both return an empty list with Success.
@@ -1025,44 +1077,39 @@ package body Memcp.Store with SPARK_Mode => On is
       end if;
 
       declare
-         K     : constant Positive := Positive (Len_CT);
-         Query : constant String :=
+         K        : constant Positive := Positive (Len_CT);
+         Query    : constant String :=
            "SELECT d.id, p.name, d.summary_id, s.session_id, d.created_at,"
            & " d.body, s.headline, s.kind FROM diary d"
            & " JOIN projects p ON p.id = d.project_id"
            & " JOIN summaries s ON s.id = d.summary_id"
            & " WHERE p.name IN (" & Placeholders (K) & ")"
            & " ORDER BY d.created_at DESC LIMIT ?";
-         Stmt  : Sql.Statement;
-         St    : Sql.Status;
+         Stmt     : Sql.Statement;
+         Have_Row : Boolean;
       begin
-         Sql.Prepare (S.DB, Query, Stmt, St);
-         if St /= Sql.Ok then
-            return;
-         end if;
+         Prepare (S, Query, Stmt);
 
          --  The K project names go to params 1 .. K, the 1-based vector index
          --  doubling as the bind position, and N to the LIMIT param at K + 1.
          for I in Name_Vectors.First_Index (Projects)
                   .. Name_Vectors.Last_Index (Projects)
          loop
-            Sql.Bind_Text
-              (Stmt, I, Name_Vectors.Element (Projects, I).Value, St);
-            exit when St /= Sql.Ok;
+            pragma Loop_Invariant (Sql.Is_Valid (Stmt));
+            --  The enclosing frame's `finally` writes Stmt, which puts it in
+            --  this loop's frame: without the invariant, Prepare's Post does
+            --  not survive the back edge.
+            Bind (Stmt, I, Name_Vectors.Element (Projects, I).Value);
          end loop;
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Stmt, K + 1, Row_Id (N), St);
-         end if;
-         if St /= Sql.Ok then
-            Sql.Finalize (Stmt);
-            return;
-         end if;
+         Bind (Stmt, K + 1, Row_Id (N));
 
          --  One Diary_Entry per row; the Length guard discharges Append's
          --  capacity precondition.
          loop
-            Sql.Step (Stmt, St);
-            exit when St /= Sql.Row;
+            pragma Loop_Invariant (Sql.Is_Valid (Stmt));
+            --  As on the bind loop above.
+            Step_Row (Stmt, Have_Row);
+            exit when not Have_Row;
             exit when Diary_Vectors.Length (Result) = Diary_Vectors.Last_Count;
             declare
                Id_C  : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
@@ -1105,11 +1152,16 @@ package body Memcp.Store with SPARK_Mode => On is
             end;
          end loop;
 
+         --  Leaving the loop with a row still pending is the vector filling
+         --  up: the caller would be handed a truncated list, which is not a
+         --  success.
+         Status := (if Have_Row then Db_Error else Success);
+      finally
          Sql.Finalize (Stmt);
-         if St = Sql.Done then
-            Status := Success;
-         end if;
       end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Recent_Diary;
 
    -------------------
@@ -1127,20 +1179,16 @@ package body Memcp.Store with SPARK_Mode => On is
         & " GROUP BY p.id, p.name"
         & " ORDER BY MAX(d.created_at) IS NULL,"
         & " MAX(d.created_at) DESC, p.name";
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
    begin
       Result := Project_Vectors.Empty_Vector;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Query, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
+      Prepare (S, Query, Stmt);
 
       loop
-         Sql.Step (Stmt, St);
-         exit when St /= Sql.Row;
+         Step_Row (Stmt, Have_Row);
+         exit when not Have_Row;
          exit when
            Project_Vectors.Length (Result) = Project_Vectors.Last_Count;
          declare
@@ -1166,10 +1214,13 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
+      --  As in Recent_Diary: a row still pending means the vector filled.
+      Status := (if Have_Row then Db_Error else Success);
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Status := Success;
-      end if;
    end List_Projects;
 
    ------------------
@@ -1220,26 +1271,17 @@ package body Memcp.Store with SPARK_Mode => On is
       --  second branch adds the sessions that named no surface, windowed
       --  together as one group because no row can tell them apart.
 
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
    begin
       Result := Surface_Health_Vectors.Empty_Vector;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Query, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-
-      Sql.Bind_Int64 (Stmt, 1, Row_Id (Window), St);
-      if St /= Sql.Ok then
-         Sql.Finalize (Stmt);
-         return;
-      end if;
+      Prepare (S, Query, Stmt);
+      Bind (Stmt, 1, Row_Id (Window));
 
       loop
-         Sql.Step (Stmt, St);
-         exit when St /= Sql.Row;
+         Step_Row (Stmt, Have_Row);
+         exit when not Have_Row;
          exit when Surface_Health_Vectors.Length (Result)
                    = Surface_Health_Vectors.Last_Count;
          declare
@@ -1291,10 +1333,13 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
+      --  As in Recent_Diary: a row still pending means the vector filled.
+      Status := (if Have_Row then Db_Error else Success);
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Status := Success;
-      end if;
    end Fleet_Health;
 
    -----------------------
@@ -1355,45 +1400,39 @@ package body Memcp.Store with SPARK_Mode => On is
       --  know keep the value already on record: only Surface_Row_Id's own
       --  columns are unconditional.
 
-      Id   : Row_Id;
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Id : Row_Id;
    begin
-      Surface_Row_Id (S, Uuid, Label, Now_Iso, Id, Status);
+      Surface_Row_Id (S, Uuid, Label, Now_Iso, Id);
 
       --  Id is 0 only for the empty Uuid, which is the caller asking for
       --  nothing. A named surface that resolved to no row means the upsert
       --  reported a success it did not achieve.
-      if Status = Success and then Uuid'Length > 0 and then Id = 0 then
+      if Uuid'Length > 0 and then Id = 0 then
          Status := Db_Error;
-      end if;
-
-      if Status /= Success or else Id = 0 then
          return;
       end if;
 
-      Status := Db_Error;
-      Sql.Prepare (S.DB, Report, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Text (Stmt, 1, Hook_Version, St);
-      if St = Sql.Ok then
-         Sql.Bind_Text (Stmt, 2, Host, St);
-      end if;
-      if St = Sql.Ok then
-         Sql.Bind_Text (Stmt, 3, Install_Host, St);
-      end if;
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (Stmt, 4, Id, St);
-      end if;
-      if St = Sql.Ok then
-         Sql.Step (Stmt, St);
-      end if;
-      Sql.Finalize (Stmt);
-      if St = Sql.Done then
+      if Id = 0 then
          Status := Success;
+         return;
       end if;
+
+      declare
+         Stmt : Sql.Statement;
+      begin
+         Prepare (S, Report, Stmt);
+         Bind (Stmt, 1, Hook_Version);
+         Bind (Stmt, 2, Host);
+         Bind (Stmt, 3, Install_Host);
+         Bind (Stmt, 4, Id);
+         Step_Done (Stmt);
+         Status := Success;
+      finally
+         Sql.Finalize (Stmt);
+      end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Touch_Surface;
 
    -----------------
@@ -1439,8 +1478,8 @@ package body Memcp.Store with SPARK_Mode => On is
       --  Tail rows with DESC + LIMIT and SQLite re-sorts them ascending, so
       --  nothing is reversed on the Ada side.
 
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
+      Stmt     : Sql.Statement;
+      Have_Row : Boolean;
 
       P_Project : constant Positive := 2;
       --  Placeholder of " AND p.name = ?", right after the session_id one.
@@ -1468,34 +1507,26 @@ package body Memcp.Store with SPARK_Mode => On is
       --  the two disagree.
    begin
       Result := Chunk_Vectors.Empty_Vector;
-      Status := Db_Error;
 
-      Sql.Prepare (S.DB, Query, Stmt, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
+      Prepare (S, Query, Stmt);
 
-      Sql.Bind_Text (Stmt, 1, Session_Id, St);
-      if St = Sql.Ok and then Has_Project then
-         Sql.Bind_Text (Stmt, P_Project, Project, St);
+      Bind (Stmt, 1, Session_Id);
+      if Has_Project then
+         Bind (Stmt, P_Project, Project);
       end if;
-      if St = Sql.Ok and then Has_Start then
-         Sql.Bind_Int64 (Stmt, P_Start, Start_Ord, St);
+      if Has_Start then
+         Bind (Stmt, P_Start, Start_Ord);
       end if;
-      if St = Sql.Ok and then Has_End then
-         Sql.Bind_Int64 (Stmt, P_End, End_Ord, St);
+      if Has_End then
+         Bind (Stmt, P_End, End_Ord);
       end if;
-      if St = Sql.Ok and then Has_Tail then
-         Sql.Bind_Int64 (Stmt, P_Tail, Row_Id (Tail), St);
-      end if;
-      if St /= Sql.Ok then
-         Sql.Finalize (Stmt);
-         return;
+      if Has_Tail then
+         Bind (Stmt, P_Tail, Row_Id (Tail));
       end if;
 
       loop
-         Sql.Step (Stmt, St);
-         exit when St /= Sql.Row;
+         Step_Row (Stmt, Have_Row);
+         exit when not Have_Row;
          exit when Chunk_Vectors.Length (Result) = Chunk_Vectors.Last_Count;
          declare
             Id_C  : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
@@ -1523,10 +1554,13 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
+      --  As in Recent_Diary: a row still pending means the vector filled.
+      Status := (if Have_Row then Db_Error else Success);
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
+   finally
       Sql.Finalize (Stmt);
-      if St = Sql.Done then
-         Status := Success;
-      end if;
    end Fetch_Turns;
 
    ---------------------
@@ -1552,128 +1586,114 @@ package body Memcp.Store with SPARK_Mode => On is
         Len_P > 0 or else Has_Since or else Has_Until;
       Lim         : constant Natural := Natural'Min (Limit, Max_Search_Limit);
       Over        : constant Natural := (if Has_Filters then Lim * 5 else Lim);
-      K1          : Sql.Statement;
-      St          : Sql.Status;
       Count       : Natural := 0;
-      Failed      : Boolean := False;
    begin
       Result := Summary_Hit_Vectors.Empty_Vector;
-      Status := Db_Error;
 
       if Lim = 0 or else Len_P > Max_Filter_Terms then
          Status := Success;
          return;
       end if;
 
-      Sql.Prepare
-        (S.DB,
-         "SELECT rowid, distance FROM summary_vec"
-         & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Blob (K1, 1, Blob, St);
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (K1, 2, Row_Id (Over), St);
-      end if;
-      if St /= Sql.Ok then
-         Sql.Finalize (K1);
-         return;
-      end if;
-
-      --  One prepared per-row fetch, reset and rebound between candidates: the
-      --  filtered over-fetch runs to Lim * 5 rows.
       declare
-         M   : Sql.Statement;
-         MSt : Sql.Status;
+         K1        : Sql.Statement;
+         Have_Cand : Boolean;
       begin
-         Sql.Prepare (S.DB, Fetch_Summary_SQL, M, MSt);
-         if MSt /= Sql.Ok then
-            Sql.Finalize (K1);
-            return;
-         end if;
+         Prepare
+           (S,
+            "SELECT rowid, distance FROM summary_vec"
+            & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1);
+         Bind (K1, 1, Blob);
+         Bind (K1, 2, Row_Id (Over));
 
-         loop
-            Sql.Step (K1, St);
-            exit when St /= Sql.Row;
-            exit when Count >= Lim;
-            exit when Summary_Hit_Vectors.Length (Result)
-                      = Summary_Hit_Vectors.Last_Count;
-            declare
-               Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
-               Dist : constant Interfaces.IEEE_Float_64 :=
-                 Sql.Column_Double (K1, 1);
-            begin
-               Sql.Reset (M, MSt);
-               if MSt = Sql.Ok then
-                  Sql.Bind_Int64 (M, 1, Rid, MSt);
-               end if;
-               if MSt = Sql.Ok then
-                  Sql.Step (M, MSt);
-               end if;
-               if MSt = Sql.Row then
-                  declare
-                     Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 1);
-                     Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
-                     Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 3);
-                     Head  : Sql.Text_Ptr := Sql.Column_Text (M, 4);
-                     Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 5);
-                     Kind  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
-                     Null_S : constant Boolean := Sql.Column_Is_Null (M, 2);
-                     Has_S  : constant Boolean := not Null_S;
-                     --  Two steps, as in Fetch_Summary: a volatile column read
-                     --  may not be an operand of `not`.
-                     Passes : constant Boolean :=
-                       (Len_P = 0 or else Contains (Projects, Proj.all))
-                       and then (not Has_Since or else Crea.all >= Since)
-                       and then (not Has_Until or else Crea.all <= Until_At);
-                  begin
-                     if Passes then
-                        Summary_Hit_Vectors.Append
-                          (Result,
-                           Summary_Hit'
-                             (Project_Len  => Proj.all'Length,
-                              Session_Len  => Sess.all'Length,
-                              Created_Len  => Crea.all'Length,
-                              Headline_Len => Head.all'Length,
-                              Body_Len     => Bod.all'Length,
-                              Kind_Len     => Kind.all'Length,
-                              Id           => Rid,
-                              Has_Session  => Has_S,
-                              Project      => Proj.all,
-                              Session      => Sess.all,
-                              Created_At   => Crea.all,
-                              Headline     => Head.all,
-                              Content      => Bod.all,
-                              Kind         => Kind.all,
-                              Distance     => Dist));
-                        Count := Count + 1;
-                     end if;
-                     Sql.Free (Proj);
-                     Sql.Free (Sess);
-                     Sql.Free (Crea);
-                     Sql.Free (Head);
-                     Sql.Free (Bod);
-                     Sql.Free (Kind);
-                  end;
-               end if;
-               if MSt /= Sql.Row and then MSt /= Sql.Done then
-                  Failed := True;
-               end if;
-            end;
-            exit when Failed;
-         end loop;
+         --  One prepared per-row fetch, reset and rebound between candidates:
+         --  the filtered over-fetch runs to Lim * 5 rows.
+         declare
+            M : Sql.Statement;
+         begin
+            Prepare (S, Fetch_Summary_SQL, M);
 
-         Sql.Finalize (M);
-      end;
+            loop
+               pragma Loop_Invariant
+                 (Sql.Is_Valid (K1) and then Sql.Is_Valid (M));
+               --  Both handles are written by a `finally`, as in Recent_Diary,
+               --  and so are in this loop's frame.
+               Step_Row (K1, Have_Cand);
+               exit when not Have_Cand;
+               exit when Count >= Lim;
+               exit when Summary_Hit_Vectors.Length (Result)
+                         = Summary_Hit_Vectors.Last_Count;
+               declare
+                  Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
+                  Dist : constant Interfaces.IEEE_Float_64 :=
+                    Sql.Column_Double (K1, 1);
+                  Have_Meta : Boolean;
+               begin
+                  Reset (M);
+                  Bind (M, 1, Rid);
+                  Step_Row (M, Have_Meta);
+                  if Have_Meta then
+                     declare
+                        Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 1);
+                        Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
+                        Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 3);
+                        Head  : Sql.Text_Ptr := Sql.Column_Text (M, 4);
+                        Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 5);
+                        Kind  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
+                        Null_S : constant Boolean := Sql.Column_Is_Null (M, 2);
+                        Has_S  : constant Boolean := not Null_S;
+                        --  Two steps, as in Fetch_Summary: a volatile column
+                        --  read may not be an operand of `not`.
+                        Passes : constant Boolean :=
+                          (Len_P = 0 or else Contains (Projects, Proj.all))
+                          and then (not Has_Since or else Crea.all >= Since)
+                          and then (not Has_Until or else Crea.all <= Until_At);
+                     begin
+                        if Passes then
+                           Summary_Hit_Vectors.Append
+                             (Result,
+                              Summary_Hit'
+                                (Project_Len  => Proj.all'Length,
+                                 Session_Len  => Sess.all'Length,
+                                 Created_Len  => Crea.all'Length,
+                                 Headline_Len => Head.all'Length,
+                                 Body_Len     => Bod.all'Length,
+                                 Kind_Len     => Kind.all'Length,
+                                 Id           => Rid,
+                                 Has_Session  => Has_S,
+                                 Project      => Proj.all,
+                                 Session      => Sess.all,
+                                 Created_At   => Crea.all,
+                                 Headline     => Head.all,
+                                 Content      => Bod.all,
+                                 Kind         => Kind.all,
+                                 Distance     => Dist));
+                           Count := Count + 1;
+                        end if;
+                        Sql.Free (Proj);
+                        Sql.Free (Sess);
+                        Sql.Free (Crea);
+                        Sql.Free (Head);
+                        Sql.Free (Bod);
+                        Sql.Free (Kind);
+                     end;
+                  end if;
+               end;
+            end loop;
+         finally
+            Sql.Finalize (M);
+         end;
 
-      Sql.Finalize (K1);
-      --  Done means the candidates were exhausted, Row that the loop stopped
-      --  early with enough hits or at capacity: both are success, and any other
-      --  Step code is a failure.
-      if not Failed and then (St = Sql.Done or else St = Sql.Row) then
+         --  Stopping early -- enough hits, or at capacity -- is as much a
+         --  success as exhausting the candidates: a partial read is still a
+         --  read. Only an unreadable row is a failure, and that raises.
          Status := Success;
-      end if;
+      finally
+         Sql.Finalize (K1);
+      end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Search_Summaries;
 
    -------------------
@@ -1709,13 +1729,9 @@ package body Memcp.Store with SPARK_Mode => On is
         Len_P > 0 or else Len_S > 0 or else Has_Since or else Has_Until;
       Lim         : constant Natural := Natural'Min (Limit, Max_Search_Limit);
       Over        : constant Natural := (if Has_Filters then Lim * 5 else Lim);
-      K1          : Sql.Statement;
-      St          : Sql.Status;
       Count       : Natural := 0;
-      Failed      : Boolean := False;
    begin
       Result := Chunk_Hit_Vectors.Empty_Vector;
-      Status := Db_Error;
 
       if Lim = 0
         or else Len_P > Max_Filter_Terms
@@ -1725,107 +1741,96 @@ package body Memcp.Store with SPARK_Mode => On is
          return;
       end if;
 
-      Sql.Prepare
-        (S.DB,
-         "SELECT rowid, distance FROM chunk_vec"
-         & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1, St);
-      if St /= Sql.Ok then
-         return;
-      end if;
-      Sql.Bind_Blob (K1, 1, Blob, St);
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (K1, 2, Row_Id (Over), St);
-      end if;
-      if St /= Sql.Ok then
-         Sql.Finalize (K1);
-         return;
-      end if;
-
-      --  One prepared per-row fetch, reset and rebound between candidates, as
-      --  in Search_Summaries.
       declare
-         M   : Sql.Statement;
-         MSt : Sql.Status;
+         K1        : Sql.Statement;
+         Have_Cand : Boolean;
       begin
-         Sql.Prepare (S.DB, Chunk_By_Id_SQL, M, MSt);
-         if MSt /= Sql.Ok then
-            Sql.Finalize (K1);
-            return;
-         end if;
+         Prepare
+           (S,
+            "SELECT rowid, distance FROM chunk_vec"
+            & " WHERE embedding MATCH ? ORDER BY distance LIMIT ?", K1);
+         Bind (K1, 1, Blob);
+         Bind (K1, 2, Row_Id (Over));
 
-         loop
-            Sql.Step (K1, St);
-            exit when St /= Sql.Row;
-            exit when Count >= Lim;
-            exit when Chunk_Hit_Vectors.Length (Result)
-                      = Chunk_Hit_Vectors.Last_Count;
-            declare
-               Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
-               Dist : constant Interfaces.IEEE_Float_64 :=
-                 Sql.Column_Double (K1, 1);
-            begin
-               Sql.Reset (M, MSt);
-               if MSt = Sql.Ok then
-                  Sql.Bind_Int64 (M, 1, Rid, MSt);
-               end if;
-               if MSt = Sql.Ok then
-                  Sql.Step (M, MSt);
-               end if;
-               if MSt = Sql.Row then
-                  declare
-                     Sr_C  : constant Row_Id := Sql.Column_Int64 (M, 1);
-                     Ord_C : constant Row_Id := Sql.Column_Int64 (M, 3);
-                     Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
-                     Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 4);
-                     Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 5);
-                     Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
-                     Passes : constant Boolean :=
-                       (Len_P = 0 or else Contains (Projects, Proj.all))
-                       and then
-                         (Len_S = 0 or else Contains (Session_Ids, Sess.all))
-                       and then (not Has_Since or else Crea.all >= Since)
-                       and then (not Has_Until or else Crea.all <= Until_At);
-                  begin
-                     if Passes then
-                        Chunk_Hit_Vectors.Append
-                          (Result,
-                           Chunk_Hit'
-                             (Project_Len    => Proj.all'Length,
-                              Body_Len       => Bod.all'Length,
-                              Created_Len    => Crea.all'Length,
-                              Session_Len    => Sess.all'Length,
-                              Id             => Rid,
-                              Session_Row_Id => Sr_C,
-                              Ordinal        => Ord_C,
-                              Project        => Proj.all,
-                              Content        => Bod.all,
-                              Created_At     => Crea.all,
-                              Session        => Sess.all,
-                              Distance       => Dist));
-                        Count := Count + 1;
-                     end if;
-                     Sql.Free (Proj);
-                     Sql.Free (Bod);
-                     Sql.Free (Crea);
-                     Sql.Free (Sess);
-                  end;
-               end if;
-               if MSt /= Sql.Row and then MSt /= Sql.Done then
-                  Failed := True;
-               end if;
-            end;
-            exit when Failed;
-         end loop;
+         --  One prepared per-row fetch, reset and rebound between candidates,
+         --  as in Search_Summaries.
+         declare
+            M : Sql.Statement;
+         begin
+            Prepare (S, Chunk_By_Id_SQL, M);
 
-         Sql.Finalize (M);
-      end;
+            loop
+               pragma Loop_Invariant
+                 (Sql.Is_Valid (K1) and then Sql.Is_Valid (M));
+               --  As in Search_Summaries.
+               Step_Row (K1, Have_Cand);
+               exit when not Have_Cand;
+               exit when Count >= Lim;
+               exit when Chunk_Hit_Vectors.Length (Result)
+                         = Chunk_Hit_Vectors.Last_Count;
+               declare
+                  Rid  : constant Row_Id := Sql.Column_Int64 (K1, 0);
+                  Dist : constant Interfaces.IEEE_Float_64 :=
+                    Sql.Column_Double (K1, 1);
+                  Have_Meta : Boolean;
+               begin
+                  Reset (M);
+                  Bind (M, 1, Rid);
+                  Step_Row (M, Have_Meta);
+                  if Have_Meta then
+                     declare
+                        Sr_C  : constant Row_Id := Sql.Column_Int64 (M, 1);
+                        Ord_C : constant Row_Id := Sql.Column_Int64 (M, 3);
+                        Proj  : Sql.Text_Ptr := Sql.Column_Text (M, 2);
+                        Bod   : Sql.Text_Ptr := Sql.Column_Text (M, 4);
+                        Crea  : Sql.Text_Ptr := Sql.Column_Text (M, 5);
+                        Sess  : Sql.Text_Ptr := Sql.Column_Text (M, 6);
+                        Passes : constant Boolean :=
+                          (Len_P = 0 or else Contains (Projects, Proj.all))
+                          and then
+                            (Len_S = 0
+                             or else Contains (Session_Ids, Sess.all))
+                          and then (not Has_Since or else Crea.all >= Since)
+                          and then (not Has_Until or else Crea.all <= Until_At);
+                     begin
+                        if Passes then
+                           Chunk_Hit_Vectors.Append
+                             (Result,
+                              Chunk_Hit'
+                                (Project_Len    => Proj.all'Length,
+                                 Body_Len       => Bod.all'Length,
+                                 Created_Len    => Crea.all'Length,
+                                 Session_Len    => Sess.all'Length,
+                                 Id             => Rid,
+                                 Session_Row_Id => Sr_C,
+                                 Ordinal        => Ord_C,
+                                 Project        => Proj.all,
+                                 Content        => Bod.all,
+                                 Created_At     => Crea.all,
+                                 Session        => Sess.all,
+                                 Distance       => Dist));
+                           Count := Count + 1;
+                        end if;
+                        Sql.Free (Proj);
+                        Sql.Free (Bod);
+                        Sql.Free (Crea);
+                        Sql.Free (Sess);
+                     end;
+                  end if;
+               end;
+            end loop;
+         finally
+            Sql.Finalize (M);
+         end;
 
-      Sql.Finalize (K1);
-      --  As in Search_Summaries: Row (stopped early) and Done (exhausted) are
-      --  both success, and any other Step code is a failure.
-      if not Failed and then (St = Sql.Done or else St = Sql.Row) then
+         --  As in Search_Summaries: stopping early is still a read.
          Status := Success;
-      end if;
+      finally
+         Sql.Finalize (K1);
+      end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Search_Chunks;
 
    --------------------
@@ -1838,88 +1843,67 @@ package body Memcp.Store with SPARK_Mode => On is
       Deleted : out Boolean;
       Status  : out Op_Status)
    is
-      Stmt : Sql.Statement;
-      St   : Sql.Status;
-      Ok   : Boolean;
-      Exists : Boolean := False;
+      Exists : Boolean;
    begin
       Deleted := False;
-      Status  := Db_Error;
 
-      Exec (S, "BEGIN", Ok);
-      if not Ok then
-         return;
-      end if;
+      Exec (S, "BEGIN");
 
-      --  Does the row exist?
-      Sql.Prepare (S.DB, "SELECT id FROM summaries WHERE id = ?", Stmt, St);
-      if St = Sql.Ok then
-         Sql.Bind_Int64 (Stmt, 1, Id, St);
-         if St = Sql.Ok then
-            Sql.Step (Stmt, St);
-            Exists := St = Sql.Row;
-         end if;
-      end if;
-      Sql.Finalize (Stmt);
-      if St /= Sql.Row and then St /= Sql.Done then
-         Rollback (S);
-         return;
-      end if;
-
-      if not Exists then
-         Rollback (S);
-         Status := (if Ok then Memcp.Store.Success else Db_Error);
-         return;
-      end if;
-
-      --  Delete embedding (vec0 has no FK), then the summary (diary cascades).
-      declare
-         D1, D2 : Boolean;
+      Transaction :
       begin
-         Delete_Vec :
+         Row_Present :
          declare
-            VS : Sql.Status;
+            Stmt : Sql.Statement;
          begin
-            Sql.Prepare
-              (S.DB, "DELETE FROM summary_vec WHERE rowid = ?", Stmt, VS);
-            if VS = Sql.Ok then
-               Sql.Bind_Int64 (Stmt, 1, Id, VS);
-               if VS = Sql.Ok then
-                  Sql.Step (Stmt, VS);
-               end if;
-            end if;
+            Prepare (S, "SELECT id FROM summaries WHERE id = ?", Stmt);
+            Bind (Stmt, 1, Id);
+            Step_Row (Stmt, Exists);
+         finally
             Sql.Finalize (Stmt);
-            D1 := VS = Sql.Done;
-         end Delete_Vec;
+         end Row_Present;
 
-         Delete_Summary :
-         declare
-            DS : Sql.Status;
-         begin
-            Sql.Prepare
-              (S.DB, "DELETE FROM summaries WHERE id = ?", Stmt, DS);
-            if DS = Sql.Ok then
-               Sql.Bind_Int64 (Stmt, 1, Id, DS);
-               if DS = Sql.Ok then
-                  Sql.Step (Stmt, DS);
-               end if;
-            end if;
-            Sql.Finalize (Stmt);
-            D2 := DS = Sql.Done;
-         end Delete_Summary;
+         if Exists then
+            --  Delete the embedding (vec0 has no FK), then the summary
+            --  (diary cascades).
+            Delete_Vec :
+            declare
+               Stmt : Sql.Statement;
+            begin
+               Prepare (S, "DELETE FROM summary_vec WHERE rowid = ?", Stmt);
+               Bind (Stmt, 1, Id);
+               Step_Done (Stmt);
+            finally
+               Sql.Finalize (Stmt);
+            end Delete_Vec;
 
-         if D1 and then D2 then
-            Exec (S, "COMMIT", Ok);
-            if Ok then
-               Deleted := True;
-               Status  := Memcp.Store.Success;
-            else
-               Rollback (S);
-            end if;
+            Delete_Summary :
+            declare
+               Stmt : Sql.Statement;
+            begin
+               Prepare (S, "DELETE FROM summaries WHERE id = ?", Stmt);
+               Bind (Stmt, 1, Id);
+               Step_Done (Stmt);
+            finally
+               Sql.Finalize (Stmt);
+            end Delete_Summary;
+
+            Exec (S, "COMMIT");
+            Deleted := True;
          else
+            --  Nothing to forget is a successful forget; the transaction is
+            --  closed rather than committed.
             Rollback (S);
          end if;
-      end;
+      exception
+         when Sql_Error =>
+            Rollback (S);
+            raise;
+      end Transaction;
+
+      Status := Success;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Forget_Summary;
 
    ----------
@@ -1948,225 +1932,178 @@ package body Memcp.Store with SPARK_Mode => On is
       DH      : constant String := Dedup_Hash (Project, Diary_Body, Summary_Body);
       Blob    : constant Packed_Blob := To_Blob (Embedding);
 
-      procedure Put_Vec (Row : Row_Id; Ok : out Boolean);
+      procedure Put_Vec (Row : Row_Id)
+        with Pre => Is_Open (S),
+             Exceptional_Cases => (Sql_Error => True);
       --  Attach this call's embedding to summaries row Row.
       --  Delete-then-insert, so it serves both a fresh insert and an
       --  in-place replace.
 
-      procedure Put_Vec (Row : Row_Id; Ok : out Boolean) is
-         Vs : Sql.Statement;
-         St : Sql.Status;
+      procedure Put_Vec (Row : Row_Id) is
       begin
-         Ok := False;
-         Sql.Prepare (S.DB, "DELETE FROM summary_vec WHERE rowid = ?", Vs, St);
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Vs, 1, Row, St);
-            if St = Sql.Ok then
-               Sql.Step (Vs, St);
-            end if;
-         end if;
-         Sql.Finalize (Vs);
-         if St /= Sql.Done then
-            return;
-         end if;
-         Sql.Prepare
-           (S.DB, "INSERT INTO summary_vec (rowid, embedding) VALUES (?, ?)",
-            Vs, St);
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Vs, 1, Row, St);
-            if St = Sql.Ok then
-               Sql.Bind_Blob (Vs, 2, Blob, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Step (Vs, St);
-            end if;
-         end if;
-         Sql.Finalize (Vs);
-         Ok := St = Sql.Done;
+         Drop_Old :
+         declare
+            Vs : Sql.Statement;
+         begin
+            Prepare (S, "DELETE FROM summary_vec WHERE rowid = ?", Vs);
+            Bind (Vs, 1, Row);
+            Step_Done (Vs);
+         finally
+            Sql.Finalize (Vs);
+         end Drop_Old;
+
+         Put_New :
+         declare
+            Vs : Sql.Statement;
+         begin
+            Prepare
+              (S, "INSERT INTO summary_vec (rowid, embedding) VALUES (?, ?)",
+               Vs);
+            Bind (Vs, 1, Row);
+            Bind (Vs, 2, Blob);
+            Step_Done (Vs);
+         finally
+            Sql.Finalize (Vs);
+         end Put_New;
       end Put_Vec;
    begin
       Result := (Summary_Id => 0, Diary_Id => 0,
                  Already_Existed => False, Replaced => False);
 
-      Project_Id (S, Project, Proj_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Status := Db_Error;
+      Project_Id (S, Project, Proj_Id);
+      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id);
 
       --  ---- session-scoped upsert path ----
       if Has_Session then
          declare
-            Q : Sql.Statement;
-            St : Sql.Status;
-            Found : Boolean := False;
-            Ex_Summary, Ex_Diary : Row_Id := 0;
-            Same_Hash : Boolean := False;
+            Found      : Boolean;
+            Ex_Summary : Row_Id := 0;
+            Ex_Diary   : Row_Id := 0;
+            Same_Hash  : Boolean := False;
          begin
-            Sql.Prepare
-              (S.DB,
-               "SELECT s.id, s.dedup_hash, d.id FROM summaries s"
-               & " JOIN diary d ON d.summary_id = s.id"
-               & " WHERE s.project_id = ? AND s.session_id = ? LIMIT 1",
-               Q, St);
-            if St = Sql.Ok then
-               Sql.Bind_Int64 (Q, 1, Proj_Id, St);
-               if St = Sql.Ok then
-                  Sql.Bind_Text (Q, 2, Session_Id, St);
+            Look_Up :
+            declare
+               Q : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "SELECT s.id, s.dedup_hash, d.id FROM summaries s"
+                  & " JOIN diary d ON d.summary_id = s.id"
+                  & " WHERE s.project_id = ? AND s.session_id = ? LIMIT 1",
+                  Q);
+               Bind (Q, 1, Proj_Id);
+               Bind (Q, 2, Session_Id);
+               Step_Row (Q, Found);
+               if Found then
+                  Ex_Summary := Sql.Column_Int64 (Q, 0);
+                  declare
+                     H : Sql.Text_Ptr := Sql.Column_Text (Q, 1);
+                  begin
+                     Same_Hash := H.all = DH;
+                     Sql.Free (H);
+                  end;
+                  Ex_Diary := Sql.Column_Int64 (Q, 2);
                end if;
-               if St = Sql.Ok then
-                  Sql.Step (Q, St);
-                  if St = Sql.Row then
-                     Found := True;
-                     Ex_Summary := Sql.Column_Int64 (Q, 0);
-                     declare
-                        H : Sql.Text_Ptr := Sql.Column_Text (Q, 1);
-                     begin
-                        Same_Hash := H.all = DH;
-                        Sql.Free (H);
-                     end;
-                     Ex_Diary := Sql.Column_Int64 (Q, 2);
-                  end if;
-               end if;
-            end if;
-            Sql.Finalize (Q);
-            if St /= Sql.Row and then St /= Sql.Done then
+            finally
+               Sql.Finalize (Q);
+            end Look_Up;
+
+            if Found and then Same_Hash then
+               Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
+                          Already_Existed => True, Replaced => False);
+               Status := Success;
                return;
             end if;
 
             if Found then
-               if Same_Hash then
-                  Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
-                             Already_Existed => True, Replaced => False);
-                  Status := Success;
-                  return;
-               end if;
                --  Replace in place, inside a transaction.
+               Exec (S, "BEGIN");
+
                Update_Existing :
-               declare
-                  Ok : Boolean;
-                  US : Sql.Statement;
-                  St2 : Sql.Status;
-                  Step_Ok : Boolean;
                begin
-                  Exec (S, "BEGIN", Ok);
-                  if not Ok then
-                     return;
-                  end if;
-
-                  Sql.Prepare
-                    (S.DB,
-                     "UPDATE summaries SET created_at = ?, headline = ?,"
-                     & " body = ?, dedup_hash = ?, kind = ?,"
-                     & " surface_row_id = ? WHERE id = ?",
-                     US, St2);
-                  if St2 = Sql.Ok then
-                     Sql.Bind_Text (US, 1, TS, St2);
-                     if St2 = Sql.Ok then
-                        Sql.Bind_Text (US, 2, Head, St2);
-                     end if;
-                     if St2 = Sql.Ok then
-                        Sql.Bind_Text (US, 3, Summary_Body, St2);
-                     end if;
-                     if St2 = Sql.Ok then
-                        Sql.Bind_Text (US, 4, DH, St2);
-                     end if;
-                     if St2 = Sql.Ok then
-                        Sql.Bind_Text (US, 5, Kind_Diary, St2);
-                     end if;
-                     if St2 = Sql.Ok then
-                        --  The replacing write owns the row, so an unattributed
-                        --  replace clears an attribution rather than keeping a
-                        --  stale one.
-                        Bind_Surface (US, 6, Surf_Id, St2);
-                     end if;
-                     if St2 = Sql.Ok then
-                        Sql.Bind_Int64 (US, 7, Ex_Summary, St2);
-                     end if;
-                     if St2 = Sql.Ok then
-                        Sql.Step (US, St2);
-                     end if;
-                  end if;
-                  Sql.Finalize (US);
-                  Step_Ok := St2 = Sql.Done;
-
-                  if Step_Ok then
-                     Put_Vec (Ex_Summary, Step_Ok);
-                  end if;
-
-                  if Step_Ok then
-                     Sql.Prepare
-                       (S.DB,
-                        "UPDATE diary SET created_at = ?, body = ?"
-                        & " WHERE id = ?", US, St2);
-                     if St2 = Sql.Ok then
-                        Sql.Bind_Text (US, 1, TS, St2);
-                        if St2 = Sql.Ok then
-                           Sql.Bind_Text (US, 2, Diary_Body, St2);
-                        end if;
-                        if St2 = Sql.Ok then
-                           Sql.Bind_Int64 (US, 3, Ex_Diary, St2);
-                        end if;
-                        if St2 = Sql.Ok then
-                           Sql.Step (US, St2);
-                        end if;
-                     end if;
+                  Update_Summary :
+                  declare
+                     US : Sql.Statement;
+                  begin
+                     Prepare
+                       (S,
+                        "UPDATE summaries SET created_at = ?, headline = ?,"
+                        & " body = ?, dedup_hash = ?, kind = ?,"
+                        & " surface_row_id = ? WHERE id = ?", US);
+                     Bind (US, 1, TS);
+                     Bind (US, 2, Head);
+                     Bind (US, 3, Summary_Body);
+                     Bind (US, 4, DH);
+                     Bind (US, 5, Kind_Diary);
+                     --  The replacing write owns the row, so an unattributed
+                     --  replace clears an attribution rather than keeping a
+                     --  stale one.
+                     Bind_Surface (US, 6, Surf_Id);
+                     Bind (US, 7, Ex_Summary);
+                     Step_Done (US);
+                  finally
                      Sql.Finalize (US);
-                     Step_Ok := St2 = Sql.Done;
-                  end if;
+                  end Update_Summary;
 
-                  if Step_Ok then
-                     Exec (S, "COMMIT", Ok);
-                     if Ok then
-                        Result := (Summary_Id => Ex_Summary,
-                                   Diary_Id => Ex_Diary,
-                                   Already_Existed => True, Replaced => True);
-                        Status := Success;
-                        return;
-                     end if;
-                  end if;
-                  Rollback (S);
-                  return;
+                  Put_Vec (Ex_Summary);
+
+                  Update_Diary :
+                  declare
+                     UD : Sql.Statement;
+                  begin
+                     Prepare
+                       (S,
+                        "UPDATE diary SET created_at = ?, body = ?"
+                        & " WHERE id = ?", UD);
+                     Bind (UD, 1, TS);
+                     Bind (UD, 2, Diary_Body);
+                     Bind (UD, 3, Ex_Diary);
+                     Step_Done (UD);
+                  finally
+                     Sql.Finalize (UD);
+                  end Update_Diary;
+
+                  Exec (S, "COMMIT");
+               exception
+                  when Sql_Error =>
+                     Rollback (S);
+                     raise;
                end Update_Existing;
+
+               Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
+                          Already_Existed => True, Replaced => True);
+               Status := Success;
+               return;
             end if;
          end;
       end if;
 
       --  ---- content-dedup path ----
       declare
-         Q : Sql.Statement;
-         St : Sql.Status;
-         Found : Boolean := False;
-         Ex_Summary, Ex_Diary : Row_Id := 0;
+         Found      : Boolean;
+         Ex_Summary : Row_Id := 0;
+         Ex_Diary   : Row_Id := 0;
       begin
-         Sql.Prepare
-           (S.DB,
-            "SELECT s.id, d.id FROM summaries s"
-            & " JOIN diary d ON d.summary_id = s.id"
-            & " WHERE s.dedup_hash = ? AND s.project_id = ? LIMIT 1",
-            Q, St);
-         if St = Sql.Ok then
-            Sql.Bind_Text (Q, 1, DH, St);
-            if St = Sql.Ok then
-               Sql.Bind_Int64 (Q, 2, Proj_Id, St);
+         Dedup_Look_Up :
+         declare
+            Q : Sql.Statement;
+         begin
+            Prepare
+              (S,
+               "SELECT s.id, d.id FROM summaries s"
+               & " JOIN diary d ON d.summary_id = s.id"
+               & " WHERE s.dedup_hash = ? AND s.project_id = ? LIMIT 1", Q);
+            Bind (Q, 1, DH);
+            Bind (Q, 2, Proj_Id);
+            Step_Row (Q, Found);
+            if Found then
+               Ex_Summary := Sql.Column_Int64 (Q, 0);
+               Ex_Diary   := Sql.Column_Int64 (Q, 1);
             end if;
-            if St = Sql.Ok then
-               Sql.Step (Q, St);
-               if St = Sql.Row then
-                  Found := True;
-                  Ex_Summary := Sql.Column_Int64 (Q, 0);
-                  Ex_Diary   := Sql.Column_Int64 (Q, 1);
-               end if;
-            end if;
-         end if;
-         Sql.Finalize (Q);
-         if St /= Sql.Row and then St /= Sql.Done then
-            return;
-         end if;
+         finally
+            Sql.Finalize (Q);
+         end Dedup_Look_Up;
+
          if Found then
             Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
                        Already_Existed => True, Replaced => False);
@@ -2178,98 +2115,74 @@ package body Memcp.Store with SPARK_Mode => On is
       --  ---- fresh insert path ----
       Insert_Fresh :
       declare
-         Ok : Boolean;
-         Ins : Sql.Statement;
-         St2 : Sql.Status;
-         New_Summary, New_Diary : Row_Id := 0;
-         Step_Ok : Boolean;
+         New_Summary : Row_Id;
+         New_Diary   : Row_Id;
       begin
-         Exec (S, "BEGIN", Ok);
-         if not Ok then
-            return;
-         end if;
+         Exec (S, "BEGIN");
 
-         Sql.Prepare
-           (S.DB,
-            "INSERT INTO summaries (project_id, session_id, created_at,"
-            & " headline, body, dedup_hash, kind, surface_row_id)"
-            & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins, St2);
-         if St2 = Sql.Ok then
-            Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
-            if St2 = Sql.Ok then
+         Transaction :
+         begin
+            Insert_Summary :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO summaries (project_id, session_id, created_at,"
+                  & " headline, body, dedup_hash, kind, surface_row_id)"
+                  & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins);
+               Bind (Ins, 1, Proj_Id);
                if Has_Session then
-                  Sql.Bind_Text (Ins, 2, Session_Id, St2);
+                  Bind (Ins, 2, Session_Id);
                else
-                  Sql.Bind_Null (Ins, 2, St2);
+                  Bind_Null (Ins, 2);
                end if;
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 3, TS, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 4, Head, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 5, Summary_Body, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 6, DH, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 7, Kind_Diary, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Bind_Surface (Ins, 8, Surf_Id, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Step (Ins, St2);
-            end if;
-         end if;
-         Sql.Finalize (Ins);
-         Step_Ok := St2 = Sql.Done;
-         if Step_Ok then
+               Bind (Ins, 3, TS);
+               Bind (Ins, 4, Head);
+               Bind (Ins, 5, Summary_Body);
+               Bind (Ins, 6, DH);
+               Bind (Ins, 7, Kind_Diary);
+               Bind_Surface (Ins, 8, Surf_Id);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Summary;
+
             New_Summary := Sql.Last_Insert_Rowid (S.DB);
-            Put_Vec (New_Summary, Step_Ok);
-         end if;
+            Put_Vec (New_Summary);
 
-         if Step_Ok then
-            Sql.Prepare
-              (S.DB,
-               "INSERT INTO diary (project_id, summary_id, created_at, body)"
-               & " VALUES (?, ?, ?, ?)", Ins, St2);
-            if St2 = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
-               if St2 = Sql.Ok then
-                  Sql.Bind_Int64 (Ins, 2, New_Summary, St2);
-               end if;
-               if St2 = Sql.Ok then
-                  Sql.Bind_Text (Ins, 3, TS, St2);
-               end if;
-               if St2 = Sql.Ok then
-                  Sql.Bind_Text (Ins, 4, Diary_Body, St2);
-               end if;
-               if St2 = Sql.Ok then
-                  Sql.Step (Ins, St2);
-               end if;
-            end if;
-            Sql.Finalize (Ins);
-            Step_Ok := St2 = Sql.Done;
-            if Step_Ok then
-               New_Diary := Sql.Last_Insert_Rowid (S.DB);
-            end if;
-         end if;
+            Insert_Diary :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO diary (project_id, summary_id, created_at,"
+                  & " body) VALUES (?, ?, ?, ?)", Ins);
+               Bind (Ins, 1, Proj_Id);
+               Bind (Ins, 2, New_Summary);
+               Bind (Ins, 3, TS);
+               Bind (Ins, 4, Diary_Body);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Diary;
 
-         if Step_Ok then
-            Exec (S, "COMMIT", Ok);
-            if Ok then
-               Result := (Summary_Id => New_Summary, Diary_Id => New_Diary,
-                          Already_Existed => False, Replaced => False);
-               Status := Success;
-               return;
-            end if;
-         end if;
-         Rollback (S);
+            New_Diary := Sql.Last_Insert_Rowid (S.DB);
+            Exec (S, "COMMIT");
+         exception
+            when Sql_Error =>
+               Rollback (S);
+               raise;
+         end Transaction;
+
+         Result := (Summary_Id => New_Summary, Diary_Id => New_Diary,
+                    Already_Existed => False, Replaced => False);
+         Status := Success;
       end Insert_Fresh;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Save;
 
    ------------------
@@ -2297,88 +2210,72 @@ package body Memcp.Store with SPARK_Mode => On is
       Result := (Session_Row_Id => 0, Chunk_Count => 0,
                  Already_Existed => False, Raw_Path_Set => False);
 
-      Project_Id (S, Project, Proj_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Status := Db_Error;
+      Project_Id (S, Project, Proj_Id);
+      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id);
 
       --  ---- idempotency: existing (project, session) row is a no-op ----
       declare
-         Q     : Sql.Statement;
-         St    : Sql.Status;
-         Found : Boolean := False;
+         Found : Boolean;
          Ex_Id : Row_Id := 0;
       begin
-         Sql.Prepare
-           (S.DB,
-            "SELECT id FROM sessions WHERE project_id = ? AND session_id = ?",
-            Q, St);
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Q, 1, Proj_Id, St);
-            if St = Sql.Ok then
-               Sql.Bind_Text (Q, 2, Session_Id, St);
+         Look_Up :
+         declare
+            Q : Sql.Statement;
+         begin
+            Prepare
+              (S,
+               "SELECT id FROM sessions WHERE project_id = ?"
+               & " AND session_id = ?", Q);
+            Bind (Q, 1, Proj_Id);
+            Bind (Q, 2, Session_Id);
+            Step_Row (Q, Found);
+            if Found then
+               Ex_Id := Sql.Column_Int64 (Q, 0);
             end if;
-            if St = Sql.Ok then
-               Sql.Step (Q, St);
-               if St = Sql.Row then
-                  Found := True;
-                  Ex_Id := Sql.Column_Int64 (Q, 0);
-               end if;
-            end if;
-         end if;
-         Sql.Finalize (Q);
-         if St /= Sql.Row and then St /= Sql.Done then
-            return;
-         end if;
+         finally
+            Sql.Finalize (Q);
+         end Look_Up;
 
          if Found then
             --  Return the existing row's id and its current chunk count,
             --  inserting nothing.
+            Count_Chunks :
             declare
-               C   : Sql.Statement;
-               CSt : Sql.Status;
-               Cnt : Natural := 0;
+               C        : Sql.Statement;
+               Have_Row : Boolean;
+               Cnt      : Natural := 0;
             begin
-               Sql.Prepare
-                 (S.DB,
+               Prepare
+                 (S,
                   "SELECT id FROM chunks WHERE session_row_id = ?"
-                  & " ORDER BY ordinal", C, CSt);
-               if CSt = Sql.Ok then
-                  Sql.Bind_Int64 (C, 1, Ex_Id, CSt);
-               end if;
-               if CSt = Sql.Ok then
-                  loop
-                     Sql.Step (C, CSt);
-                     exit when CSt /= Sql.Row;
-                     exit when Cnt = Natural'Last;
-                     Cnt := Cnt + 1;
-                  end loop;
-               end if;
+                  & " ORDER BY ordinal", C);
+               Bind (C, 1, Ex_Id);
+               loop
+                  pragma Loop_Invariant (Sql.Is_Valid (C));
+                  --  The frame's `finally` writes C; see Recent_Diary.
+                  Step_Row (C, Have_Row);
+                  exit when not Have_Row;
+                  --  A session holding more chunks than Natural can count is
+                  --  one this code cannot report on.
+                  if Cnt = Natural'Last then
+                     raise Sql_Error;
+                  end if;
+                  Cnt := Cnt + 1;
+               end loop;
+               Result := (Session_Row_Id => Ex_Id, Chunk_Count => Cnt,
+                          Already_Existed => True, Raw_Path_Set => False);
+               Status := Success;
+            finally
                Sql.Finalize (C);
-               if CSt = Sql.Done then
-                  Result := (Session_Row_Id => Ex_Id, Chunk_Count => Cnt,
-                             Already_Existed => True, Raw_Path_Set => False);
-                  Status := Success;
-               end if;
-               return;
-            end;
+            end Count_Chunks;
+            return;
          end if;
       end;
 
       --  ---- fresh session: write transcript (best-effort) + insert rows ----
       declare
-         Raw_Path  : Path_Access := null;
-         Ok        : Boolean;
-         Ins       : Sql.Statement;
-         St2       : Sql.Status;
-         New_Sess  : Row_Id := 0;
-         Step_Ok   : Boolean;
-         Chunks_Ok : Boolean := False;
+         Raw_Path : Path_Access := null;
+         New_Sess : Row_Id;
       begin
          --  A ":memory:" store has no on-disk parent, so skip the transcript
          --  entirely. Otherwise the write is best-effort: Raw_Path stays null
@@ -2389,63 +2286,53 @@ package body Memcp.Store with SPARK_Mode => On is
                Raw_Path);
          end if;
 
-         Exec (S, "BEGIN", Ok);
-         if Ok then
-            Sql.Prepare
-              (S.DB,
-               "INSERT INTO sessions (project_id, session_id, created_at,"
-               & " raw_path, surface_row_id) VALUES (?, ?, ?, ?, ?)",
-               Ins, St2);
-            if St2 = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
-               if St2 = Sql.Ok then
-                  Sql.Bind_Text (Ins, 2, Session_Id, St2);
-               end if;
-               if St2 = Sql.Ok then
-                  Sql.Bind_Text (Ins, 3, TS, St2);
-               end if;
-               if St2 = Sql.Ok then
-                  if Raw_Path /= null then
-                     Sql.Bind_Text (Ins, 4, Raw_Path.all, St2);
-                  else
-                     Sql.Bind_Null (Ins, 4, St2);
-                  end if;
-               end if;
-               if St2 = Sql.Ok then
-                  Bind_Surface (Ins, 5, Surf_Id, St2);
-               end if;
-               if St2 = Sql.Ok then
-                  Sql.Step (Ins, St2);
-               end if;
-            end if;
-            Sql.Finalize (Ins);
-            Step_Ok := St2 = Sql.Done;
+         Exec (S, "BEGIN");
 
-            if Step_Ok then
-               New_Sess := Sql.Last_Insert_Rowid (S.DB);
-               Insert_Chunks (S, New_Sess, Proj_Id, TS, Chunks, Chunks_Ok);
-            end if;
-
-            if Step_Ok and then Chunks_Ok then
-               Exec (S, "COMMIT", Ok);
-               if Ok then
-                  Result :=
-                    (Session_Row_Id  => New_Sess,
-                     Chunk_Count     =>
-                       Natural (Chunk_Input_Vectors.Length (Chunks)),
-                     Already_Existed => False,
-                     Raw_Path_Set    => Raw_Path /= null);
-                  Status := Success;
+         Transaction :
+         begin
+            Insert_Session :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO sessions (project_id, session_id, created_at,"
+                  & " raw_path, surface_row_id) VALUES (?, ?, ?, ?, ?)", Ins);
+               Bind (Ins, 1, Proj_Id);
+               Bind (Ins, 2, Session_Id);
+               Bind (Ins, 3, TS);
+               if Raw_Path /= null then
+                  Bind (Ins, 4, Raw_Path.all);
                else
-                  Rollback (S);
+                  Bind_Null (Ins, 4);
                end if;
-            else
-               Rollback (S);
-            end if;
-         end if;
+               Bind_Surface (Ins, 5, Surf_Id);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Session;
 
+            New_Sess := Sql.Last_Insert_Rowid (S.DB);
+            Insert_Chunks (S, New_Sess, Proj_Id, TS, Chunks);
+            Exec (S, "COMMIT");
+         exception
+            when Sql_Error =>
+               Rollback (S);
+               raise;
+         end Transaction;
+
+         Result :=
+           (Session_Row_Id  => New_Sess,
+            Chunk_Count     => Natural (Chunk_Input_Vectors.Length (Chunks)),
+            Already_Existed => False,
+            Raw_Path_Set    => Raw_Path /= null);
+         Status := Success;
+      finally
          Free_Path (Raw_Path);
       end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Save_Session;
 
    --------------------
@@ -2474,154 +2361,118 @@ package body Memcp.Store with SPARK_Mode => On is
    begin
       Result := (Summary_Id => 0, Diary_Id => 0, Written => False);
 
-      Project_Id (S, Project, Proj_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Status := Db_Error;
+      Project_Id (S, Project, Proj_Id);
+      Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id);
 
       --  Short-circuit: any existing summary for (project, session) wins.
       declare
-         Q     : Sql.Statement;
-         St    : Sql.Status;
-         Found : Boolean := False;
+         Found : Boolean;
       begin
-         Sql.Prepare
-           (S.DB,
-            "SELECT id FROM summaries WHERE project_id = ? AND session_id = ?"
-            & " LIMIT 1", Q, St);
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Q, 1, Proj_Id, St);
-            if St = Sql.Ok then
-               Sql.Bind_Text (Q, 2, Session_Id, St);
-            end if;
-            if St = Sql.Ok then
-               Sql.Step (Q, St);
-               Found := St = Sql.Row;
-            end if;
-         end if;
-         Sql.Finalize (Q);
-         if St /= Sql.Row and then St /= Sql.Done then
-            return;
-         end if;
+         Look_Up :
+         declare
+            Q : Sql.Statement;
+         begin
+            Prepare
+              (S,
+               "SELECT id FROM summaries WHERE project_id = ?"
+               & " AND session_id = ? LIMIT 1", Q);
+            Bind (Q, 1, Proj_Id);
+            Bind (Q, 2, Session_Id);
+            Step_Row (Q, Found);
+         finally
+            Sql.Finalize (Q);
+         end Look_Up;
+
          if Found then
-            --  Leave Written False: declining to write is a successful outcome,
-            --  not an error.
+            --  Leave Written False: declining to write is a successful
+            --  outcome, not an error.
             Status := Success;
             return;
          end if;
       end;
 
       --  ---- fresh insert: summary(kind=autorecap) + embedding + diary ----
+      Insert_Fresh :
       declare
-         Ok  : Boolean;
-         Ins : Sql.Statement;
-         St2 : Sql.Status;
-         New_Summary, New_Diary : Row_Id := 0;
-         Step_Ok : Boolean;
+         New_Summary : Row_Id;
+         New_Diary   : Row_Id;
       begin
-         Exec (S, "BEGIN", Ok);
-         if not Ok then
-            return;
-         end if;
+         Exec (S, "BEGIN");
 
-         Sql.Prepare
-           (S.DB,
-            "INSERT INTO summaries (project_id, session_id, created_at,"
-            & " headline, body, dedup_hash, kind, surface_row_id)"
-            & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins, St2);
-         if St2 = Sql.Ok then
-            Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Bind_Text (Ins, 2, Session_Id, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Bind_Text (Ins, 3, TS, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Bind_Text (Ins, 4, Head, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Bind_Text (Ins, 5, Recap_Text, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Bind_Text (Ins, 6, DH, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Bind_Text (Ins, 7, Kind_Autorecap, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Bind_Surface (Ins, 8, Surf_Id, St2);
-         end if;
-         if St2 = Sql.Ok then
-            Sql.Step (Ins, St2);
-         end if;
-         Sql.Finalize (Ins);
-         Step_Ok := St2 = Sql.Done;
+         Transaction :
+         begin
+            Insert_Summary :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO summaries (project_id, session_id, created_at,"
+                  & " headline, body, dedup_hash, kind, surface_row_id)"
+                  & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins);
+               Bind (Ins, 1, Proj_Id);
+               Bind (Ins, 2, Session_Id);
+               Bind (Ins, 3, TS);
+               Bind (Ins, 4, Head);
+               Bind (Ins, 5, Recap_Text);
+               Bind (Ins, 6, DH);
+               Bind (Ins, 7, Kind_Autorecap);
+               Bind_Surface (Ins, 8, Surf_Id);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Summary;
 
-         if Step_Ok then
             New_Summary := Sql.Last_Insert_Rowid (S.DB);
-            Sql.Prepare
-              (S.DB,
-               "INSERT INTO summary_vec (rowid, embedding) VALUES (?, ?)",
-               Ins, St2);
-            if St2 = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 1, New_Summary, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Blob (Ins, 2, Blob, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Step (Ins, St2);
-            end if;
-            Sql.Finalize (Ins);
-            Step_Ok := St2 = Sql.Done;
-         end if;
 
-         if Step_Ok then
-            Sql.Prepare
-              (S.DB,
-               "INSERT INTO diary (project_id, summary_id, created_at, body)"
-               & " VALUES (?, ?, ?, ?)", Ins, St2);
-            if St2 = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 1, Proj_Id, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Int64 (Ins, 2, New_Summary, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 3, TS, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Bind_Text (Ins, 4, Recap_Text, St2);
-            end if;
-            if St2 = Sql.Ok then
-               Sql.Step (Ins, St2);
-            end if;
-            Sql.Finalize (Ins);
-            Step_Ok := St2 = Sql.Done;
-            if Step_Ok then
-               New_Diary := Sql.Last_Insert_Rowid (S.DB);
-            end if;
-         end if;
+            Insert_Vec :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO summary_vec (rowid, embedding) VALUES (?, ?)",
+                  Ins);
+               Bind (Ins, 1, New_Summary);
+               Bind (Ins, 2, Blob);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Vec;
 
-         if Step_Ok then
-            Exec (S, "COMMIT", Ok);
-            if Ok then
-               Result := (Summary_Id => New_Summary,
-                          Diary_Id   => New_Diary,
-                          Written    => True);
-               Status := Success;
-               return;
-            end if;
-         end if;
-         Rollback (S);
-      end;
+            Insert_Diary :
+            declare
+               Ins : Sql.Statement;
+            begin
+               Prepare
+                 (S,
+                  "INSERT INTO diary (project_id, summary_id, created_at,"
+                  & " body) VALUES (?, ?, ?, ?)", Ins);
+               Bind (Ins, 1, Proj_Id);
+               Bind (Ins, 2, New_Summary);
+               Bind (Ins, 3, TS);
+               Bind (Ins, 4, Recap_Text);
+               Step_Done (Ins);
+            finally
+               Sql.Finalize (Ins);
+            end Insert_Diary;
+
+            New_Diary := Sql.Last_Insert_Rowid (S.DB);
+            Exec (S, "COMMIT");
+         exception
+            when Sql_Error =>
+               Rollback (S);
+               raise;
+         end Transaction;
+
+         Result := (Summary_Id => New_Summary,
+                    Diary_Id   => New_Diary,
+                    Written    => True);
+         Status := Success;
+      end Insert_Fresh;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Save_Autorecap;
 
    ----------------------
@@ -2644,160 +2495,118 @@ package body Memcp.Store with SPARK_Mode => On is
       Old_Count := 0;
       New_Count := 0;
 
-      Project_Id (S, Project, Proj_Id, Status);
-      if Status /= Success then
-         return;
-      end if;
-      Status := Db_Error;
+      Project_Id (S, Project, Proj_Id);
 
       --  Locate the session row + its original created_at (copied out so the
-      --  new chunks can inherit it after the cursor is gone).
+      --  new chunks can inherit it after the cursor is gone). The copy doubles
+      --  as the found flag: no row, no copy.
       declare
-         Q       : Sql.Statement;
-         St      : Sql.Status;
-         Have    : Boolean := False;
          Sess_Id : Row_Id := 0;
          TS_Copy : Path_Access := null;
       begin
-         Sql.Prepare
-           (S.DB,
-            "SELECT id, created_at FROM sessions"
-            & " WHERE project_id = ? AND session_id = ?", Q, St);
-         if St = Sql.Ok then
-            Sql.Bind_Int64 (Q, 1, Proj_Id, St);
-            if St = Sql.Ok then
-               Sql.Bind_Text (Q, 2, Session_Id, St);
+         Look_Up :
+         declare
+            Q    : Sql.Statement;
+            Have : Boolean;
+         begin
+            Prepare
+              (S,
+               "SELECT id, created_at FROM sessions"
+               & " WHERE project_id = ? AND session_id = ?", Q);
+            Bind (Q, 1, Proj_Id);
+            Bind (Q, 2, Session_Id);
+            Step_Row (Q, Have);
+            if Have then
+               Sess_Id := Sql.Column_Int64 (Q, 0);
+               declare
+                  T : Sql.Text_Ptr := Sql.Column_Text (Q, 1);
+               begin
+                  TS_Copy := new String'(T.all);
+                  Sql.Free (T);
+               end;
             end if;
-            if St = Sql.Ok then
-               Sql.Step (Q, St);
-               if St = Sql.Row then
-                  Have    := True;
-                  Sess_Id := Sql.Column_Int64 (Q, 0);
-                  declare
-                     T : Sql.Text_Ptr := Sql.Column_Text (Q, 1);
-                  begin
-                     TS_Copy := new String'(T.all);
-                     Sql.Free (T);
-                  end;
-               end if;
-            end if;
-         end if;
-         Sql.Finalize (Q);
+         finally
+            Sql.Finalize (Q);
+         end Look_Up;
 
-         if St /= Sql.Row and then St /= Sql.Done then
-            null;  --  DB error: Status stays Db_Error
-         elsif not Have then
-            Status := Success;   --  no such session
+         if TS_Copy = null then
+            --  No such session: Found stays False, which is an answer.
+            Status := Success;
          else
             --  Replace the chunks in one transaction: delete each old chunk's
             --  embedding (vec0 has no FK cascade), bulk-delete the chunk rows,
             --  then insert the new ones with the session's original timestamp.
-            declare
-               Ok        : Boolean;
-               Step_Ok   : Boolean;
-               Chunks_Ok : Boolean;
+            Exec (S, "BEGIN");
+
+            Transaction :
             begin
-               Exec (S, "BEGIN", Ok);
-               if Ok then
-                  --  delete old chunk_vec rows, counting them
-                  declare
-                     Sel : Sql.Statement;
-                     SSt : Sql.Status;
-                     Cnt : Natural := 0;
-                  begin
-                     Sql.Prepare
-                       (S.DB,
-                        "SELECT id FROM chunks WHERE session_row_id = ?",
-                        Sel, SSt);
-                     if SSt = Sql.Ok then
-                        Sql.Bind_Int64 (Sel, 1, Sess_Id, SSt);
+               Drop_Vectors :
+               declare
+                  Sel      : Sql.Statement;
+                  Have_Row : Boolean;
+                  Cnt      : Natural := 0;
+               begin
+                  Prepare
+                    (S, "SELECT id FROM chunks WHERE session_row_id = ?", Sel);
+                  Bind (Sel, 1, Sess_Id);
+                  loop
+                     pragma Loop_Invariant (Sql.Is_Valid (Sel));
+                     --  The frame's `finally` writes Sel; see Recent_Diary.
+                     Step_Row (Sel, Have_Row);
+                     exit when not Have_Row;
+                     --  A session holding more chunks than Natural can count
+                     --  is one this code cannot reindex.
+                     if Cnt = Natural'Last then
+                        raise Sql_Error;
                      end if;
-                     if SSt = Sql.Ok then
-                        loop
-                           Sql.Step (Sel, SSt);
-                           exit when SSt /= Sql.Row;
-                           exit when Cnt = Natural'Last;
-                           declare
-                              Old_Id : constant Row_Id :=
-                                Sql.Column_Int64 (Sel, 0);
-                              DV  : Sql.Statement;
-                              DSt : Sql.Status;
-                           begin
-                              Sql.Prepare
-                                (S.DB,
-                                 "DELETE FROM chunk_vec WHERE rowid = ?",
-                                 DV, DSt);
-                              if DSt = Sql.Ok then
-                                 Sql.Bind_Int64 (DV, 1, Old_Id, DSt);
-                              end if;
-                              if DSt = Sql.Ok then
-                                 Sql.Step (DV, DSt);
-                              end if;
-                              Sql.Finalize (DV);
-                              if DSt /= Sql.Done then
-                                 SSt := Sql.Error;
-                                 exit;
-                              end if;
-                              Cnt := Cnt + 1;
-                           end;
-                        end loop;
-                     end if;
-                     Sql.Finalize (Sel);
-                     Old_Count := Cnt;
-                     Step_Ok   := SSt = Sql.Done;
-                  end;
-
-                  --  bulk-delete the old chunk rows
-                  if Step_Ok then
                      declare
-                        D   : Sql.Statement;
-                        DSt : Sql.Status;
+                        Old_Id : constant Row_Id := Sql.Column_Int64 (Sel, 0);
+                        DV     : Sql.Statement;
                      begin
-                        Sql.Prepare
-                          (S.DB,
-                           "DELETE FROM chunks WHERE session_row_id = ?",
-                           D, DSt);
-                        if DSt = Sql.Ok then
-                           Sql.Bind_Int64 (D, 1, Sess_Id, DSt);
-                        end if;
-                        if DSt = Sql.Ok then
-                           Sql.Step (D, DSt);
-                        end if;
-                        Sql.Finalize (D);
-                        Step_Ok := DSt = Sql.Done;
+                        Prepare
+                          (S, "DELETE FROM chunk_vec WHERE rowid = ?", DV);
+                        Bind (DV, 1, Old_Id);
+                        Step_Done (DV);
+                     finally
+                        Sql.Finalize (DV);
                      end;
-                  end if;
+                     Cnt := Cnt + 1;
+                  end loop;
+                  Old_Count := Cnt;
+               finally
+                  Sql.Finalize (Sel);
+               end Drop_Vectors;
 
-                  --  insert the replacement chunks (TS_Copy is non-null here)
-                  if Step_Ok then
-                     if TS_Copy /= null then
-                        Insert_Chunks
-                          (S, Sess_Id, Proj_Id, TS_Copy.all, Chunks, Chunks_Ok);
-                        Step_Ok := Chunks_Ok;
-                     else
-                        Step_Ok := False;
-                     end if;
-                  end if;
+               Drop_Chunks :
+               declare
+                  D : Sql.Statement;
+               begin
+                  Prepare
+                    (S, "DELETE FROM chunks WHERE session_row_id = ?", D);
+                  Bind (D, 1, Sess_Id);
+                  Step_Done (D);
+               finally
+                  Sql.Finalize (D);
+               end Drop_Chunks;
 
-                  if Step_Ok then
-                     Exec (S, "COMMIT", Ok);
-                     if Ok then
-                        Found     := True;
-                        New_Count :=
-                          Natural (Chunk_Input_Vectors.Length (Chunks));
-                        Status    := Success;
-                     else
-                        Rollback (S);
-                     end if;
-                  else
-                     Rollback (S);
-                  end if;
-               end if;
-            end;
+               Insert_Chunks (S, Sess_Id, Proj_Id, TS_Copy.all, Chunks);
+               Exec (S, "COMMIT");
+            exception
+               when Sql_Error =>
+                  Rollback (S);
+                  raise;
+            end Transaction;
+
+            Found     := True;
+            New_Count := Natural (Chunk_Input_Vectors.Length (Chunks));
+            Status    := Success;
          end if;
-
+      finally
          Free_Path (TS_Copy);
       end;
+   exception
+      when Sql_Error =>
+         Status := Db_Error;
    end Reindex_Session;
 
 end Memcp.Store;
