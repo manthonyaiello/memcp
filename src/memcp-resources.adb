@@ -67,25 +67,25 @@ package body Memcp.Resources with SPARK_Mode => On is
       return Candle_Spark.Embed (R.The_Embedder, Text);
    end Embed;
 
-   ------------------
-   -- Recent_Diary --
-   ------------------
+   --------------------
+   -- Recent_Headers --
+   --------------------
 
-   procedure Recent_Diary
+   procedure Recent_Headers
      (R        : Resources;
       Projects : MS.Name_List;
       N        : Natural;
-      Result   : out MS.Diary_Entry_List;
+      Result   : out MS.Header_List;
       Status   : out MS.Op_Status)
    is
    begin
       if not Is_Open (R) then
-         Result := MS.Diary_Vectors.Empty_Vector;
+         Result := MS.Header_Vectors.Empty_Vector;
          Status := MS.Db_Error;
          return;
       end if;
-      MS.Recent_Diary (R.The_Store, Projects, N, Result, Status);
-   end Recent_Diary;
+      MS.Recent_Headers (R.The_Store, Projects, N, Result, Status);
+   end Recent_Headers;
 
    -------------------
    -- List_Projects --
@@ -278,7 +278,7 @@ package body Memcp.Resources with SPARK_Mode => On is
    procedure Save
      (R            : Resources;
       Project      : String;
-      Diary_Body   : String;
+      Header_Text   : String;
       Summary_Body : String;
       Embedding    : Candle_Spark.Embedding;
       Has_Session  : Boolean;
@@ -296,13 +296,13 @@ package body Memcp.Resources with SPARK_Mode => On is
         or else Project'Last = Natural'Last
         or else Summary_Body'Last = Integer'Last
       then
-         Result := (Summary_Id => 0, Diary_Id => 0,
+         Result := (Summary_Id => 0,
                     Already_Existed => False, Replaced => False);
          Status := MS.Db_Error;
          return;
       end if;
       MS.Save
-        (R.The_Store, Project, Diary_Body, Summary_Body, Embedding,
+        (R.The_Store, Project, Header_Text, Summary_Body, Embedding,
          Has_Session, Session_Id, Has_Created, Created_At, Surface,
          Surface_Label, Result, Status);
    end Save;
@@ -382,7 +382,7 @@ package body Memcp.Resources with SPARK_Mode => On is
         or else Project'Last = Natural'Last
         or else Recap_Text'Last = Integer'Last
       then
-         Result := (Summary_Id => 0, Diary_Id => 0, Written => False);
+         Result := (Summary_Id => 0, Written => False);
          Status := MS.Db_Error;
          return;
       end if;

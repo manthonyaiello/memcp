@@ -11,7 +11,7 @@
 # surface that is behind by even a comment reports as behind, which is the
 # honest answer. Memcp.Hooks.Hook_Version must carry the same string --
 # scripts/check-hook-version.sh gates that, and the bump.
-MEMCP_HOOK_VERSION="0.6.0"
+MEMCP_HOOK_VERSION="0.7.0"
 
 # --- configuration ----------------------------------------------------------
 

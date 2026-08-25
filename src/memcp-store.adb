@@ -31,9 +31,9 @@ package body Memcp.Store with SPARK_Mode => On is
    --  Reclaim a remembered database path or transcript-path copy.
 
    function Dedup_Hash
-     (Project, Diary_Body, Summary_Body : String) return String
+     (Project, Header_Text, Summary_Body : String) return String
      with Global => null;
-   --  SHA-256 hex over Project, Diary_Body and Summary_Body, NUL-delimited so
+   --  SHA-256 hex over Project, Header_Text and Summary_Body, NUL-delimited so
    --  field boundaries cannot collide ("ab" + "c" against "a" + "bc"). The
    --  digest is stored, and the conformance corpus holds hashes built this way,
    --  so the construction is frozen. The body is outside SPARK; Global => null
@@ -65,22 +65,14 @@ package body Memcp.Store with SPARK_Mode => On is
      "  id INTEGER PRIMARY KEY,"                                      & LF &
      "  project_id INTEGER NOT NULL REFERENCES projects(id),"         & LF &
      "  session_id TEXT, created_at TEXT NOT NULL,"                   & LF &
-     "  headline TEXT NOT NULL, body TEXT NOT NULL,"                  & LF &
-     "  dedup_hash TEXT, kind TEXT NOT NULL DEFAULT 'diary');"        & LF &
+     "  header TEXT NOT NULL, body TEXT NOT NULL,"                    & LF &
+     "  dedup_hash TEXT, kind TEXT NOT NULL DEFAULT 'authored');"     & LF &
      "CREATE INDEX IF NOT EXISTS idx_summaries_project_date"          & LF &
      "  ON summaries(project_id, created_at DESC);"                   & LF &
      "CREATE INDEX IF NOT EXISTS idx_summaries_session"               & LF &
      "  ON summaries(session_id);"                                    & LF &
      "CREATE INDEX IF NOT EXISTS idx_summaries_dedup"                 & LF &
      "  ON summaries(dedup_hash);"                                    & LF &
-     "CREATE TABLE IF NOT EXISTS diary ("                             & LF &
-     "  id INTEGER PRIMARY KEY,"                                      & LF &
-     "  project_id INTEGER NOT NULL REFERENCES projects(id),"         & LF &
-     "  summary_id INTEGER NOT NULL REFERENCES summaries(id)"         & LF &
-     "    ON DELETE CASCADE,"                                         & LF &
-     "  created_at TEXT NOT NULL, body TEXT NOT NULL);"               & LF &
-     "CREATE INDEX IF NOT EXISTS idx_diary_project_date"              & LF &
-     "  ON diary(project_id, created_at DESC);"                       & LF &
      "CREATE TABLE IF NOT EXISTS sessions ("                          & LF &
      "  id INTEGER PRIMARY KEY,"                                      & LF &
      "  project_id INTEGER NOT NULL REFERENCES projects(id),"         & LF &
@@ -97,8 +89,8 @@ package body Memcp.Store with SPARK_Mode => On is
      "  created_at TEXT NOT NULL);"                                   & LF &
      "CREATE INDEX IF NOT EXISTS idx_chunks_session"                  & LF &
      "  ON chunks(session_row_id);";
-   --  The relational schema: meta, projects, surfaces, summaries, diary,
-   --  sessions and chunks, with their indexes. Every statement is IF NOT
+   --  The relational schema: meta, projects, surfaces, summaries, sessions
+   --  and chunks, with their indexes. Every statement is IF NOT
    --  EXISTS, so applying it to an existing database is a no-op. The
    --  surface_row_id columns and what a surface reports about itself are added
    --  by Add_Column instead, which no CREATE can express for a table that
@@ -119,7 +111,7 @@ package body Memcp.Store with SPARK_Mode => On is
    -------------------------------------------------------------
 
    function Dedup_Hash
-     (Project, Diary_Body, Summary_Body : String) return String
+     (Project, Header_Text, Summary_Body : String) return String
      with SPARK_Mode => Off
    is
       Ctx : GNAT.SHA256.Context := GNAT.SHA256.Initial_Context;
@@ -127,7 +119,7 @@ package body Memcp.Store with SPARK_Mode => On is
    begin
       GNAT.SHA256.Update (Ctx, Project);
       GNAT.SHA256.Update (Ctx, Nul);
-      GNAT.SHA256.Update (Ctx, Diary_Body);
+      GNAT.SHA256.Update (Ctx, Header_Text);
       GNAT.SHA256.Update (Ctx, Nul);
       GNAT.SHA256.Update (Ctx, Summary_Body);
       return GNAT.SHA256.Digest (Ctx);
@@ -211,160 +203,6 @@ package body Memcp.Store with SPARK_Mode => On is
          end if;
          Path_Out := null;
    end Write_Session_File;
-
-   ------------------------
-   --  Headline extraction
-   ------------------------
-
-   function Is_Space (C : Character) return Boolean is
-     (C = ' ' or else C = ASCII.HT or else C = ASCII.LF
-      or else C = ASCII.CR or else C = ASCII.FF or else C = ASCII.VT);
-   --  Whether C is one of the six ASCII whitespace characters.
-
-   Headline_Cap : constant := 100;
-   --  Longest headline derived from a body, in characters.
-
-   Prefix       : constant String := "HEADLINE:";
-   --  The marker a body may use to name its own headline.
-
-   function To_Upper (C : Character) return Character is
-     (if C in 'a' .. 'z'
-      then Character'Val (Character'Pos (C) - 32) else C);
-   --  C folded to upper case, ASCII only.
-
-   procedure Strip_Bounds (S : String; First : out Integer; Last : out Integer)
-     with Pre  => S'Last < Integer'Last,
-          Post => (First > Last) or else
-                    (First in S'Range and then Last in S'Range),
-          Always_Terminates;
-   --  The [First, Last] slice bounds of S with leading and trailing
-   --  whitespace removed; First > Last signals an all-blank S.
-
-   procedure Strip_Bounds (S : String; First : out Integer; Last : out Integer)
-   is
-   begin
-      First := S'First;
-      Last  := S'Last;
-      while First <= Last and then Is_Space (S (First)) loop
-         pragma Loop_Invariant (First in S'First .. Last and then Last = S'Last);
-         pragma Loop_Variant (Increases => First);
-         First := First + 1;
-      end loop;
-      while Last >= First and then Is_Space (S (Last)) loop
-         pragma Loop_Invariant
-           (Last in First .. S'Last and then First >= S'First);
-         pragma Loop_Variant (Decreases => Last);
-         Last := Last - 1;
-      end loop;
-   end Strip_Bounds;
-
-   function Starts_With_Prefix (S : String) return Boolean
-     with Pre  => S'Last < Integer'Last,
-          --  On True a caller may slice Prefix off S without a further length
-          --  check of its own.
-          Post => (if Starts_With_Prefix'Result then S'Length >= Prefix'Length);
-   --  Whether S begins with Prefix, compared case-insensitively.
-
-   function Starts_With_Prefix (S : String) return Boolean is
-   begin
-      if S'Length < Prefix'Length then
-         return False;
-      end if;
-      for K in 0 .. Prefix'Length - 1 loop
-         if To_Upper (S (S'First + K)) /= Prefix (Prefix'First + K) then
-            return False;
-         end if;
-      end loop;
-      return True;
-   end Starts_With_Prefix;
-
-   function Parse_Headline (Body_Text : String) return String
-     with Pre => Body_Text'Last < Integer'Last;
-   --  Headline of a summary body: the remainder of a first line that starts
-   --  with Prefix, else the whole stripped body flattened to one line.
-
-   function Parse_Headline (Body_Text : String) return String is
-      First : Integer;
-      Last  : Integer;
-   begin
-      Strip_Bounds (Body_Text, First, Last);
-      if First > Last then
-         return "";
-      end if;
-
-      --  The first line is Body_Text (First .. Line_Last), the stripped body up
-      --  to the first LF. Leading whitespace, LF included, is already gone, so
-      --  that line is non-empty.
-      declare
-         Line_Last : Integer := Last;
-      begin
-         for I in First .. Last loop
-            pragma Loop_Invariant (Line_Last = Last);
-            if Body_Text (I) = ASCII.LF then
-               Line_Last := I - 1;
-               exit;
-            end if;
-         end loop;
-
-         if Line_Last >= First
-           and then Starts_With_Prefix (Body_Text (First .. Line_Last))
-         then
-            --  Remainder of the first line after Prefix, stripped.
-            declare
-               RF, RL : Integer;
-               Rest   : constant String :=
-                 Body_Text (First + Prefix'Length .. Line_Last);
-            begin
-               Strip_Bounds (Rest, RF, RL);
-               if RF > RL then
-                  return "";
-               end if;
-               return Rest (RF .. RL);
-            end;
-         end if;
-      end;
-
-      --  Fallback: whole stripped body, newlines to spaces, capped at
-      --  Headline_Cap.
-      declare
-         Full : String := Body_Text (First .. Last);
-         Take : constant Natural :=
-           Natural'Min (Full'Length, Headline_Cap);
-      begin
-         for I in Full'Range loop
-            if Full (I) = ASCII.LF then
-               Full (I) := ' ';
-            end if;
-         end loop;
-         return Full (Full'First .. Full'First + Take - 1);
-      end;
-   end Parse_Headline;
-
-   function Recap_Headline (Text : String) return String
-     with Pre => Text'Last < Integer'Last;
-   --  Headline of an autorecap: Parse_Headline's fallback branch alone, with
-   --  no Prefix parsing.
-
-   function Recap_Headline (Text : String) return String is
-      First : Integer;
-      Last  : Integer;
-   begin
-      Strip_Bounds (Text, First, Last);
-      if First > Last then
-         return "";
-      end if;
-      declare
-         Full : String := Text (First .. Last);
-         Take : constant Natural := Natural'Min (Full'Length, Headline_Cap);
-      begin
-         for I in Full'Range loop
-            if Full (I) = ASCII.LF then
-               Full (I) := ' ';
-            end if;
-         end loop;
-         return Full (Full'First .. Full'First + Take - 1);
-      end;
-   end Recap_Headline;
 
    --------------------------------------
    --  Embedding to packed float32 blob
@@ -737,6 +575,48 @@ package body Memcp.Store with SPARK_Mode => On is
    -- Add_Column --
    ----------------
 
+   procedure Column_Present
+     (S : Store; Table, Column : String; Present : out Boolean)
+     with Pre => Is_Open (S)
+                 and then Table'Length in 1 .. 64
+                 and then Column'Length in 1 .. 64,
+          Exceptional_Cases => (Sql_Error => True);
+   --  Whether Table already carries Column.
+
+   procedure Column_Present
+     (S : Store; Table, Column : String; Present : out Boolean)
+   is
+      Stmt : Sql.Statement;
+   begin
+      Prepare (S, "SELECT 1 FROM pragma_table_info(?) WHERE name = ?", Stmt);
+      Bind (Stmt, 1, Table);
+      Bind (Stmt, 2, Column);
+      Step_Row (Stmt, Present);
+   finally
+      Sql.Finalize (Stmt);
+   end Column_Present;
+
+   procedure Table_Present
+     (S : Store; Table : String; Present : out Boolean)
+     with Pre => Is_Open (S) and then Table'Length in 1 .. 64,
+          Exceptional_Cases => (Sql_Error => True);
+   --  Whether the database holds a table named Table.
+
+   procedure Table_Present
+     (S : Store; Table : String; Present : out Boolean)
+   is
+      Stmt : Sql.Statement;
+   begin
+      Prepare
+        (S,
+         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+         Stmt);
+      Bind (Stmt, 1, Table);
+      Step_Row (Stmt, Present);
+   finally
+      Sql.Finalize (Stmt);
+   end Table_Present;
+
    procedure Add_Column (S : Store; Table, Column, Decl : String)
      with Pre => Is_Open (S)
                  --  Bounded so the ALTER built below cannot overflow; every
@@ -752,18 +632,7 @@ package body Memcp.Store with SPARK_Mode => On is
    procedure Add_Column (S : Store; Table, Column, Decl : String) is
       Present : Boolean;
    begin
-      Look_Up :
-      declare
-         Stmt : Sql.Statement;
-      begin
-         Prepare
-           (S, "SELECT 1 FROM pragma_table_info(?) WHERE name = ?", Stmt);
-         Bind (Stmt, 1, Table);
-         Bind (Stmt, 2, Column);
-         Step_Row (Stmt, Present);
-      finally
-         Sql.Finalize (Stmt);
-      end Look_Up;
+      Column_Present (S, Table, Column, Present);
 
       --  An already-migrated database is a success, so the ALTER is the only
       --  statement that can fail here.
@@ -772,6 +641,96 @@ package body Memcp.Store with SPARK_Mode => On is
            (S, "ALTER TABLE " & Table & " ADD COLUMN " & Column & " " & Decl);
       end if;
    end Add_Column;
+
+   -------------------------
+   -- Migrate_To_Headers --
+   -------------------------
+
+   Cap_Image : constant String := "400";
+   --  Max_Header as the text the migration's SQL compares lengths against.
+
+   pragma Assert (Max_Header = 400);
+
+   procedure Migrate_To_Headers (S : Store)
+     with Pre => Is_Open (S),
+          Exceptional_Cases => (Sql_Error => True);
+   --  Fold the shape this schema replaced -- a summaries.headline derived from
+   --  the summary body, beside a diary table 1:1 with summaries holding the
+   --  line the model actually authored -- into one authored summaries.header,
+   --  and drop what is left over. A no-op once summaries has no headline
+   --  column, so a fresh or already-migrated database passes straight through.
+   --
+   --  The Header a row ends up with, in order of preference:
+   --    * an autorecap's own body, which is what makes Header = Summary hold;
+   --    * the diary line, where it is the one line within Max_Header that a
+   --      Header is;
+   --    * the headline it already had, which on a row whose diary line is a
+   --      whole body is the marker-authored text that predates the split.
+   --  A diary line that is neither promoted nor already contained in its
+   --  summary body is appended to that body first, so nothing is dropped that
+   --  no other column holds. A database carrying the old column but no diary
+   --  table keeps every headline it had.
+
+   procedure Migrate_To_Headers (S : Store) is
+      Legacy     : Boolean;
+      Have_Diary : Boolean;
+   begin
+      Column_Present (S, "summaries", "headline", Legacy);
+      if not Legacy then
+         return;
+      end if;
+
+      Table_Present (S, "diary", Have_Diary);
+      Add_Column (S, "summaries", "header", "TEXT NOT NULL DEFAULT ''");
+
+      Exec (S, "BEGIN");
+
+      --  No handler: a migration that fails fails the open, and the failure
+      --  path closes the connection, which is what discards the transaction.
+      Exec
+        (S,
+         "UPDATE summaries SET header = body WHERE kind = 'autorecap'");
+
+      if Have_Diary then
+         Exec
+           (S,
+            "UPDATE summaries SET body = body || char(10) || char(10) ||"
+            & " (SELECT d.body FROM diary d"
+            & " WHERE d.summary_id = summaries.id)"
+            & " WHERE kind <> 'autorecap' AND EXISTS"
+            & " (SELECT 1 FROM diary d WHERE d.summary_id = summaries.id"
+            & " AND NOT (length(d.body) <= " & Cap_Image
+            & " AND instr(d.body, char(10)) = 0)"
+            & " AND instr(summaries.body, d.body) = 0)");
+
+         Exec
+           (S,
+            "UPDATE summaries SET header ="
+            & " (SELECT d.body FROM diary d"
+            & " WHERE d.summary_id = summaries.id)"
+            & " WHERE kind <> 'autorecap' AND EXISTS"
+            & " (SELECT 1 FROM diary d WHERE d.summary_id = summaries.id"
+            & " AND length(d.body) <= " & Cap_Image
+            & " AND instr(d.body, char(10)) = 0)");
+      end if;
+
+      --  Left empty above: a summary with no diary row behind it.
+      Exec (S, "UPDATE summaries SET header = headline WHERE header = ''");
+
+      Exec
+        (S, "UPDATE summaries SET kind = 'authored' WHERE kind = 'diary'");
+
+      Exec (S, "DROP INDEX IF EXISTS idx_diary_project_date");
+      Exec (S, "DROP TABLE IF EXISTS diary");
+      Exec (S, "ALTER TABLE summaries DROP COLUMN headline");
+
+      Exec
+        (S,
+         "UPDATE meta SET value = '" & Schema_Version
+         & "' WHERE key = 'schema_version'");
+
+      Exec (S, "COMMIT");
+   end Migrate_To_Headers;
 
    --------------------
    -- Surface_Row_Id --
@@ -948,6 +907,8 @@ package body Memcp.Store with SPARK_Mode => On is
          Add_Column (S, "surfaces", "host", "TEXT");
          Add_Column (S, "surfaces", "install_host", "TEXT");
 
+         Migrate_To_Headers (S);
+
          Assert_Meta ("schema_version", Schema_Version, Result);
          if Result = Opened then
             Assert_Meta ("embedding_model", Embedding_Model, Result);
@@ -984,7 +945,7 @@ package body Memcp.Store with SPARK_Mode => On is
    -------------------
 
    Fetch_Summary_SQL : constant String :=
-     "SELECT s.id, p.name, s.session_id, s.created_at, s.headline,"
+     "SELECT s.id, p.name, s.session_id, s.created_at, s.header,"
      & " s.body, s.kind FROM summaries s"
      & " JOIN projects p ON p.id = s.project_id WHERE s.id = ?";
    --  One summaries row by id, with its project name. Also driven per candidate
@@ -1023,7 +984,7 @@ package body Memcp.Store with SPARK_Mode => On is
               (Project_Len  => Proj.all'Length,
                Session_Len  => Sess.all'Length,
                Created_Len  => Crea.all'Length,
-               Headline_Len => Head.all'Length,
+               Header_Len   => Head.all'Length,
                Body_Len     => Bod.all'Length,
                Kind_Len     => Kind.all'Length,
                Id           => Id_C,
@@ -1031,7 +992,7 @@ package body Memcp.Store with SPARK_Mode => On is
                Project      => Proj.all,
                Session      => Sess.all,
                Created_At   => Crea.all,
-               Headline     => Head.all,
+               Header       => Head.all,
                Content      => Bod.all,
                Kind         => Kind.all);
             Sql.Free (Proj);
@@ -1053,21 +1014,21 @@ package body Memcp.Store with SPARK_Mode => On is
       Sql.Finalize (Stmt);
    end Fetch_Summary;
 
-   ------------------
-   -- Recent_Diary --
-   ------------------
+   ---------------------
+   -- Recent_Headers --
+   ---------------------
 
-   procedure Recent_Diary
+   procedure Recent_Headers
      (S        : Store;
       Projects : Name_List;
       N        : Natural;
-      Result   : out Diary_Entry_List;
+      Result   : out Header_List;
       Status   : out Op_Status)
    is
       Len_CT : constant Name_Vectors.Capacity_Range :=
         Name_Vectors.Length (Projects);
    begin
-      Result := Diary_Vectors.Empty_Vector;
+      Result := Header_Vectors.Empty_Vector;
 
       --  No projects, or a filter too long to spell as a bounded IN clause:
       --  both return an empty list with Success.
@@ -1079,12 +1040,11 @@ package body Memcp.Store with SPARK_Mode => On is
       declare
          K        : constant Positive := Positive (Len_CT);
          Query    : constant String :=
-           "SELECT d.id, p.name, d.summary_id, s.session_id, d.created_at,"
-           & " d.body, s.headline, s.kind FROM diary d"
-           & " JOIN projects p ON p.id = d.project_id"
-           & " JOIN summaries s ON s.id = d.summary_id"
+           "SELECT s.id, p.name, s.session_id, s.created_at,"
+           & " s.header, s.kind FROM summaries s"
+           & " JOIN projects p ON p.id = s.project_id"
            & " WHERE p.name IN (" & Placeholders (K) & ")"
-           & " ORDER BY d.created_at DESC LIMIT ?";
+           & " ORDER BY s.created_at DESC LIMIT ?";
          Stmt     : Sql.Statement;
          Have_Row : Boolean;
       begin
@@ -1103,50 +1063,44 @@ package body Memcp.Store with SPARK_Mode => On is
          end loop;
          Bind (Stmt, K + 1, Row_Id (N));
 
-         --  One Diary_Entry per row; the Length guard discharges Append's
+         --  One Header_Entry per row; the Length guard discharges Append's
          --  capacity precondition.
          loop
             pragma Loop_Invariant (Sql.Is_Valid (Stmt));
             --  As on the bind loop above.
             Step_Row (Stmt, Have_Row);
             exit when not Have_Row;
-            exit when Diary_Vectors.Length (Result) = Diary_Vectors.Last_Count;
+            exit when Header_Vectors.Length (Result) = Header_Vectors.Last_Count;
             declare
                Id_C  : constant Row_Id := Sql.Column_Int64 (Stmt, 0);
-               Sid_C : constant Row_Id := Sql.Column_Int64 (Stmt, 2);
                Proj  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 1);
-               Sess  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 3);
-               Crea  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 4);
-               Bod   : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
-               Head  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 6);
-               Kind  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 7);
-               Null_S : constant Boolean := Sql.Column_Is_Null (Stmt, 3);
+               Sess  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 2);
+               Crea  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 3);
+               Head  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 4);
+               Kind  : Sql.Text_Ptr := Sql.Column_Text (Stmt, 5);
+               Null_S : constant Boolean := Sql.Column_Is_Null (Stmt, 2);
                Has_S  : constant Boolean := not Null_S;
                --  Two steps, as in Fetch_Summary: a volatile column read may
                --  not be an operand of `not`.
             begin
-               Diary_Vectors.Append
+               Header_Vectors.Append
                  (Result,
-                  Diary_Entry'
-                    (Project_Len  => Proj.all'Length,
-                     Session_Len  => Sess.all'Length,
-                     Created_Len  => Crea.all'Length,
-                     Body_Len     => Bod.all'Length,
-                     Headline_Len => Head.all'Length,
-                     Kind_Len     => Kind.all'Length,
-                     Id           => Id_C,
-                     Summary_Id   => Sid_C,
-                     Has_Session  => Has_S,
-                     Project      => Proj.all,
-                     Session      => Sess.all,
-                     Created_At   => Crea.all,
-                     Content      => Bod.all,
-                     Headline     => Head.all,
-                     Kind         => Kind.all));
+                  Header_Entry'
+                    (Project_Len => Proj.all'Length,
+                     Session_Len => Sess.all'Length,
+                     Created_Len => Crea.all'Length,
+                     Header_Len  => Head.all'Length,
+                     Kind_Len    => Kind.all'Length,
+                     Summary_Id  => Id_C,
+                     Has_Session => Has_S,
+                     Project     => Proj.all,
+                     Session     => Sess.all,
+                     Created_At  => Crea.all,
+                     Header      => Head.all,
+                     Kind        => Kind.all));
                Sql.Free (Proj);
                Sql.Free (Sess);
                Sql.Free (Crea);
-               Sql.Free (Bod);
                Sql.Free (Head);
                Sql.Free (Kind);
             end;
@@ -1162,7 +1116,7 @@ package body Memcp.Store with SPARK_Mode => On is
    exception
       when Sql_Error =>
          Status := Db_Error;
-   end Recent_Diary;
+   end Recent_Headers;
 
    -------------------
    -- List_Projects --
@@ -1174,11 +1128,11 @@ package body Memcp.Store with SPARK_Mode => On is
       Status : out Op_Status)
    is
       Query : constant String :=
-        "SELECT p.name, COUNT(d.id), MAX(d.created_at)"
-        & " FROM projects p LEFT JOIN diary d ON d.project_id = p.id"
+        "SELECT p.name, COUNT(s.id), MAX(s.created_at)"
+        & " FROM projects p LEFT JOIN summaries s ON s.project_id = p.id"
         & " GROUP BY p.id, p.name"
-        & " ORDER BY MAX(d.created_at) IS NULL,"
-        & " MAX(d.created_at) DESC, p.name";
+        & " ORDER BY MAX(s.created_at) IS NULL,"
+        & " MAX(s.created_at) DESC, p.name";
       Stmt     : Sql.Statement;
       Have_Row : Boolean;
    begin
@@ -1205,7 +1159,7 @@ package body Memcp.Store with SPARK_Mode => On is
                Project_Info'
                  (Name_Len    => Nm.all'Length,
                   Latest_Len  => Lat.all'Length,
-                  Diary_Count => Cnt,
+                  Header_Count => Cnt,
                   Has_Latest  => Has_L,
                   Name        => Nm.all,
                   Latest_At   => Lat.all));
@@ -1214,7 +1168,7 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
-      --  As in Recent_Diary: a row still pending means the vector filled.
+      --  As in Recent_Headers: a row still pending means the vector filled.
       Status := (if Have_Row then Db_Error else Success);
    exception
       when Sql_Error =>
@@ -1297,7 +1251,7 @@ package body Memcp.Store with SPARK_Mode => On is
             Upl    : Sql.Text_Ptr := Sql.Column_Text (Stmt, 9);
             Null_L : constant Boolean := Sql.Column_Is_Null (Stmt, 0);
             Attr   : constant Boolean := not Null_L;
-            --  Two steps, as in Recent_Diary: a volatile column read may not
+            --  Two steps, as in Recent_Headers: a volatile column read may not
             --  be an operand of `not`.
          begin
             Surface_Health_Vectors.Append
@@ -1333,7 +1287,7 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
-      --  As in Recent_Diary: a row still pending means the vector filled.
+      --  As in Recent_Headers: a row still pending means the vector filled.
       Status := (if Have_Row then Db_Error else Success);
    exception
       when Sql_Error =>
@@ -1554,7 +1508,7 @@ package body Memcp.Store with SPARK_Mode => On is
          end;
       end loop;
 
-      --  As in Recent_Diary: a row still pending means the vector filled.
+      --  As in Recent_Headers: a row still pending means the vector filled.
       Status := (if Have_Row then Db_Error else Success);
    exception
       when Sql_Error =>
@@ -1616,7 +1570,7 @@ package body Memcp.Store with SPARK_Mode => On is
             loop
                pragma Loop_Invariant
                  (Sql.Is_Valid (K1) and then Sql.Is_Valid (M));
-               --  Both handles are written by a `finally`, as in Recent_Diary,
+               --  Both handles are written by a `finally`, as in Recent_Headers,
                --  and so are in this loop's frame.
                Step_Row (K1, Have_Cand);
                exit when not Have_Cand;
@@ -1656,7 +1610,7 @@ package body Memcp.Store with SPARK_Mode => On is
                                 (Project_Len  => Proj.all'Length,
                                  Session_Len  => Sess.all'Length,
                                  Created_Len  => Crea.all'Length,
-                                 Headline_Len => Head.all'Length,
+                                 Header_Len   => Head.all'Length,
                                  Body_Len     => Bod.all'Length,
                                  Kind_Len     => Kind.all'Length,
                                  Id           => Rid,
@@ -1664,7 +1618,7 @@ package body Memcp.Store with SPARK_Mode => On is
                                  Project      => Proj.all,
                                  Session      => Sess.all,
                                  Created_At   => Crea.all,
-                                 Headline     => Head.all,
+                                 Header       => Head.all,
                                  Content      => Bod.all,
                                  Kind         => Kind.all,
                                  Distance     => Dist));
@@ -1863,8 +1817,7 @@ package body Memcp.Store with SPARK_Mode => On is
          end Row_Present;
 
          if Exists then
-            --  Delete the embedding (vec0 has no FK), then the summary
-            --  (diary cascades).
+            --  Delete the embedding (vec0 has no FK), then the summary.
             Delete_Vec :
             declare
                Stmt : Sql.Statement;
@@ -1913,7 +1866,7 @@ package body Memcp.Store with SPARK_Mode => On is
    procedure Save
      (S            : Store;
       Project      : String;
-      Diary_Body   : String;
+      Header_Text  : String;
       Summary_Body : String;
       Embedding    : Candle_Spark.Embedding;
       Has_Session  : Boolean;
@@ -1928,8 +1881,7 @@ package body Memcp.Store with SPARK_Mode => On is
       Proj_Id : Row_Id;
       Surf_Id : Row_Id;
       TS      : constant String := (if Has_Created then Created_At else Now_Iso);
-      Head    : constant String := Parse_Headline (Summary_Body);
-      DH      : constant String := Dedup_Hash (Project, Diary_Body, Summary_Body);
+      DH      : constant String := Dedup_Hash (Project, Header_Text, Summary_Body);
       Blob    : constant Packed_Blob := To_Blob (Embedding);
 
       procedure Put_Vec (Row : Row_Id)
@@ -1967,7 +1919,7 @@ package body Memcp.Store with SPARK_Mode => On is
          end Put_New;
       end Put_Vec;
    begin
-      Result := (Summary_Id => 0, Diary_Id => 0,
+      Result := (Summary_Id => 0,
                  Already_Existed => False, Replaced => False);
 
       Project_Id (S, Project, Proj_Id);
@@ -1978,7 +1930,6 @@ package body Memcp.Store with SPARK_Mode => On is
          declare
             Found      : Boolean;
             Ex_Summary : Row_Id := 0;
-            Ex_Diary   : Row_Id := 0;
             Same_Hash  : Boolean := False;
          begin
             Look_Up :
@@ -1987,8 +1938,7 @@ package body Memcp.Store with SPARK_Mode => On is
             begin
                Prepare
                  (S,
-                  "SELECT s.id, s.dedup_hash, d.id FROM summaries s"
-                  & " JOIN diary d ON d.summary_id = s.id"
+                  "SELECT s.id, s.dedup_hash FROM summaries s"
                   & " WHERE s.project_id = ? AND s.session_id = ? LIMIT 1",
                   Q);
                Bind (Q, 1, Proj_Id);
@@ -2002,14 +1952,13 @@ package body Memcp.Store with SPARK_Mode => On is
                      Same_Hash := H.all = DH;
                      Sql.Free (H);
                   end;
-                  Ex_Diary := Sql.Column_Int64 (Q, 2);
                end if;
             finally
                Sql.Finalize (Q);
             end Look_Up;
 
             if Found and then Same_Hash then
-               Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
+               Result := (Summary_Id => Ex_Summary,
                           Already_Existed => True, Replaced => False);
                Status := Success;
                return;
@@ -2027,14 +1976,14 @@ package body Memcp.Store with SPARK_Mode => On is
                   begin
                      Prepare
                        (S,
-                        "UPDATE summaries SET created_at = ?, headline = ?,"
+                        "UPDATE summaries SET created_at = ?, header = ?,"
                         & " body = ?, dedup_hash = ?, kind = ?,"
                         & " surface_row_id = ? WHERE id = ?", US);
                      Bind (US, 1, TS);
-                     Bind (US, 2, Head);
+                     Bind (US, 2, Header_Text);
                      Bind (US, 3, Summary_Body);
                      Bind (US, 4, DH);
-                     Bind (US, 5, Kind_Diary);
+                     Bind (US, 5, Kind_Authored);
                      --  The replacing write owns the row, so an unattributed
                      --  replace clears an attribution rather than keeping a
                      --  stale one.
@@ -2047,22 +1996,6 @@ package body Memcp.Store with SPARK_Mode => On is
 
                   Put_Vec (Ex_Summary);
 
-                  Update_Diary :
-                  declare
-                     UD : Sql.Statement;
-                  begin
-                     Prepare
-                       (S,
-                        "UPDATE diary SET created_at = ?, body = ?"
-                        & " WHERE id = ?", UD);
-                     Bind (UD, 1, TS);
-                     Bind (UD, 2, Diary_Body);
-                     Bind (UD, 3, Ex_Diary);
-                     Step_Done (UD);
-                  finally
-                     Sql.Finalize (UD);
-                  end Update_Diary;
-
                   Exec (S, "COMMIT");
                exception
                   when Sql_Error =>
@@ -2070,7 +2003,7 @@ package body Memcp.Store with SPARK_Mode => On is
                      raise;
                end Update_Existing;
 
-               Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
+               Result := (Summary_Id => Ex_Summary,
                           Already_Existed => True, Replaced => True);
                Status := Success;
                return;
@@ -2082,7 +2015,6 @@ package body Memcp.Store with SPARK_Mode => On is
       declare
          Found      : Boolean;
          Ex_Summary : Row_Id := 0;
-         Ex_Diary   : Row_Id := 0;
       begin
          Dedup_Look_Up :
          declare
@@ -2090,22 +2022,20 @@ package body Memcp.Store with SPARK_Mode => On is
          begin
             Prepare
               (S,
-               "SELECT s.id, d.id FROM summaries s"
-               & " JOIN diary d ON d.summary_id = s.id"
+               "SELECT s.id FROM summaries s"
                & " WHERE s.dedup_hash = ? AND s.project_id = ? LIMIT 1", Q);
             Bind (Q, 1, DH);
             Bind (Q, 2, Proj_Id);
             Step_Row (Q, Found);
             if Found then
                Ex_Summary := Sql.Column_Int64 (Q, 0);
-               Ex_Diary   := Sql.Column_Int64 (Q, 1);
             end if;
          finally
             Sql.Finalize (Q);
          end Dedup_Look_Up;
 
          if Found then
-            Result := (Summary_Id => Ex_Summary, Diary_Id => Ex_Diary,
+            Result := (Summary_Id => Ex_Summary,
                        Already_Existed => True, Replaced => False);
             Status := Success;
             return;
@@ -2116,7 +2046,6 @@ package body Memcp.Store with SPARK_Mode => On is
       Insert_Fresh :
       declare
          New_Summary : Row_Id;
-         New_Diary   : Row_Id;
       begin
          Exec (S, "BEGIN");
 
@@ -2129,7 +2058,7 @@ package body Memcp.Store with SPARK_Mode => On is
                Prepare
                  (S,
                   "INSERT INTO summaries (project_id, session_id, created_at,"
-                  & " headline, body, dedup_hash, kind, surface_row_id)"
+                  & " header, body, dedup_hash, kind, surface_row_id)"
                   & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins);
                Bind (Ins, 1, Proj_Id);
                if Has_Session then
@@ -2138,10 +2067,10 @@ package body Memcp.Store with SPARK_Mode => On is
                   Bind_Null (Ins, 2);
                end if;
                Bind (Ins, 3, TS);
-               Bind (Ins, 4, Head);
+               Bind (Ins, 4, Header_Text);
                Bind (Ins, 5, Summary_Body);
                Bind (Ins, 6, DH);
-               Bind (Ins, 7, Kind_Diary);
+               Bind (Ins, 7, Kind_Authored);
                Bind_Surface (Ins, 8, Surf_Id);
                Step_Done (Ins);
             finally
@@ -2151,24 +2080,6 @@ package body Memcp.Store with SPARK_Mode => On is
             New_Summary := Sql.Last_Insert_Rowid (S.DB);
             Put_Vec (New_Summary);
 
-            Insert_Diary :
-            declare
-               Ins : Sql.Statement;
-            begin
-               Prepare
-                 (S,
-                  "INSERT INTO diary (project_id, summary_id, created_at,"
-                  & " body) VALUES (?, ?, ?, ?)", Ins);
-               Bind (Ins, 1, Proj_Id);
-               Bind (Ins, 2, New_Summary);
-               Bind (Ins, 3, TS);
-               Bind (Ins, 4, Diary_Body);
-               Step_Done (Ins);
-            finally
-               Sql.Finalize (Ins);
-            end Insert_Diary;
-
-            New_Diary := Sql.Last_Insert_Rowid (S.DB);
             Exec (S, "COMMIT");
          exception
             when Sql_Error =>
@@ -2176,7 +2087,7 @@ package body Memcp.Store with SPARK_Mode => On is
                raise;
          end Transaction;
 
-         Result := (Summary_Id => New_Summary, Diary_Id => New_Diary,
+         Result := (Summary_Id => New_Summary,
                     Already_Existed => False, Replaced => False);
          Status := Success;
       end Insert_Fresh;
@@ -2252,7 +2163,7 @@ package body Memcp.Store with SPARK_Mode => On is
                Bind (C, 1, Ex_Id);
                loop
                   pragma Loop_Invariant (Sql.Is_Valid (C));
-                  --  The frame's `finally` writes C; see Recent_Diary.
+                  --  The frame's `finally` writes C; see Recent_Headers.
                   Step_Row (C, Have_Row);
                   exit when not Have_Row;
                   --  A session holding more chunks than Natural can count is
@@ -2355,11 +2266,10 @@ package body Memcp.Store with SPARK_Mode => On is
       Proj_Id : Row_Id;
       Surf_Id : Row_Id;
       TS   : constant String := (if Has_Created then Created_At else Now_Iso);
-      Head : constant String := Recap_Headline (Recap_Text);
       DH   : constant String := Dedup_Hash (Project, Recap_Text, Recap_Text);
       Blob : constant Packed_Blob := To_Blob (Embedding);
    begin
-      Result := (Summary_Id => 0, Diary_Id => 0, Written => False);
+      Result := (Summary_Id => 0, Written => False);
 
       Project_Id (S, Project, Proj_Id);
       Surface_Row_Id (S, Surface, Surface_Label, TS, Surf_Id);
@@ -2391,11 +2301,10 @@ package body Memcp.Store with SPARK_Mode => On is
          end if;
       end;
 
-      --  ---- fresh insert: summary(kind=autorecap) + embedding + diary ----
+      --  ---- fresh insert: summary(kind=autorecap) + embedding ----
       Insert_Fresh :
       declare
          New_Summary : Row_Id;
-         New_Diary   : Row_Id;
       begin
          Exec (S, "BEGIN");
 
@@ -2408,12 +2317,14 @@ package body Memcp.Store with SPARK_Mode => On is
                Prepare
                  (S,
                   "INSERT INTO summaries (project_id, session_id, created_at,"
-                  & " headline, body, dedup_hash, kind, surface_row_id)"
+                  & " header, body, dedup_hash, kind, surface_row_id)"
                   & " VALUES (?, ?, ?, ?, ?, ?, ?, ?)", Ins);
                Bind (Ins, 1, Proj_Id);
                Bind (Ins, 2, Session_Id);
                Bind (Ins, 3, TS);
-               Bind (Ins, 4, Head);
+               --  Both, so Header = Summary holds and a reader can take the
+               --  kind at its word and skip the fetch.
+               Bind (Ins, 4, Recap_Text);
                Bind (Ins, 5, Recap_Text);
                Bind (Ins, 6, DH);
                Bind (Ins, 7, Kind_Autorecap);
@@ -2440,24 +2351,6 @@ package body Memcp.Store with SPARK_Mode => On is
                Sql.Finalize (Ins);
             end Insert_Vec;
 
-            Insert_Diary :
-            declare
-               Ins : Sql.Statement;
-            begin
-               Prepare
-                 (S,
-                  "INSERT INTO diary (project_id, summary_id, created_at,"
-                  & " body) VALUES (?, ?, ?, ?)", Ins);
-               Bind (Ins, 1, Proj_Id);
-               Bind (Ins, 2, New_Summary);
-               Bind (Ins, 3, TS);
-               Bind (Ins, 4, Recap_Text);
-               Step_Done (Ins);
-            finally
-               Sql.Finalize (Ins);
-            end Insert_Diary;
-
-            New_Diary := Sql.Last_Insert_Rowid (S.DB);
             Exec (S, "COMMIT");
          exception
             when Sql_Error =>
@@ -2465,9 +2358,7 @@ package body Memcp.Store with SPARK_Mode => On is
                raise;
          end Transaction;
 
-         Result := (Summary_Id => New_Summary,
-                    Diary_Id   => New_Diary,
-                    Written    => True);
+         Result := (Summary_Id => New_Summary, Written => True);
          Status := Success;
       end Insert_Fresh;
    exception
@@ -2551,7 +2442,7 @@ package body Memcp.Store with SPARK_Mode => On is
                   Bind (Sel, 1, Sess_Id);
                   loop
                      pragma Loop_Invariant (Sql.Is_Valid (Sel));
-                     --  The frame's `finally` writes Sel; see Recent_Diary.
+                     --  The frame's `finally` writes Sel; see Recent_Headers.
                      Step_Row (Sel, Have_Row);
                      exit when not Have_Row;
                      --  A session holding more chunks than Natural can count
