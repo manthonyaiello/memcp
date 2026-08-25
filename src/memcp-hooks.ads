@@ -9,7 +9,7 @@
 
 package Memcp.Hooks with SPARK_Mode => On is
 
-   Hook_Version : constant String := "0.6.0";
+   Hook_Version : constant String := "0.7.0";
    --  The hook release this server shipped with. Must equal
    --  MEMCP_HOOK_VERSION in scripts/hooks/hook_common.sh, which
    --  scripts/check-hook-version.sh gates.
