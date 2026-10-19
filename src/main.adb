@@ -119,6 +119,9 @@ procedure Main with SPARK_Mode => On is
    Dir_Ok  : Boolean;
    --  Whether the directory holding DB_Path is there to open a file under.
 
+   Failed  : Boolean := False;
+   --  Whether the run ended on a failure, and so exits with a failure status.
+
    procedure Ensure_Directory_Of (Path : String; Ok : out Boolean)
      with Global => null;
    --  Create the directory the file Path names lives in, reporting in Ok
@@ -258,8 +261,23 @@ procedure Main with SPARK_Mode => On is
 
       Run (Port);
    exception
+      when Spark_Mcp.Http.Transport_Error =>
+         Memcp.Log.Error ("transport error; shutting down");
+         Failed := True;
+      when Storage_Error =>
+         pragma Warnings
+           (GNATprove, Off, "this statement is never reached",
+            Reason => "Storage_Error is outside the proof: see docs/design/0022");
+         Memcp.Log.Error ("storage exhausted serving a request; shutting down");
+         Failed := True;
+         pragma Warnings (GNATprove, On, "this statement is never reached");
       when others =>
-         Ada.Text_IO.Put_Line ("memcp: transport error; shutting down");
+         pragma Warnings
+           (GNATprove, Off, "this statement is never reached",
+            Reason => "Run declares only Transport_Error; this is what it cannot");
+         Memcp.Log.Error ("unexpected exception serving a request; shutting down");
+         Failed := True;
+         pragma Warnings (GNATprove, On, "this statement is never reached");
    end Connect_To_Server;
 
 begin
@@ -268,7 +286,21 @@ begin
    if not Dir_Ok then
       Memcp.Log.Error
         ("cannot create the directory holding " & DB_Path & "; aborting");
+      Failed := True;
+   else
+      Open_Database (Open_St);
 
+      if Open_St = Memcp.Resources.Ready then
+         Connect_To_Server (Port);
+      else
+         Memcp.Log.Error ("could not open store at " & DB_Path & "; aborting");
+         Failed := True;
+      end if;
+
+      Memcp.Resources.Close (R);
+   end if;
+
+   if Failed then
       pragma Warnings
         (GNATprove, Off, "no Global contract available*",
          Reason => "Set_Exit_Status is not SPARK_Mode => On, so SPARK must assume this");
@@ -283,19 +315,5 @@ begin
 
       pragma Warnings (GNATprove, On, "no Always_Terminates aspect available*");
       pragma Warnings (GNATprove, On, "no Global contract available*");
-
-      return;
    end if;
-
-   Open_Database (Open_St);
-
-   if Open_St = Memcp.Resources.Ready then
-      Connect_To_Server (Port);
-
-   else
-      Ada.Text_IO.Put_Line
-        ("memcp: could not open store at " & DB_Path & "; aborting");
-   end if;
-
-   Memcp.Resources.Close (R);
 end Main;

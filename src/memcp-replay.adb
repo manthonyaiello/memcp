@@ -79,6 +79,21 @@ is
       Memcp.Text.Reset (Miss_Text);
    end Begin_Call;
 
+   function To_Clock_Entry (Iso : String) return Clock_Entry
+   is (Clock_Entry'(Len => Iso'Length, Value => Iso));
+   --  Iso as a Clock_Entry, returned rather than passed as an aggregate, so
+   --  that it is built on the secondary stack and not in the caller's frame.
+   --  @param Iso The recorded clock value.
+   --  @return The entry holding Iso.
+
+   function To_Emb_Entry
+     (Text : String; Vec : Candle_Spark.Embedding) return Emb_Entry
+   is (Emb_Entry'(Len => Text'Length, Text => Text, Vec => Vec));
+   --  Text and Vec as an Emb_Entry, built as To_Clock_Entry's is.
+   --  @param Text The text the embedding was produced from.
+   --  @param Vec The recorded embedding.
+   --  @return The entry holding both.
+
    ---------------
    -- Add_Clock --
    ---------------
@@ -86,7 +101,7 @@ is
    procedure Add_Clock (Iso : String) is
    begin
       if Clock_Vectors.Length (Clocks) < Max_Entries then
-         Clock_Vectors.Append (Clocks, (Len => Iso'Length, Value => Iso));
+         Clock_Vectors.Append (Clocks, To_Clock_Entry (Iso));
       end if;
    end Add_Clock;
 
@@ -98,8 +113,7 @@ is
      (Text : String; Vec : Candle_Spark.Embedding) is
    begin
       if Emb_Vectors.Length (Embs) < Max_Entries then
-         Emb_Vectors.Append
-           (Embs, (Len => Text'Length, Text => Text, Vec => Vec));
+         Emb_Vectors.Append (Embs, To_Emb_Entry (Text, Vec));
       end if;
    end Add_Embedding;
 

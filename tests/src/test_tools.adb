@@ -380,6 +380,46 @@ begin
              "fetch_turns last=1 -> only final turn");
    end;
 
+   --  A turn larger than the default stack is stored and fetched whole.
+   declare
+      type Text_Ptr is access String;
+
+      Big_Len : constant := 16 * 1024 * 1024;
+      --  Twice the 8 MiB main-thread stack of the platforms CI runs on.
+
+      Big    : constant Text_Ptr := new String'(1 .. Big_Len => 'w');
+      Chunks : Memcp.Store.Chunk_Input_List;
+      SR     : Memcp.Store.Session_Save_Result;
+      St     : Memcp.Store.Op_Status;
+
+      function Input (Content : String) return Memcp.Store.Chunk_Input is
+        ((Body_Len => Content'Length, Content => Content, Embedding => Zero));
+      --  Content as a seeded turn, returned rather than passed as an aggregate
+      --  so that it is not built in this frame.
+   begin
+      Memcp.Store.Chunk_Input_Vectors.Append (Chunks, Input (Big.all));
+      Memcp.Resources.Save_Session
+        (Res,
+         Project     => "demo",
+         Session_Id  => "sess-big",
+         Transcript  => "raw transcript bytes",
+         Chunks      => Chunks,
+         Has_Created => True,
+         Created_At  => TS,
+         Surface       => "",
+         Surface_Label => "",
+         Result      => SR,
+         Status      => St);
+      Check (St = Memcp.Store.Success, "seed a 16 MiB turn -> Success");
+      declare
+         J : constant String :=
+           Call (Memcp.Tools.Fetch_Turns, "{""session_id"":""sess-big""}");
+      begin
+         Check (J'Length > Big_Len and then Has_Sub (J, """ordinal"":0"),
+                "fetch_turns -> the 16 MiB turn, whole");
+      end;
+   end;
+
    --  forget the seeded summary really deletes it.
    declare
       J : constant String :=

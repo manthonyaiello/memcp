@@ -72,7 +72,7 @@ native_sources() {
 # one declared instead of the unit the site is actually in. Declarations push and
 # `end <Name>;` pops every entry of that name, which retires a spec together with
 # its body. An `end` naming nothing on the stack -- `end loop;`, `end if;`,
-# `end record;` -- pops nothing.
+# `end record;` -- pops nothing. An instantiation opens no scope, having no `end`.
 enclosing_entity() {
   awk -v target="$2" '
     NR > target { exit }
@@ -83,7 +83,9 @@ enclosing_entity() {
         name = line
         sub(/^[ \t]*(procedure|function|package[ \t]+body|package)[ \t]+/, "", name)
         sub(/[^A-Za-z0-9_.].*$/, "", name)
-        if (name != "") { depth++; stack[depth] = name }
+        if (name != "" && line !~ /[ \t]is[ \t]+new([^A-Za-z0-9_]|$)/) {
+          depth++; stack[depth] = name
+        }
       } else if (match(line, /^[ \t]*end[ \t]+[A-Za-z]/)) {
         ends = line
         sub(/^[ \t]*end[ \t]+/, "", ends)

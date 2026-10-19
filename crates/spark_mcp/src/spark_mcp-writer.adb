@@ -1,6 +1,14 @@
 --  Spark_Mcp.Writer body: escaping in one pass into a worst-case-sized buffer.
 
+with Ada.Unchecked_Deallocation;
+
 package body Spark_Mcp.Writer with SPARK_Mode => On is
+
+   type Buffer_Ptr is access String;
+   --  Escape's working buffer.
+
+   procedure Free is new Ada.Unchecked_Deallocation (String, Buffer_Ptr);
+   --  Reclaim a Buffer_Ptr's String, leaving the pointer null.
 
    Hex_Digit : constant array (0 .. 15) of Character := "0123456789abcdef";
    --  Lowercase hex digits indexed by value, for the "\u00XX" form.
@@ -10,10 +18,10 @@ package body Spark_Mcp.Writer with SPARK_Mode => On is
    ------------
 
    function Escape (S : String) return String is
-      Buf  : String (1 .. Max_Expansion * S'Length) := (others => ' ');
+      Buf  : Buffer_Ptr := new String'(1 .. Max_Expansion * S'Length => ' ');
       --  The escaped content, built in place. Sized for the worst case, so one
-      --  pass never overflows; initialized in full so flow analysis sees
-      --  Buf (1 .. Last) as defined, and the tail past Last is unused.
+      --  pass never overflows, and on the heap, since that case is six times S;
+      --  initialized in full so flow analysis sees Buf (1 .. Last) as defined.
 
       Last : Natural := 0;
       --  Index in Buf of the last character written.
@@ -61,7 +69,9 @@ package body Spark_Mcp.Writer with SPARK_Mode => On is
          end;
       end loop;
 
-      return Buf (1 .. Last);
+      return R : constant String := Buf (1 .. Last) do
+         Free (Buf);
+      end return;
    end Escape;
 
    ------------
@@ -70,12 +80,22 @@ package body Spark_Mcp.Writer with SPARK_Mode => On is
 
    function Quoted (S : String) return String is
       E : constant String := Escape (S);
-      R : String (1 .. E'Length + 2) := (others => ' ');
    begin
-      R (1)                  := '"';
-      R (2 .. E'Length + 1)  := E;
-      R (E'Length + 2)       := '"';
-      return R;
+      return R : String (1 .. E'Length + 2) := (others => '"') do
+         R (2 .. E'Length + 1) := E;
+      end return;
    end Quoted;
+
+   ------------
+   -- Concat --
+   ------------
+
+   function Concat (Left, Right : String) return String is
+   begin
+      return R : String (1 .. Left'Length + Right'Length) := (others => ' ') do
+         R (1 .. Left'Length) := Left;
+         R (Left'Length + 1 .. R'Last) := Right;
+      end return;
+   end Concat;
 
 end Spark_Mcp.Writer;

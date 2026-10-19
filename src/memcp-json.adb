@@ -204,6 +204,17 @@ package body Memcp.Json with SPARK_Mode => On is
       return M /= null and then Types.Kind (M) = Types.Integer_Kind;
    end Has_Int;
 
+   -------------
+   -- To_Name --
+   -------------
+
+   function To_Name (S : String) return Memcp.Store.Name
+   is (Memcp.Store.Name'(Len => S'Length, Value => S));
+   --  S as a Name, returned rather than passed as an aggregate, so that it is
+   --  built on the secondary stack and not in the caller's frame.
+   --  @param S The name text.
+   --  @return The Name holding S.
+
    ---------------
    -- Get_Names --
    ---------------
@@ -226,7 +237,7 @@ package body Memcp.Json with SPARK_Mode => On is
                declare
                   S : constant String := Types.Value (E);
                begin
-                  Name_Vectors.Append (Result, (Len => S'Length, Value => S));
+                  Name_Vectors.Append (Result, To_Name (S));
                end;
             end if;
          end;
