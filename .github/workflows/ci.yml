@@ -167,10 +167,11 @@ jobs:
       # Don't let one platform's failure cancel the other — we want both signals.
       fail-fast: false
       matrix:
-        # ubuntu-latest = x86_64 Linux; macos-latest = arm64 macOS (Apple
-        # Silicon), which matches the dev machine's arch and exercises the
-        # macOS-only linker path (-liconv) in candle_spark.gpr.
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-latest = x86_64 Linux; macos-15 = arm64 macOS (Apple Silicon),
+        # which matches the dev machine's arch and exercises the macOS-only
+        # linker path (-liconv) in candle_spark.gpr. Pinned: the GNAT 16.1
+        # linker rejects the .tbd stubs of the macOS 26 SDK as malformed.
+        os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       # alire.toml git-pins json to a fixed json-spark commit, so `alr build`
