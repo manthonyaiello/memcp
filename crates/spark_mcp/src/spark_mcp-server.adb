@@ -21,7 +21,10 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
    --  Code as a JSON number: 'Image without its leading space.
 
    function Result_Response (Id : String; Result : String) return String is
-     ("{""jsonrpc"":""2.0"",""id"":" & Id & ",""result"":" & Result & "}")
+     (Writer.Concat
+        (Writer.Concat
+           (Writer.Concat ("{""jsonrpc"":""2.0"",""id"":", Id), ",""result"":"),
+         Writer.Concat (Result, "}")))
    with
      --  Result gets whatever headroom the framing and the echoed id leave; the
      --  largest one, a tool payload wrapped by Tool_Call_Result, stays well
@@ -33,9 +36,11 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
    function Error_Response
      (Id : String; Code : Error_Code; Message : String) return String
    is
-     ("{""jsonrpc"":""2.0"",""id"":" & Id
-      & ",""error"":{""code"":" & Code_Image (Code)
-      & ",""message"":" & Writer.Quoted (Message) & "}}")
+     (Writer.Concat
+        (Writer.Concat
+           (Writer.Concat ("{""jsonrpc"":""2.0"",""id"":", Id),
+            ",""error"":{""code"":" & Code_Image (Code) & ",""message"":"),
+         Writer.Concat (Writer.Quoted (Message), "}}")))
    with
      --  The slack over Max_Field is room for Respond's "Unknown tool: " and
      --  "Method not found: " prefixes; the framed result stays in range even
@@ -120,9 +125,13 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
 
    function Tool_Call_Result
      (Content : String; Is_Error : Boolean := False) return String is
-     ("{""content"":[{""type"":""text"",""text"":" & Writer.Quoted (Content)
-      & "}],""isError"":" & (if Is_Error then "true" else "false") & "}")
-   with Pre => Content'Length <= Max_Field;
+     (Writer.Concat
+        (Writer.Concat
+           ("{""content"":[{""type"":""text"",""text"":", Writer.Quoted (Content)),
+         "}],""isError"":" & (if Is_Error then "true" else "false") & "}"))
+   with Pre  => Content'Length <= Max_Field,
+        Post => Tool_Call_Result'Result'Length
+                  <= Writer.Max_Expansion * Content'Length + 64;
    --  The `result` object for a tools/call, carrying Content as a single MCP
    --  text-content block.
 
@@ -174,7 +183,9 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
 
             if not Found then
                Response := new String'
-                 (Error_Response (Id, Invalid_Params, "Unknown tool: " & Tool_Name));
+                 (Error_Response
+                    (Id, Invalid_Params,
+                     Writer.Concat ("Unknown tool: ", Tool_Name)));
                return;
             end if;
 
@@ -206,7 +217,8 @@ package body Spark_Mcp.Server with SPARK_Mode => On is
 
       else
          Response := new String'
-           (Error_Response (Id, Method_Not_Found, "Method not found: " & Method));
+           (Error_Response
+              (Id, Method_Not_Found, Writer.Concat ("Method not found: ", Method)));
       end if;
    end Respond;
 

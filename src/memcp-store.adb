@@ -413,6 +413,177 @@ package body Memcp.Store with SPARK_Mode => On is
            ("transaction ROLLBACK failed; database may be left "
             & "mid-transaction");
    end Rollback;
+   ----------------------
+   -- Row constructors --
+   ----------------------
+
+   function To_Header_Entry
+     (Summary_Id  : Row_Id;
+      Has_Session : Boolean;
+      Project, Session, Created_At, Header, Kind : String) return Header_Entry
+   is (Header_Entry'
+         (Project_Len => Project'Length,
+          Session_Len => Session'Length,
+          Created_Len => Created_At'Length,
+          Header_Len  => Header'Length,
+          Kind_Len    => Kind'Length,
+          Summary_Id  => Summary_Id,
+          Has_Session => Has_Session,
+          Project     => Project,
+          Session     => Session,
+          Created_At  => Created_At,
+          Header      => Header,
+          Kind        => Kind));
+   --  The Header_Entry holding these fields.
+   --  @param Summary_Id The summary's rowid.
+   --  @param Has_Session Whether session_id is non-null.
+   --  @param Project Project name.
+   --  @param Session Session id.
+   --  @param Created_At Creation time.
+   --  @param Header The Header line.
+   --  @param Kind Header kind.
+   --  @return The entry.
+
+   function To_Project_Info
+     (Header_Count : Row_Id;
+      Has_Latest   : Boolean;
+      Name, Latest_At : String) return Project_Info
+   is (Project_Info'
+         (Name_Len     => Name'Length,
+          Latest_Len   => Latest_At'Length,
+          Header_Count => Header_Count,
+          Has_Latest   => Has_Latest,
+          Name         => Name,
+          Latest_At    => Latest_At));
+   --  The Project_Info holding these fields.
+   --  @param Header_Count Count of Headers.
+   --  @param Has_Latest Whether Latest_At is present.
+   --  @param Name Project name.
+   --  @param Latest_At Newest-Header time.
+   --  @return The entry.
+
+   function To_Surface_Health
+     (Attributed : Boolean;
+      Sessions, Missing : Row_Id;
+      Label, Uuid, Last_Seen, Hook_Version, Host, Install_Host, Last_Saved,
+      Last_Uploaded : String) return Surface_Health
+   is (Surface_Health'
+         (Label_Len     => Label'Length,
+          Uuid_Len      => Uuid'Length,
+          Seen_Len      => Last_Seen'Length,
+          Version_Len   => Hook_Version'Length,
+          Host_Len      => Host'Length,
+          Install_Len   => Install_Host'Length,
+          Saved_Len     => Last_Saved'Length,
+          Uploaded_Len  => Last_Uploaded'Length,
+          Attributed    => Attributed,
+          Sessions      => Sessions,
+          Missing       => Missing,
+          Label         => Label,
+          Uuid          => Uuid,
+          Last_Seen     => Last_Seen,
+          Hook_Version  => Hook_Version,
+          Host          => Host,
+          Install_Host  => Install_Host,
+          Last_Saved    => Last_Saved,
+          Last_Uploaded => Last_Uploaded));
+   --  The Surface_Health holding these fields.
+   --  @param Attributed Whether the sessions counted named a surface.
+   --  @param Sessions Distinct sessions examined.
+   --  @param Missing Sessions with no transcript.
+   --  @param Label Surface label.
+   --  @param Uuid Surface id.
+   --  @param Last_Seen Newest check-in.
+   --  @param Hook_Version Reported hook release.
+   --  @param Host Host name as of that check-in.
+   --  @param Install_Host Host name when the identity was minted.
+   --  @param Last_Saved Newest summary written.
+   --  @param Last_Uploaded Newest transcript written.
+   --  @return The entry.
+
+   function To_Chunk
+     (Id, Session_Row_Id, Ordinal : Row_Id;
+      Project, Content, Created_At : String) return Chunk
+   is (Chunk'
+         (Project_Len    => Project'Length,
+          Body_Len       => Content'Length,
+          Created_Len    => Created_At'Length,
+          Id             => Id,
+          Session_Row_Id => Session_Row_Id,
+          Ordinal        => Ordinal,
+          Project        => Project,
+          Content        => Content,
+          Created_At     => Created_At));
+   --  The Chunk holding these fields.
+   --  @param Id chunks.id.
+   --  @param Session_Row_Id Owning sessions-row id.
+   --  @param Ordinal Turn index within the session.
+   --  @param Project Project name.
+   --  @param Content chunks.body.
+   --  @param Created_At Turn time.
+   --  @return The chunk.
+
+   function To_Summary_Hit
+     (Id          : Row_Id;
+      Has_Session : Boolean;
+      Project, Session, Created_At, Header, Content, Kind : String;
+      Distance    : Interfaces.IEEE_Float_64) return Summary_Hit
+   is (Summary_Hit'
+         (Project_Len => Project'Length,
+          Session_Len => Session'Length,
+          Created_Len => Created_At'Length,
+          Header_Len  => Header'Length,
+          Body_Len    => Content'Length,
+          Kind_Len    => Kind'Length,
+          Id          => Id,
+          Has_Session => Has_Session,
+          Project     => Project,
+          Session     => Session,
+          Created_At  => Created_At,
+          Header      => Header,
+          Content     => Content,
+          Kind        => Kind,
+          Distance    => Distance));
+   --  The Summary_Hit holding these fields.
+   --  @param Id The summary's rowid.
+   --  @param Has_Session Whether session_id is non-null.
+   --  @param Project Project name.
+   --  @param Session Session id.
+   --  @param Created_At Creation time.
+   --  @param Header The Header line.
+   --  @param Content The summary body.
+   --  @param Kind Header kind.
+   --  @param Distance KNN distance.
+   --  @return The hit.
+
+   function To_Chunk_Hit
+     (Id, Session_Row_Id, Ordinal : Row_Id;
+      Project, Content, Created_At, Session : String;
+      Distance : Interfaces.IEEE_Float_64) return Chunk_Hit
+   is (Chunk_Hit'
+         (Project_Len    => Project'Length,
+          Body_Len       => Content'Length,
+          Created_Len    => Created_At'Length,
+          Session_Len    => Session'Length,
+          Id             => Id,
+          Session_Row_Id => Session_Row_Id,
+          Ordinal        => Ordinal,
+          Project        => Project,
+          Content        => Content,
+          Created_At     => Created_At,
+          Session        => Session,
+          Distance       => Distance));
+   --  The Chunk_Hit holding these fields.
+   --  @param Id chunks.id.
+   --  @param Session_Row_Id Owning sessions-row id.
+   --  @param Ordinal Turn index within the session.
+   --  @param Project Project name.
+   --  @param Content chunks.body.
+   --  @param Created_At Turn time.
+   --  @param Session Owning session id.
+   --  @param Distance KNN distance.
+   --  @return The hit.
+
    -------------------
    -- Insert_Chunks --
    -------------------
@@ -1085,13 +1256,8 @@ package body Memcp.Store with SPARK_Mode => On is
             begin
                Header_Vectors.Append
                  (Result,
-                  Header_Entry'
-                    (Project_Len => Proj.all'Length,
-                     Session_Len => Sess.all'Length,
-                     Created_Len => Crea.all'Length,
-                     Header_Len  => Head.all'Length,
-                     Kind_Len    => Kind.all'Length,
-                     Summary_Id  => Id_C,
+                  To_Header_Entry
+                    (Summary_Id  => Id_C,
                      Has_Session => Has_S,
                      Project     => Proj.all,
                      Session     => Sess.all,
@@ -1156,10 +1322,8 @@ package body Memcp.Store with SPARK_Mode => On is
          begin
             Project_Vectors.Append
               (Result,
-               Project_Info'
-                 (Name_Len    => Nm.all'Length,
-                  Latest_Len  => Lat.all'Length,
-                  Header_Count => Cnt,
+               To_Project_Info
+                 (Header_Count => Cnt,
                   Has_Latest  => Has_L,
                   Name        => Nm.all,
                   Latest_At   => Lat.all));
@@ -1256,16 +1420,8 @@ package body Memcp.Store with SPARK_Mode => On is
          begin
             Surface_Health_Vectors.Append
               (Result,
-               Surface_Health'
-                 (Label_Len     => Lab.all'Length,
-                  Uuid_Len      => Uid.all'Length,
-                  Seen_Len      => Seen.all'Length,
-                  Version_Len   => Ver.all'Length,
-                  Host_Len      => Hst.all'Length,
-                  Install_Len   => Inst.all'Length,
-                  Saved_Len     => Saved.all'Length,
-                  Uploaded_Len  => Upl.all'Length,
-                  Attributed    => Attr,
+               To_Surface_Health
+                 (Attributed    => Attr,
                   Sessions      => Sess_C,
                   Missing       => Miss_C,
                   Label         => Lab.all,
@@ -1492,11 +1648,8 @@ package body Memcp.Store with SPARK_Mode => On is
          begin
             Chunk_Vectors.Append
               (Result,
-               Chunk'
-                 (Project_Len    => Proj.all'Length,
-                  Body_Len       => Bod.all'Length,
-                  Created_Len    => Crea.all'Length,
-                  Id             => Id_C,
+               To_Chunk
+                 (Id             => Id_C,
                   Session_Row_Id => Sr_C,
                   Ordinal        => Ord_C,
                   Project        => Proj.all,
@@ -1606,14 +1759,8 @@ package body Memcp.Store with SPARK_Mode => On is
                         if Passes then
                            Summary_Hit_Vectors.Append
                              (Result,
-                              Summary_Hit'
-                                (Project_Len  => Proj.all'Length,
-                                 Session_Len  => Sess.all'Length,
-                                 Created_Len  => Crea.all'Length,
-                                 Header_Len   => Head.all'Length,
-                                 Body_Len     => Bod.all'Length,
-                                 Kind_Len     => Kind.all'Length,
-                                 Id           => Rid,
+                              To_Summary_Hit
+                                (Id           => Rid,
                                  Has_Session  => Has_S,
                                  Project      => Proj.all,
                                  Session      => Sess.all,
@@ -1750,12 +1897,8 @@ package body Memcp.Store with SPARK_Mode => On is
                         if Passes then
                            Chunk_Hit_Vectors.Append
                              (Result,
-                              Chunk_Hit'
-                                (Project_Len    => Proj.all'Length,
-                                 Body_Len       => Bod.all'Length,
-                                 Created_Len    => Crea.all'Length,
-                                 Session_Len    => Sess.all'Length,
-                                 Id             => Rid,
+                              To_Chunk_Hit
+                                (Id             => Rid,
                                  Session_Row_Id => Sr_C,
                                  Ordinal        => Ord_C,
                                  Project        => Proj.all,

@@ -1,7 +1,9 @@
 --  Standalone test driver for the json-free spark_mcp core (Writer + the
 --  pre-parsed Respond routing). Kept dependency-light on purpose -- no AUnit --
 --  so it runs the moment the library builds. -gnata turns Writer's SPARK
---  Pre/Post into executable checks, so a contract violation fails the run.
+--  Pre/Post into executable checks, so a contract violation fails the run. -Og
+--  is the level the server's own instance of the core is compiled at, and what
+--  the core's instance here puts on the stack depends on it.
 
 with "../spark_mcp.gpr";
 
@@ -14,7 +16,7 @@ project Spark_Mcp_Tests is
    for Create_Missing_Dirs use "True";
 
    package Compiler is
-      for Default_Switches ("Ada") use ("-g", "-gnata", "-gnatwa", "-gnatyM99", "-gnatys");
+      for Default_Switches ("Ada") use ("-g", "-Og", "-gnata", "-gnatwa", "-gnatyM99", "-gnatys");
    end Compiler;
 
    package Binder is

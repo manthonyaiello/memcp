@@ -28,4 +28,19 @@ package Spark_Mcp.Writer with SPARK_Mode => On is
    --  @param S The raw text to render as a JSON string literal.
    --  @return The escaped text enclosed in double quotes.
 
+   function Concat (Left, Right : String) return String
+   with
+     Pre  => Right'Length < Natural'Last - Left'Length,
+     Post => Concat'Result'First = 1
+             and then Concat'Result'Length = Left'Length + Right'Length
+             and then Concat'Result (1 .. Left'Length) = Left
+             and then Concat'Result (Left'Length + 1 .. Concat'Result'Last)
+                      = Right;
+   --  Left & Right, built where the result lives. The predefined "&" on
+   --  operands of unbounded length builds its result as a temporary of that
+   --  length in the caller's frame.
+   --  @param Left The leading text.
+   --  @param Right The trailing text.
+   --  @return Left followed by Right, indexed from 1.
+
 end Spark_Mcp.Writer;

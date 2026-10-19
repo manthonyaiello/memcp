@@ -83,7 +83,8 @@ procedure Test_Spark_Mcp is
          when Echo =>
             --  Payload is JSON text; the core wraps it as an MCP text block.
             Result := new Tools.Invocation_Result'
-              (Tools.Success ("{""got"":" & Arguments & "}"));
+              (Tools.Success
+                 (Writer.Concat (Writer.Concat ("{""got"":", Arguments), "}")));
          when Boom =>
             Result := new Tools.Invocation_Result'
               (Tools.Failure (Internal_Error, "boom happened"));
@@ -150,12 +151,9 @@ procedure Test_Spark_Mcp is
       if P = null then
          return "";
       end if;
-      declare
-         S : constant String := P.all;
-      begin
+      return S : constant String := P.all do
          Spark_Mcp.Free (P);
-         return S;
-      end;
+      end return;
    end Respond_Str;
 
    Q      : constant Character := '"';
@@ -276,6 +274,32 @@ begin
      (Respond_Str ("tools/call", False, "8", "nope", "{}"),
       """code"":-32602",
       "tools/call: unknown tool is Invalid_Params");
+
+   --  A payload larger than the default stack round-trips through escaping and
+   --  the response envelope.
+   declare
+      type Text_Ptr is access String;
+
+      Big_Len : constant := 16 * 1024 * 1024;
+      --  Twice the 8 MiB main-thread stack of the platforms CI runs on.
+
+      Args : constant Text_Ptr := new String'(1 .. Big_Len + 8 => 'x');
+   begin
+      Args (1 .. 6) := "{""a"":""";
+      Args (Args'Last - 1 .. Args'Last) := """}";
+      declare
+         R : constant String :=
+           Respond_Str
+             (Method          => "tools/call",
+              Is_Notification => False,
+              Id              => "9",
+              Tool_Name       => "echo",
+              Arguments       => Args.all);
+      begin
+         Check (R'Length > Big_Len, "tools/call: a 16 MiB payload is answered whole");
+         Check_Has (R, """isError"":false", "tools/call: a 16 MiB payload succeeds");
+      end;
+   end;
 
    -------------------------------------------------------------------------
    Ada.Text_IO.New_Line;

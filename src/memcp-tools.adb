@@ -1181,6 +1181,18 @@ package body Memcp.Tools with SPARK_Mode => On is
       MJ.Close (D);
    end Do_List_Projects;
 
+   function Salvaged_Or
+     (Salvaged : Boolean; Buf : Memcp.Text.Builder; Original : String)
+      return String
+   is (if Salvaged then Memcp.Text.Value (Buf) else Original);
+   --  Buf's text when Salvage split the arguments, else Original: returned
+   --  rather than written as a conditional expression in place, which would
+   --  copy Original into the caller's frame.
+   --  @param Salvaged Whether Salvage recovered a leaked boundary.
+   --  @param Buf The builder Salvage filled.
+   --  @param Original The argument as received.
+   --  @return The text to save.
+
    procedure Do_Save
      (R : MR.Resources; Arguments : String; Result : out Result_Ptr);
    --  save: a (Header, structured summary) pair, plus the summary's
@@ -1209,13 +1221,13 @@ package body Memcp.Tools with SPARK_Mode => On is
          end if;
          declare
             Header  : constant String :=
-              (if Salvaged then Memcp.Text.Value (Bd_Buf) else Header_In);
+              Salvaged_Or (Salvaged, Bd_Buf, Header_In);
             --  The Header to save. On the common no-leak path Salvage leaves the
             --  builders empty, so the original argument is reused rather than
             --  round-tripped.
 
             Summary : constant String :=
-              (if Salvaged then Memcp.Text.Value (Sm_Buf) else Summary_In);
+              Salvaged_Or (Salvaged, Sm_Buf, Summary_In);
             --  The summary to save, on the same terms.
 
             Emb     : Candle_Spark.Embedding;
@@ -1603,6 +1615,18 @@ package body Memcp.Tools with SPARK_Mode => On is
 
    package ME renames Memcp.Extractor;
 
+   function To_Chunk_Input
+     (Content : String; Embedding : Candle_Spark.Embedding)
+      return MS.Chunk_Input
+   is (MS.Chunk_Input'
+         (Body_Len => Content'Length, Content => Content, Embedding => Embedding));
+   --  Content and its Embedding as a Chunk_Input, returned rather than passed
+   --  as an aggregate, so that it is built on the secondary stack and not in
+   --  the caller's frame.
+   --  @param Content The verbatim turn body.
+   --  @param Embedding Its precomputed vector.
+   --  @return The Chunk_Input holding both.
+
    procedure Upload_Decoded
      (R          : MR.Resources;
       Project    : String;
@@ -1652,8 +1676,7 @@ package body Memcp.Tools with SPARK_Mode => On is
               < MS.Chunk_Input_Vectors.Capacity_Range'Last
             then
                MS.Chunk_Input_Vectors.Append
-                 (Chunks,
-                  (Body_Len => T.Len, Content => T.Text, Embedding => Emb));
+                 (Chunks, To_Chunk_Input (T.Text, Emb));
             end if;
          end;
       end loop;

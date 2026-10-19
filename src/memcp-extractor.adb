@@ -391,6 +391,17 @@ package body Memcp.Extractor with SPARK_Mode => On is
       end if;
    end Append_Text_Parts;
 
+   -------------
+   -- To_Turn --
+   -------------
+
+   function To_Turn (S : String) return Turn
+   is (Turn'(Len => S'Length, Text => S));
+   --  S as a Turn, returned rather than passed as an aggregate, so that it is
+   --  built on the secondary stack and not in the caller's frame.
+   --  @param S The turn text.
+   --  @return The Turn holding S.
+
    -------------------
    -- Extract_Turns --
    -------------------
@@ -454,8 +465,7 @@ package body Memcp.Extractor with SPARK_Mode => On is
                            if Turn_Vectors.Length (Turns)
                              < Turn_Vectors.Capacity_Range'Last
                            then
-                              Turn_Vectors.Append
-                                (Turns, (Len => S'Length, Text => S));
+                              Turn_Vectors.Append (Turns, To_Turn (S));
                            end if;
                         end;
                      end;
