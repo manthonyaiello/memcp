@@ -18,3 +18,6 @@ gnatprove-run.txt
 
 # Provisioned embedding weights (install-model.sh); large, local.
 models/
+
+# Issue worktrees (the /issue skill)
+.claude/worktrees/
